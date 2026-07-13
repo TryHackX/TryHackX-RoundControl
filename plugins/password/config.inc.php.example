@@ -1,0 +1,23 @@
+<?php
+/**
+ * Konfiguracja pluginu Roundcube `password` — samoobsługa zmiany hasła
+ * skrzynki przez użytkownika (Ustawienia → Hasło).
+ *
+ * Sterownik SQL zapisuje hash $6$ (SHA512-CRYPT) do mailserver.virtual_users,
+ * zgodnie z `default_pass_scheme = SHA512-CRYPT` Dovecota. Połączenie idzie
+ * dedykowanym użytkownikiem DB `roundcubepw` z uprawnieniami TYLKO
+ * SELECT/UPDATE na virtual_users (least privilege).
+ *
+ * Ten plik trafia do /var/www/roundcube/plugins/password/config.inc.php
+ * (poza webrootem public_html). chmod 640 root:www-data. Podmień
+ * SILNE_HASLO_POLICY na wygenerowane (openssl rand -hex 24).
+ */
+$config['password_driver'] = 'sql';
+$config['password_confirm_current'] = true;        // wymagaj obecnego hasła
+$config['password_minimum_length'] = 10;           // spójne z pwd_min_length panelu
+$config['password_require_nonalpha'] = true;       // min. cyfra / znak specjalny
+$config['password_force_save'] = true;
+$config['password_algorithm'] = 'sha512-crypt';
+$config['password_algorithm_prefix'] = '';         // Dovecot trzyma $6$ bez prefiksu {SHA512-CRYPT}
+$config['password_db_dsn'] = 'mysql://roundcubepw:SILNE_HASLO_POLICY@localhost/mailserver';
+$config['password_query'] = 'UPDATE virtual_users SET password=%P WHERE email=%u';

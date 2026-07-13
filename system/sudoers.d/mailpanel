@@ -1,0 +1,20 @@
+# /etc/sudoers.d/mailpanel  —  uprawnienia panelu (www-data) do operacji systemowych.
+# Instalacja:  install -o root -g root -m 440 mailpanel /etc/sudoers.d/mailpanel
+#              visudo -cf /etc/sudoers.d/mailpanel   # walidacja składni
+#
+# Bez danego wpisu odpowiednia funkcja panelu pokazuje czytelny komunikat,
+# reszta działa. Każda linia = jedna zdolność (least privilege).
+
+# Fail2Ban: lista/status banów, ręczny ban/unban, przeładowanie po zapisie configu
+www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client ping, /usr/bin/fail2ban-client status, /usr/bin/fail2ban-client status *, /usr/bin/fail2ban-client set * unbanip *, /usr/bin/fail2ban-client set * banip *, /usr/bin/fail2ban-client reload
+# Kolumna „Wygasa" (pozostały czas) + bany czasowe ze skanera
+www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * banip *
+www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client set * bantime *
+# Limity antyspamowe Postfix (zakładka Bezpieczeństwo)
+www-data ALL=(root) NOPASSWD: /usr/local/bin/update-postfix-limits.sh
+# Usuwanie plików skrzynki przy kasowaniu konta
+www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-delete-user.sh
+# Wykorzystanie quoty na liście kont (doveadm)
+www-data ALL=(root) NOPASSWD: /usr/bin/doveadm -f flow quota get -u *
+# Skaner podejrzanych IP (3. arg: ssh|dovecot|postfix)
+www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh *

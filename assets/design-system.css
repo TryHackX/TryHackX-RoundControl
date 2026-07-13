@@ -1,0 +1,203 @@
+/* =========================================================================
+   Design System — wspólna baza wizualna portalu i panelu.
+   Źródło prawdy dla motywu (tokeny) i podstawowych komponentów.
+   Zachowuje oryginalny styl portalu (ciemny motyw, karty, akcent #2f6fed).
+   ========================================================================= */
+
+:root {
+    /* Tła */
+    --bg-body: #0b1320;
+    --bg-card: #111a2b;
+    --bg-input: #0e1626;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+
+    /* Akcent */
+    --primary: #2f6fed;
+    --primary-hover: #2558c2;
+    --primary-disabled: #1a4a8a;
+    --primary-light: rgba(47, 111, 237, 0.2);
+
+    /* Tekst */
+    --text-main: #e6e9ef;
+    --text-label: #cbd5e1;
+    --text-muted: #a3aac2;
+    --text-muted-dark: #64748b;
+
+    /* Obramowania */
+    --border-color: #2a3650;
+    --border-soft: rgba(255, 255, 255, 0.1);
+    --border-focus: var(--primary);
+
+    /* Stany */
+    --status-error: #ffb4b4;
+    --status-error-bg: rgba(255, 77, 77, 0.1);
+    --status-error-border: rgba(255, 77, 77, 0.2);
+    --status-warning: #ffa502;
+    --status-success: #b4ffcb;
+    --status-success-bg: rgba(46, 213, 115, 0.1);
+    --status-success-border: rgba(46, 213, 115, 0.2);
+    --status-load: #9bbcff;
+
+    /* Kształt / cień */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --shadow-card: 0 10px 40px rgba(0, 0, 0, 0.5);
+
+    /* Typografia */
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+    font-family: var(--font-sans);
+    background: var(--bg-body);
+    color: var(--text-main);
+    line-height: 1.5;
+}
+
+/* --- Karta --- */
+.ds-card {
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    padding: 30px;
+}
+
+/* --- Nagłówki --- */
+h1 { margin: 0 0 10px; font-size: 24px; }
+.ds-muted {
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+/* --- Pola formularzy --- */
+label {
+    display: block;
+    margin: 15px 0 6px;
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--text-label);
+}
+input, select, textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-input);
+    color: var(--text-main);
+    font-size: 15px;
+    font-family: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    outline: none;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+/* --- Przyciski --- */
+.ds-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 14px;
+    border-radius: 10px;
+    border: none;
+    background: var(--primary);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+.ds-btn:hover { background: var(--primary-hover); }
+.ds-btn:active { transform: scale(0.98); }
+.ds-btn:disabled {
+    background: var(--primary-disabled);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+.ds-btn--block { width: 100%; }
+.ds-btn--danger { background: #e05260; }
+.ds-btn--danger:hover { background: #c53f4c; }
+.ds-btn--secondary { background: #334155; }
+.ds-btn--secondary:hover { background: #3f4d63; }
+
+/* --- Komunikaty --- */
+.ds-msg {
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 14px;
+}
+.ds-msg--err {
+    background: var(--status-error-bg);
+    color: var(--status-error);
+    border: 1px solid var(--status-error-border);
+}
+.ds-msg--ok {
+    background: var(--status-success-bg);
+    color: var(--status-success);
+    border: 1px solid var(--status-success-border);
+}
+
+/* --- Statusy inline --- */
+.ds-status-ok { color: var(--status-success); }
+.ds-status-bad { color: var(--status-error); }
+.ds-status-load { color: var(--status-load); }
+
+/* --- Miernik siły hasła --- */
+.ds-pwd-meter {
+    height: 4px;
+    background: var(--border-color);
+    margin-top: 8px;
+    border-radius: 2px;
+    overflow: hidden;
+}
+.ds-pwd-meter__fill {
+    height: 100%;
+    width: 0%;
+    background: var(--status-error);
+    transition: width 0.3s ease, background 0.3s ease;
+}
+
+/* --- Awatar / profil --- */
+.ds-avatar {
+    width: 40px;
+    height: 40px;
+    background: var(--primary);
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 18px;
+}
+
+/* --- Odznaki --- */
+.ds-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.ds-badge--accent { background: var(--primary-light); color: var(--primary); }
+.ds-badge--ok { background: var(--status-success-bg); color: var(--status-success); }
+.ds-badge--err { background: var(--status-error-bg); color: var(--status-error); }
+
+/* --- Narzędziowe --- */
+.ds-hidden { display: none !important; }
+.ds-fade-in { animation: dsFadeIn 0.3s ease-out; }
+@keyframes dsFadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}

@@ -1,0 +1,940 @@
+/* =========================================================================
+   Panel administratora — dopracowany ciemny motyw (spójny z portalem).
+   Tokeny bazowe z design-system.css; jasny wariant przez body:not(.dark-mode).
+   ========================================================================= */
+
+body {
+    background: var(--bg-body);
+    color: var(--text-main);
+    min-height: 100vh;
+    font-size: 14px;
+}
+
+/* Natywne kontrolki (checkboxy, selecty, date-picker, scrollbary) w kolorach
+   motywu — bez tego przeglądarka rysuje je jasne w trybie ciemnym. */
+body.dark-mode { color-scheme: dark; }
+body:not(.dark-mode) { color-scheme: light; }
+
+/* Jasny motyw: nadpisanie tokenów */
+body:not(.dark-mode) {
+    --bg-body: #eef2f7;
+    --bg-card: #ffffff;
+    --bg-input: #f8fafc;
+    --bg-hover: rgba(15, 23, 42, 0.045);
+    --text-main: #0f172a;
+    --text-label: #334155;
+    --text-muted: #64748b;
+    --text-muted-dark: #94a3b8;
+    --border-color: #dbe3ee;
+    --border-soft: rgba(15, 23, 42, 0.08);
+    --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.07);
+    --status-error: #dc2626;
+    --status-success: #15803d;
+    --status-warning: #b45309;
+}
+
+button { font-family: inherit; }
+
+/* ---------------- Nagłówek ---------------- */
+.header {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 1px 10px rgba(0, 0, 0, 0.18);
+}
+.header-content {
+    max-width: 1500px;
+    margin: 0 auto;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.header h1 {
+    font-size: 19px;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    letter-spacing: 0.2px;
+}
+.header h1 i {
+    color: var(--primary);
+    font-size: 24px;
+}
+.header-actions { display: flex; align-items: center; gap: 18px; }
+.admin-info { font-size: 13.5px; color: var(--text-muted); }
+.admin-info b { color: var(--text-main); }
+.logout-link {
+    color: var(--status-error);
+    text-decoration: none;
+    font-size: 13.5px;
+    font-weight: 500;
+    padding: 6px 10px;
+    border-radius: 8px;
+    transition: background 0.15s;
+}
+.logout-link:hover { background: var(--status-error-bg); }
+.theme-toggle-btn {
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 17px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s, transform 0.1s;
+}
+.theme-toggle-btn:hover { border-color: var(--primary); }
+.theme-toggle-btn:active { transform: scale(0.94); }
+
+/* Szerzej na desktopie — tabela users (9 kolumn) mieści się bez ucinania */
+.container {
+    max-width: 1500px;
+    margin: 26px auto;
+    padding: 0 24px 70px;
+}
+
+/* ---------------- Alerty (flash) ---------------- */
+.alert {
+    padding: 13px 16px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    border: 1px solid;
+    border-left-width: 4px;
+    animation: dsFadeIn 0.3s ease-out;
+}
+.alert-success {
+    background: var(--status-success-bg);
+    color: var(--status-success);
+    border-color: var(--status-success-border);
+    border-left-color: #22c55e;
+}
+.alert-error {
+    background: var(--status-error-bg);
+    color: var(--status-error);
+    border-color: var(--status-error-border);
+    border-left-color: #ef4444;
+}
+
+/* ---------------- Statystyki ---------------- */
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 16px;
+    margin-bottom: 26px;
+}
+.stat-card {
+    position: relative;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 60%), var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 18px 20px 16px;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.15s;
+}
+.stat-card::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: linear-gradient(180deg, var(--primary), transparent);
+    opacity: 0.9;
+}
+.stat-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+.stat-card h3 {
+    margin: 0 0 6px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+}
+.stat-card .value {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--primary);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- Zakładki ---------------- */
+.tabs {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+    border-bottom: 1px solid var(--border-color);
+}
+.tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    padding: 11px 15px;
+    cursor: pointer;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: 8px 8px 0 0;
+    margin-bottom: -1px;
+    transition: color 0.15s, background 0.15s;
+}
+.tab i { font-size: 16px; }
+.tab:hover { color: var(--text-main); background: var(--bg-hover); }
+.tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    font-weight: 600;
+    background: var(--primary-light);
+}
+.tab-content { display: none; }
+.tab-content.active { display: block; animation: dsFadeIn 0.25s ease-out; }
+
+h2 {
+    font-size: 17px;
+    margin: 4px 0 18px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    letter-spacing: 0.2px;
+}
+h2 i { color: var(--primary); font-size: 20px; }
+
+/* Nagłówek zakładki z przyciskiem akcji po prawej */
+.tab-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+.tab-head h2 { margin: 0; }
+.sort-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: 14px;
+    white-space: nowrap;
+    cursor: help;
+}
+.sort-hint i { color: var(--primary); vertical-align: -1px; }
+
+/* Grupa e-mail (nazwa @ domena) w modalu dodawania konta */
+.email-compose { display: flex; align-items: center; gap: 8px; }
+.email-compose input { flex: 2; min-width: 0; }
+.email-compose select { flex: 1; min-width: 0; width: auto; }
+.email-compose span { color: var(--text-muted-dark); font-weight: bold; user-select: none; }
+.avail-status { font-size: 12.5px; margin-top: 6px; min-height: 16px; }
+.avail-status.free { color: var(--status-success); }
+.avail-status.taken { color: var(--status-error); }
+/* Miernik siły hasła + lista wymogów (modal "Dodaj użytkownika" — parytet z rejestracją) */
+.pwd-meter { height: 4px; background: var(--border-color); margin-top: 8px; border-radius: 2px; overflow: hidden; }
+.pwd-meter-fill { height: 100%; width: 0%; background: var(--status-error); transition: width 0.3s ease, background-color 0.3s ease; }
+.pwd-reqs { list-style: none; padding: 0; margin: 10px 0 0; font-size: 12px; color: var(--text-muted-dark); display: flex; flex-wrap: wrap; gap: 8px; }
+.pwd-reqs li { display: flex; align-items: center; gap: 4px; transition: color 0.3s; }
+.pwd-reqs li.valid { color: var(--status-success); }
+.pwd-reqs li::before { content: '•'; }
+.pwd-reqs li.valid::before { content: '✓'; }
+#nu_form_msg .scan-note { margin: 10px 0 0; }
+#bans_ajax_msg .scan-note { margin: 0 0 14px; }
+
+/* ---------------- Uniwersalne pola wyszukiwania (adv-search) ---------------- */
+.adv-search { position: relative; flex: 1; min-width: 0; }
+.adv-search input { width: 100%; padding-right: 36px; }
+.adv-clear {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: #e74c3c;
+    cursor: pointer;
+    border-radius: 50%;
+    font-size: 14px;
+    line-height: 1;
+    text-shadow: 0 0 4px rgba(231, 76, 60, 0.35);
+    transition: color .15s ease, text-shadow .15s ease, background .15s ease, transform .05s ease;
+}
+.adv-clear:hover {
+    color: #ff6b6b;
+    text-shadow: 0 0 6px rgba(255, 107, 107, 0.45);
+    background: rgba(231, 76, 60, 0.12);
+}
+.adv-clear:active { transform: translateY(-50%) scale(0.88); }
+body.dark-mode .adv-clear {
+    color: #ff6b6b;
+    text-shadow: 0 0 6px rgba(255, 107, 107, 0.45);
+}
+/* glow inputa podczas przyspieszanego kasowania */
+.adv-search input.adv-clearing {
+    border-color: #e74c3c !important;
+    box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.16), 0 0 14px rgba(231, 76, 60, 0.35) !important;
+}
+.search-hint { margin: -6px 0 12px; }
+.row-filtered { display: none; }
+
+/* Flaga skanera: IP już obecne na liście blokad */
+.scan-already {
+    color: var(--status-warning);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12.5px;
+    white-space: nowrap;
+}
+
+/* Ukryty tryb sortowania quoty (Shift+klik na nagłówku Quota) */
+.qsort-wrap { display: inline-flex; gap: 10px; margin-left: 8px; vertical-align: middle; }
+.qsort-ico { cursor: pointer; opacity: 0.45; display: inline-flex; align-items: center; gap: 3px; transition: opacity 0.15s, color 0.15s; }
+.qsort-ico:hover { opacity: 0.85; }
+.qsort-ico.on { opacity: 1; color: var(--primary); }
+.qsort-ico i { font-size: 13px; }
+
+/* Wykorzystanie dziennego limitu wysyłki (modal Zmiana Quota) */
+.sent-today-box { font-size: 14px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-input); }
+.sent-today-box .sent-ok { color: var(--status-success); }
+.sent-today-box .sent-warn { color: var(--status-warning); }
+.sent-today-box .sent-crit { color: var(--status-error); }
+.sent-today-box .sent-src { color: var(--text-muted); font-size: 12px; }
+
+/* ---------------- Karty ustawień / formularze ---------------- */
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+    gap: 18px;
+    align-items: start;
+}
+.settings-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+.settings-card:hover { border-color: #3b4d75; }
+body:not(.dark-mode) .settings-card:hover { border-color: #b6c6de; }
+.settings-card-header {
+    padding: 13px 18px;
+    background: var(--bg-hover);
+    border-bottom: 1px solid var(--border-color);
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+.settings-card-header i { color: var(--primary); font-size: 17px; }
+.settings-card-body { padding: 18px; }
+
+.form-group { margin-bottom: 15px; }
+.form-group:last-child { margin-bottom: 0; }
+.form-group > label {
+    margin: 0 0 6px;
+    font-size: 13px;
+}
+input, select, textarea {
+    padding: 9px 12px;
+    font-size: 14px;
+    border-radius: 8px;
+}
+
+/* Natywne spinnery inputów number nie pasują do ciemnego motywu — ukrywamy
+   (wartość wciąż można zmieniać klawiaturą/scrollem). */
+input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* Checkbox: twardy reset odziedziczonych stylów inputa (padding/border/poświata
+   focusa z transition), które powodowały "drżenie/przesuwanie" tekstu przy
+   klikaniu labela. Stała szerokość + brak animacji = zero ruchu layoutu. */
+input[type="checkbox"] {
+    -webkit-appearance: auto;
+    appearance: auto;
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    flex: 0 0 16px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    accent-color: var(--primary);
+    cursor: pointer;
+    box-shadow: none;
+    transition: none;
+    vertical-align: middle;
+}
+input[type="checkbox"]:focus {
+    box-shadow: none;
+    outline: 2px solid var(--primary-light);
+    outline-offset: 1px;
+}
+.help-text { font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.4; }
+.section-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--text-muted);
+    margin: 18px 0 12px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 7px;
+}
+.section-title:first-of-type { margin-top: 0; }
+.textarea-full { width: 100%; resize: vertical; }
+.quota-input-group { display: flex; gap: 8px; }
+.quota-input-group input { flex: 2; }
+.quota-input-group select { flex: 1; }
+.flex-row-center, .flex-align-center { display: flex; align-items: center; gap: 8px; }
+
+/* Wiersze z checkboxem: wyśrodkowanie w pionie. Selektor `.form-group.X > label`
+   ma wyższą specyficzność niż `.form-group > label` (0,0,2,1 vs 0,0,1,1),
+   więc kasuje margines 6px psujący wyrównanie (fix reCAPTCHA "Aktywne").
+   user-select:none = brak zaznaczania tekstu przy klikaniu labela. */
+.checkbox-group,
+.flex-align-center,
+.flex-row-center,
+.checkbox-warning-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.form-group.checkbox-group > label,
+.form-group.flex-align-center > label,
+.form-group.flex-row-center > label,
+.checkbox-group > label,
+.checkbox-warning-wrapper > label {
+    margin: 0;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    line-height: 1.3;
+}
+.checkbox-warning-wrapper { margin-top: 10px; }
+.checkbox-warning-wrapper > label {
+    color: var(--status-warning);
+    font-size: 12.5px;
+}
+.no-margin { margin: 0; cursor: pointer; }
+.mt-4 { margin-top: 20px; text-align: center; }
+.form-actions { text-align: center; }
+.ms-1 { margin-left: 6px; }
+
+/* ---------------- Przyciski ---------------- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 18px;
+    border: none;
+    border-radius: 9px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    box-shadow: 0 2px 10px rgba(47, 111, 237, 0.25);
+    transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+.btn:hover { background: var(--primary-hover); box-shadow: 0 3px 14px rgba(47, 111, 237, 0.35); }
+.btn:active { transform: scale(0.97); }
+.btn-small { padding: 6px 11px; font-size: 12.5px; border-radius: 7px; }
+.btn-xs { padding: 3px 7px; font-size: 12px; border-radius: 6px; box-shadow: none; }
+.btn-danger { background: #dc3f4e; box-shadow: 0 2px 10px rgba(220, 63, 78, 0.25); }
+.btn-danger:hover { background: #c02c3b; box-shadow: 0 3px 14px rgba(220, 63, 78, 0.35); }
+.btn-warning { background: #d97706; box-shadow: 0 2px 10px rgba(217, 119, 6, 0.22); }
+.btn-warning:hover { background: #b45309; }
+.btn-secondary, .btn-secondary-grey { background: #475569; box-shadow: none; }
+.btn-secondary:hover, .btn-secondary-grey:hover { background: #334155; }
+.btn-dark { background: #1e293b; box-shadow: none; border: 1px solid var(--border-color); }
+.btn-dark:hover { background: #263349; }
+
+.btn-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 600;
+    text-decoration: none;
+    color: #fff;
+    transition: filter 0.15s, transform 0.1s;
+}
+.btn-action:hover { filter: brightness(1.15); }
+.btn-action:active { transform: scale(0.96); }
+.btn-success-action { background: #16a34a; }
+.btn-danger-action { background: #dc3f4e; }
+.inline-form { display: inline; margin: 0; }
+
+/* ---------------- Tabele ---------------- */
+.table-responsive {
+    overflow-x: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+.table-responsive::-webkit-scrollbar { height: 8px; }
+.table-responsive::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+.table-responsive::-webkit-scrollbar-track { background: transparent; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td {
+    padding: 9px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+    vertical-align: middle;
+}
+thead th {
+    background: var(--bg-input);
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    position: sticky;
+    top: 0;
+}
+tbody tr { transition: background 0.12s; }
+tbody tr:hover { background: rgba(47, 111, 237, 0.06); }
+tbody tr:last-child td { border-bottom: none; }
+
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--primary); }
+.sort-placeholder { opacity: 0.35; }
+.contrast-color { color: var(--primary); }
+.sub-style { font-size: 9px; }
+.text-placeholder { color: var(--text-muted-dark); }
+.safe-hr { border: none; border-top: 1px solid var(--border-color); margin: 34px 0 26px; }
+.empty-state-text { color: var(--text-muted); padding: 22px 0; }
+
+.quota-dis { display: flex; align-items: center; gap: 6px; }
+
+/* Kolumna wykorzystania quoty (ładowana asynchronicznie) */
+.usage-cell { min-width: 130px; }
+.usage-wait, .usage-na { color: var(--text-muted-dark); }
+.usage-wrap { display: flex; flex-direction: column; gap: 3px; align-items: center; }
+.usage-bar { width: 100%; height: 6px; background: var(--bg-input); border: 1px solid var(--border-soft); border-radius: 4px; overflow: hidden; }
+.usage-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+.usage-fill.ok { background: #22c55e; }
+.usage-fill.warn { background: var(--status-warning); }
+.usage-fill.crit { background: #ef4444; }
+.usage-txt { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.quota-display { font-variant-numeric: tabular-nums; font-weight: 500; }
+.actions-col { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+/* Komórka z wieloma IP — kontrolowane zawijanie zamiast rozpychania tabeli */
+td.ips-cell { white-space: normal; min-width: 190px; }
+.ip-stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    max-width: 350px;
+}
+
+/* ---------------- Odznaki ---------------- */
+.badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 20px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+}
+.badge-success { background: var(--status-success-bg); color: var(--status-success); border: 1px solid var(--status-success-border); }
+.badge-danger { background: var(--status-error-bg); color: var(--status-error); border: 1px solid var(--status-error-border); }
+.badge-type-local { background: var(--primary-light); color: var(--primary); padding: 3px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }
+.badge-jail { background: rgba(249, 115, 22, 0.14); color: #fb923c; padding: 3px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }
+.jail-sshd { background: rgba(239, 68, 68, 0.14); color: #f87171; }
+.jail-recidive { background: rgba(168, 85, 247, 0.14); color: #c084fc; }
+.jail-dovecot { background: rgba(20, 184, 166, 0.14); color: #2dd4bf; }
+
+.badge-ip {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    cursor: pointer;
+    background: var(--bg-input);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--text-muted-dark);
+    color: var(--text-label);
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+.badge-ip:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+.badge-ip-reg   { border-left-color: #a855f7; }
+.badge-ip-first { border-left-color: #22c55e; }
+.badge-ip-prev  { border-left-color: #eab308; }
+.badge-ip-last  { border-left-color: var(--primary); }
+
+/* ---------------- Pasek wyszukiwania / topbar ---------------- */
+.search-bar { display: flex; gap: 10px; margin-bottom: 14px; }
+.search-bar input { flex: 1; }
+.users-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 13.5px;
+    color: var(--text-muted);
+}
+.users-topbar b { color: var(--text-main); }
+.users-topbar-right { display: flex; align-items: center; gap: 8px; }
+.users-topbar-right label { margin: 0; font-size: 13px; }
+.users-topbar-right select { width: auto; padding: 6px 10px; }
+
+/* ---------------- Paginacja ---------------- */
+.pagination-container { margin-top: 14px; }
+.pagination-info { font-size: 12.5px; color: var(--text-muted); margin-bottom: 8px; text-align: center; }
+.pagination-controls { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.pagination-btn {
+    padding: 6px 11px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+    color: var(--text-main);
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: border-color 0.15s, background 0.15s;
+}
+.pagination-btn:hover { border-color: var(--primary); color: var(--primary); }
+.pagination-btn.active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+    box-shadow: 0 2px 8px rgba(47, 111, 237, 0.3);
+}
+
+/* ---------------- Fail2Ban ---------------- */
+.f2b-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    align-items: stretch;
+}
+.f2b-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 18px;
+    transition: border-color 0.2s;
+}
+/* Karta [DEFAULT]: pełna szerokość, pola ułożone w kolumnach zamiast jednej
+   wysokiej kolumny (naprawa dziurawego układu siatki). */
+.f2b-card--default {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0 18px;
+    margin-bottom: 16px;
+}
+.f2b-card--default h3 { grid-column: 1 / -1; }
+.f2b-card--default .f2b-span { grid-column: 1 / -1; }
+.f2b-card--default .f2b-inc-check { align-self: end; margin-bottom: 24px; }
+.f2b-card:hover { border-color: #3b4d75; }
+body:not(.dark-mode) .f2b-card:hover { border-color: #b6c6de; }
+.f2b-card h3 {
+    margin: 0 0 15px;
+    font-size: 14.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 11px;
+    border-bottom: 1px solid var(--border-color);
+}
+.f2b-card h3 i { color: var(--primary); font-size: 17px; }
+
+/* ---------------- Ręczna blokada IP (Fail2Ban) ---------------- */
+.manual-ban-card { margin-bottom: 18px; }
+.manual-ban-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+}
+.manual-ban-field { display: flex; flex-direction: column; min-width: 150px; }
+.manual-ban-field.grow { flex: 1 1 220px; }
+.manual-ban-field label { margin: 0 0 6px; font-size: 13px; }
+/* Jednakowa wysokość pól i przycisku = idealne wyrównanie w jednej linii */
+.manual-ban-form input,
+.manual-ban-form select,
+.manual-ban-form .btn {
+    height: 40px;
+    box-sizing: border-box;
+}
+.manual-ban-form select { width: auto; min-width: 150px; }
+.manual-ban-form .btn { padding: 0 18px; }
+
+/* Przycisk "Zarządzaj" na liście banów */
+.btn-manage { background: #475569; }
+.btn-manage:hover { filter: brightness(1.15); }
+
+/* Modal zarządzania banem */
+.manage-ban-row { display: flex; gap: 8px; align-items: center; }
+.manage-ban-row select { flex: 1; }
+.manage-ban-row .btn { white-space: nowrap; padding: 9px 14px; }
+#mb_change_wrap { padding: 14px 0; margin: 6px 0 4px; border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); }
+
+/* Modal potwierdzenia (selektor złożony — musi wygrać z .modal-content) */
+.modal-content.confirm-modal { max-width: 420px; }
+.confirm-msg { font-size: 14px; color: var(--text-label); line-height: 1.5; margin: 6px 0 4px; }
+
+/* Footer modala dodawania użytkownika — wyśrodkowane przyciski */
+#addUserModal .modal-footer { justify-content: center; }
+
+/* Skaner podejrzanych IP. Selektor złożony: sam .scanner-modal przegrywał
+   z późniejszym .modal-content (równa specyficzność) i modal zostawał 480px. */
+.modal-content.scanner-modal { max-width: min(780px, calc(100vw - 28px)); }
+.scanner-params { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 8px; }
+.scanner-field { display: flex; flex-direction: column; }
+.scanner-field label { margin: 0 0 6px; font-size: 13px; }
+.scanner-field input { height: 40px; box-sizing: border-box; }
+.scanner-params .btn { height: 40px; }
+.scanner-params .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.scanner-results {
+    margin-top: 14px;
+    max-height: 56vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+.scan-summary { font-size: 13.5px; margin-bottom: 10px; color: var(--text-muted); }
+.scan-summary b { color: var(--status-error); }
+.scan-svc { font-size: 12px; color: var(--text-muted); font-family: ui-monospace, Consolas, monospace; white-space: normal; max-width: 380px; }
+.scan-ip strong { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-weight: 600; }
+
+/* Pasek statusu/postępu skanera (źródła skanowane po kolei) */
+.scan-status {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+}
+.scan-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    margin-bottom: 9px;
+}
+.scan-status-label { display: inline-flex; align-items: center; gap: 7px; color: var(--text-label); }
+.scan-status-label i { color: var(--primary); font-size: 16px; }
+.scan-status-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.scan-progress-bar {
+    height: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.scan-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), #5b8ff2);
+    border-radius: 4px;
+    transition: width 0.35s ease;
+}
+.scan-steps { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 9px; }
+.scan-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-muted-dark);
+}
+.scan-step.active { color: var(--primary); }
+.scan-step.done { color: var(--status-success); }
+.scan-step.fail { color: var(--status-error); }
+.scan-step i { font-size: 14px; }
+
+/* Kontrolki blokady w wierszu wyniku skanu */
+.scan-ban-controls { display: flex; align-items: center; gap: 6px; }
+.scan-ban-controls .scan-ban-sel {
+    width: auto;
+    min-width: 96px;
+    height: 30px;
+    padding: 3px 8px;
+    font-size: 12.5px;
+    border-radius: 7px;
+}
+.scan-banned {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--status-success);
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.scan-note {
+    margin-top: 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    border: 1px solid;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.scan-note-ok { background: var(--status-success-bg); color: var(--status-success); border-color: var(--status-success-border); }
+.scan-note-err { background: var(--status-error-bg); color: var(--status-error); border-color: var(--status-error-border); }
+
+/* Animacja obracania (spinner skanera) */
+.spin { display: inline-block; animation: panelSpin 0.9s linear infinite; }
+@keyframes panelSpin { to { transform: rotate(360deg); } }
+
+/* Pozostały czas bana w kolumnie "Wygasa" */
+.ban-remaining { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+/* ---------------- Modale ---------------- */
+.modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 9, 20, 0.65);
+    backdrop-filter: blur(3px);
+    z-index: 100;
+    padding: 20px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+/* Ciemne scrollbary wewnątrz modali (m.in. lista wyników skanera) */
+.modal::-webkit-scrollbar,
+.scanner-results::-webkit-scrollbar { width: 8px; height: 8px; }
+.modal::-webkit-scrollbar-thumb,
+.scanner-results::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+.modal::-webkit-scrollbar-thumb:hover,
+.scanner-results::-webkit-scrollbar-thumb:hover { background: #3b4d75; }
+.modal::-webkit-scrollbar-track,
+.scanner-results::-webkit-scrollbar-track { background: transparent; }
+.modal-content {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    max-width: 480px;
+    margin: 6vh auto;
+    padding: 24px;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+    animation: modalIn 0.22s ease-out;
+}
+@keyframes modalIn {
+    from { opacity: 0; transform: translateY(14px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+}
+.modal-header h2 { font-size: 17px; margin: 0; }
+.modal-close {
+    cursor: pointer;
+    font-size: 26px;
+    line-height: 1;
+    color: var(--text-muted);
+    padding: 0 4px;
+    border-radius: 6px;
+    transition: color 0.15s;
+}
+.modal-close:hover { color: var(--text-main); }
+.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.input-readonly { background: var(--bg-hover); cursor: not-allowed; color: var(--text-muted); }
+.danger-title { color: var(--status-error); }
+.delete-warning-box {
+    background: var(--status-error-bg);
+    color: var(--status-error);
+    border: 1px solid var(--status-error-border);
+    border-left: 4px solid #ef4444;
+    padding: 12px 14px;
+    border-radius: 9px;
+    margin-bottom: 16px;
+    font-size: 13.5px;
+}
+.delete-details-list { list-style: none; padding: 0; margin: 0 0 16px; font-size: 13.5px; }
+.delete-details-list li { padding: 5px 0; border-bottom: 1px dashed var(--border-soft); }
+.delete-details-list li:last-child { border-bottom: none; }
+.delete-details-list span { color: var(--text-muted); display: inline-block; min-width: 64px; }
+.password-confirm-group { margin-top: 12px; }
+.password-confirm-group label { font-size: 13px; }
+.error-container { margin-bottom: 15px; }
+
+code {
+    background: var(--bg-hover);
+    border: 1px solid var(--border-soft);
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 12.5px;
+    font-family: ui-monospace, Consolas, monospace;
+}
+
+/* ---------------- Komunikaty pomocnicze (ds-msg w kartach) ---------------- */
+.ds-msg { text-align: left; font-size: 13px; }
+
+/* ---------------- Responsywność ---------------- */
+@media (max-width: 720px) {
+    .header-content { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .container { padding: 0 14px 50px; }
+    .tabs { overflow-x: auto; flex-wrap: nowrap; }
+    .tab { white-space: nowrap; }
+    .stat-card .value { font-size: 26px; }
+
+    /* Modale: pełna szerokość, zwarte odstępy, pola i przyciski w pionie */
+    .modal { padding: 10px; }
+    .modal-content { margin: 12px auto; padding: 18px 14px; }
+    .modal-header { margin-bottom: 14px; }
+    .modal-header h2 { font-size: 15.5px; }
+    .modal-footer { flex-wrap: wrap; gap: 8px; }
+    .modal-footer .btn { flex: 1 1 auto; justify-content: center; }
+
+    /* Skaner: pola jedno pod drugim na całą szerokość */
+    .scanner-params { gap: 10px; }
+    .scanner-field { flex: 1 1 100%; }
+    .scanner-field input { width: 100%; }
+    .scanner-params .btn { width: 100%; justify-content: center; }
+    .scanner-results { max-height: 62vh; }
+    .scan-status-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .scan-ban-controls { flex-wrap: wrap; }
+
+    /* Pozostałe formularze w modalach */
+    .manage-ban-row { flex-wrap: wrap; }
+    .manage-ban-row .btn { width: 100%; justify-content: center; }
+    .email-compose { flex-wrap: wrap; }
+    .email-compose input { flex: 1 1 100%; }
+    .quota-input-group { flex-wrap: wrap; }
+}

@@ -1,0 +1,37 @@
+# =====================================================================
+# Jaile panelu Roundcube — instalowane przez install.sh do
+# /etc/fail2ban/jail.d/mailpanel.local (Fail2Ban czyta jail.d/*.local
+# automatycznie; plik można bezpiecznie nadpisywać = idempotencja).
+#
+# Panel edytuje z zakładki „Fail2Ban" plik jail.local: [DEFAULT] + jaile
+# roundcube-auth, dovecot, postfix-sasl, recidive. Poniższe DWA jaile
+# obsługują ręczne blokady z panelu (stałe i czasowe) — bez nich przyciski
+# „Permaban"/bany ze skanera nie mają gdzie trafić.
+#
+# Wymagane puste logi (tworzy install.sh):
+#   touch /var/log/mailpanel-permaban.log /var/log/mailpanel-tempban.log
+# =====================================================================
+
+# Blokady STAŁE z panelu (ręczny permaban)
+[panel-permaban]
+enabled = true
+filter = panel-permaban
+backend = polling
+logpath = /var/log/mailpanel-permaban.log
+banaction = nftables-allports
+bantime = -1
+bantime.increment = false
+findtime = 1d
+maxretry = 1000000
+
+# Blokady CZASOWE z panelu (skaner: ban 1h..3 miesiące)
+[panel-tempban]
+enabled = true
+filter = panel-tempban
+backend = polling
+logpath = /var/log/mailpanel-tempban.log
+banaction = nftables-allports
+bantime = 24h
+bantime.increment = false
+findtime = 1d
+maxretry = 1000000

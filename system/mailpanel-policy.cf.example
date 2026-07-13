@@ -1,0 +1,15 @@
+; /etc/mailpanel-policy.cf  —  konfiguracja dziennego limitu wysyłki.
+; Czytany przez /usr/local/bin/mailpanel-policy-daily.php (spawn jako nobody).
+; Uprawnienia:  chown root:nogroup  &&  chmod 640
+; Podmień HASLO_MAILPOLICY na wygenerowane (openssl rand -hex 24).
+;
+; Użytkownik DB `mailpolicy` — minimalne granty:
+;   GRANT SELECT ON mailserver.virtual_users TO 'mailpolicy'@'localhost';
+;   GRANT SELECT ON mailserver.app_settings  TO 'mailpolicy'@'localhost';
+;   GRANT SELECT, INSERT, UPDATE ON mailserver.send_counters TO 'mailpolicy'@'localhost';
+
+dsn = "mysql:host=127.0.0.1;dbname=mailserver;charset=utf8mb4"
+user = mailpolicy
+password = "HASLO_MAILPOLICY"
+timezone = Europe/Warsaw
+; notify = 1  ; (opcjonalnie) 0 = wyłącz e-mail informujący nadawcę o wyczerpaniu limitu

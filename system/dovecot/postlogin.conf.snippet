@@ -1,0 +1,33 @@
+# =====================================================================
+# Dovecot 2.4 (Debian 13) — usługi postlogin rejestrujące logowania
+# IMAP/POP3 w bazie panelu (CALL sp_register_login przez
+# /usr/local/bin/dovecot-postlogin.sh; dane dostępowe:
+# /etc/dovecot/mysql-mailpanel.cnf — install.sh sekcja 6).
+# Połączenia lokalne (Roundcube/webmail) są pomijane przez sam skrypt.
+#
+# Wklej do /etc/dovecot/dovecot.conf (zweryfikowane na 2.4.1, 2026-07-12).
+# =====================================================================
+
+service imap-postlogin {
+  executable = script-login /usr/local/bin/dovecot-postlogin.sh
+  unix_listener imap-postlogin {
+    mode = 0600
+    user = vmail
+  }
+  user = dovecot
+}
+service imap {
+  executable = imap imap-postlogin
+}
+
+service pop3-postlogin {
+  executable = script-login /usr/local/bin/dovecot-postlogin.sh
+  unix_listener pop3-postlogin {
+    mode = 0600
+    user = vmail
+  }
+  user = dovecot
+}
+service pop3 {
+  executable = pop3 pop3-postlogin
+}

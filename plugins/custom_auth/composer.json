@@ -1,0 +1,17 @@
+{
+    "name": "roundcube/custom_auth",
+    "type": "roundcube-plugin",
+    "description": "Custom authentication portal integration",
+    "license": "MIT",
+    "version": "1.0.0",
+    "authors": [
+        {
+            "name": "TryHackX",
+            "email": "contact@tryhackx.org"
+        }
+    ],
+    "require": {
+        "php": ">=7.4.0",
+        "roundcube/plugin-installer": ">=0.1.3"
+    }
+}

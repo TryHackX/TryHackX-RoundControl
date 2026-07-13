@@ -1,0 +1,6 @@
+[Unit]
+Description=Reload Fail2Ban if jail.local changed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mailpanel-f2b-reload.php

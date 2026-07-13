@@ -1,0 +1,9 @@
+# /etc/dovecot/mysql-mailpanel.cnf — dane dostępowe dla dovecot-postlogin.sh
+# (rejestracja logowań IMAP/POP3 przez CALL sp_register_login).
+# Instalacja: install.sh sekcja 6 (400 dovecot:dovecot).
+# Użytkownik 'mailpanel' musi mieć GRANT EXECUTE na procedurę sp_register_login.
+[client]
+user=mailpanel
+password=HASLO_MAILPANEL
+host=localhost
+database=mailserver

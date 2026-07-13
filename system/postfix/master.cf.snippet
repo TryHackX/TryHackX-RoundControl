@@ -1,0 +1,19 @@
+# =====================================================================
+# Fragment /etc/postfix/master.cf — dzienny limit wysyłki (policy service).
+# Wymaga: scripts/mailpanel-policy-daily.php w /usr/local/bin/ oraz
+# /etc/mailpanel-policy.cf (patrz system/mailpanel-policy.cf.example).
+# =====================================================================
+
+# 1) W blokach `submission` i `submissions` dopisz:
+#      -o smtpd_data_restrictions=$mua_data_restrictions
+#
+# 2) W main.cf:
+#      mua_data_restrictions = reject_unauth_pipelining, check_policy_service unix:private/policy-daily
+#
+# 3) Na końcu master.cf dodaj usługę spawn:
+
+policy-daily unix  -       n       n       -       0       spawn
+  user=nobody argv=/usr/bin/php /usr/local/bin/mailpanel-policy-daily.php
+
+# Po zmianach:  postfix check && systemctl reload postfix
+# Limit dotyczy TYLKO uwierzytelnionych wysyłek (587/465). Port 25 nietknięty.

@@ -1,0 +1,460 @@
+:root {
+    --bg-body: #0b1320;
+    --bg-card: #111a2b;
+    --bg-input: #0e1626;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --primary: #2f6fed;
+    --primary-hover: #2558c2;
+    --primary-disabled: #1a4a8a;
+    --primary-light: rgba(47, 111, 237, 0.2);
+    --text-main: #e6e9ef;
+    --text-label: #cbd5e1;
+    --text-muted: #a3aac2;
+    --text-muted-dark: #64748b;
+    --border-color: #2a3650;
+    --border-focus: #2f6fed;
+    --status-error: #ffb4b4;
+    --status-error-bg: rgba(255, 77, 77, 0.1);
+    --status-error-border: rgba(255, 77, 77, 0.2);
+	--status-warning: #ffa502;
+    --status-success: #b4ffcb;
+    --status-success-bg: rgba(46, 213, 115, 0.1);
+    --status-success-border: rgba(46, 213, 115, 0.2);
+    --status-load: #9bbcff;
+}
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+html, body {
+    margin: 0;
+    padding: 0;
+}
+body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
+    background: var(--bg-body);
+    color: var(--text-main);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 100vh;
+    padding: 32px 16px 40px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+@supports (min-height: 100svh) { body { min-height: 100svh; } }
+@supports (min-height: 100dvh) { body { min-height: 100dvh; } }
+.scene {
+    width: 100%;
+    max-width: 480px;
+    display: grid;
+    grid-template-areas: "stack";
+    perspective: 1200px;
+    margin: clamp(24px, 10vh, 64px) auto 32px;
+	justify-content: center;
+}
+main {
+    width: 100%;
+    max-width: 480px;
+    padding: 30px;
+    background: var(--bg-card);
+    border-radius: 16px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    margin: clamp(24px, 10vh, 64px) auto 32px;
+}
+.card {
+    grid-area: stack;
+    align-self: center;
+    width: 100%;
+    padding: 30px;
+    background: var(--bg-card);
+    border-radius: 16px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    backface-visibility: hidden;
+    opacity: 0;
+    transform: scale(0.9) translateY(20px);
+    filter: blur(8px);
+    pointer-events: none;
+    z-index: 1;
+    visibility: hidden;
+    transition:
+        opacity 0.8s cubic-bezier(0.4, 0.0, 0.2, 1),
+        transform 0.8s cubic-bezier(0.4, 0.0, 0.2, 1),
+        filter 0.8s cubic-bezier(0.4, 0.0, 0.2, 1),
+        visibility 0.8s step-end;
+}
+.card.active {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: blur(0);
+    z-index: 10;
+    pointer-events: all;
+    visibility: visible;
+    transition:
+        opacity 0.8s cubic-bezier(0.4, 0.0, 0.2, 1),
+        transform 0.8s cubic-bezier(0.4, 0.0, 0.2, 1),
+        filter 0.8s cubic-bezier(0.4, 0.0, 0.2, 1),
+        visibility 0s;
+}
+.card.leaving {
+    opacity: 0;
+    transform: scale(1.1);
+    filter: blur(12px);
+    z-index: 5;
+    visibility: visible;
+}
+h1 {
+    margin: 0 0 10px;
+    font-size: 24px;
+    text-align: center;
+}
+p.muted {
+    color: var(--text-muted);
+    font-size: 14px;
+    text-align: center;
+    margin-top: 0;
+    margin-bottom: 25px;
+    line-height: 1.5;
+}
+label {
+    display: block;
+    margin: 15px 0 6px;
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--text-label);
+}
+label#firstpass {
+    margin-top: 3px;
+}
+input,
+select {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-input);
+    color: var(--text-main);
+    font-size: 15px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    outline: none;
+}
+input:focus,
+select:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+.email-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.email-group input {
+    flex: 2;
+    min-width: 0;
+}
+.email-group span {
+    color: var(--text-muted-dark);
+    font-weight: bold;
+    font-size: 16px;
+    user-select: none;
+}
+.email-group select {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+}
+.pwd-meter {
+    height: 4px;
+    background: var(--border-color);
+    margin-top: 8px;
+    border-radius: 2px;
+    overflow: hidden;
+}
+.pwd-meter-fill {
+    height: 100%;
+    width: 0%;
+    background: #ff4d4d;
+    transition: width 0.3s ease, background 0.3s ease;
+}
+.pwd-reqs {
+    list-style: none;
+    padding: 0;
+    margin: 10px 0 0;
+    font-size: 12px;
+    color: var(--text-muted-dark);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.pwd-reqs li {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: color 0.3s;
+}
+.pwd-reqs li.valid {
+    color: var(--status-success);
+}
+.pwd-reqs li::before { content: '•'; }
+.pwd-reqs li.valid::before { content: '✓'; }
+button.btn-action,
+button[type="submit"] {
+    width: 100%;
+    margin-top: 25px;
+    padding: 14px;
+    border-radius: 10px;
+    border: none;
+    background: var(--primary);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+button.btn-action:hover,
+button[type="submit"]:hover {
+    background: var(--primary-hover);
+}
+button.btn-action:active,
+button[type="submit"]:active {
+    transform: scale(0.98);
+}
+button.btn-action:disabled,
+button[type="submit"]:disabled {
+    background: var(--primary-disabled);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+.switch-link {
+    display: block;
+    text-align: center;
+    margin-top: 25px;
+    color: var(--status-load);
+    cursor: pointer;
+    font-size: 14px;
+    transition: color 0.2s;
+}
+.switch-link:hover {
+    color: #fff;
+}
+.back-link {
+    display: block;
+    text-align: center;
+    margin-top: 15px;
+    color: var(--status-load);
+    text-decoration: none;
+    font-size: 14px;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+.back-link:hover {
+    color: var(--primary);
+}
+.msg-box {
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 14px;
+}
+.msg-err {
+    background: var(--status-error-bg);
+    color: var(--status-error);
+    border: 1px solid var(--status-error-border);
+}
+.msg-ok {
+    background: var(--status-success-bg);
+    color: var(--status-success);
+    border: 1px solid var(--status-success-border);
+}
+#login-status,
+#pass-match-status,
+#availability-status {
+    font-size: 13px;
+    font-weight: 500;
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    overflow: hidden;
+    transform: translateY(0);
+    transition: 
+        max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+        margin-top 0.4s ease,
+        opacity 0.2s ease,
+        transform 0.2s ease,
+        color 0.2s ease;
+}
+#login-status.show,
+#pass-match-status.show,
+#availability-status.show {
+    max-height: 40px;
+    opacity: 1;
+    margin-top: 10px;
+    margin-bottom: 5px;
+    transform: translateY(0);
+}
+.status-ok { color: var(--status-success); }
+.status-bad { color: var(--status-error); }
+.status-load { color: var(--status-load); }
+.captcha-container {
+    display: flex;
+    justify-content: center;
+    margin-top: 15px;
+}
+.hidden {
+    display: none !important;
+}
+.fade-in {
+    animation: fadeIn 0.3s ease-out;
+}
+.user-profile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 25px;
+    padding: 15px;
+    background: var(--bg-hover);
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+.avatar {
+    width: 40px;
+    height: 40px;
+    background: var(--primary);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 18px;
+}
+.user-info { flex: 1; }
+.email { font-weight: 600; margin-bottom: 4px; }
+.change-user {
+    color: var(--primary);
+    cursor: pointer;
+    font-size: 14px;
+}
+.service-badge {
+    background: var(--primary-light);
+    color: var(--primary);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.service-choices {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    margin: 20px 0;
+}
+.service-card {
+    background: var(--bg-hover);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+	user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.service-card:hover {
+    border-color: var(--primary);
+    background: rgba(47, 111, 237, 0.1);
+    transform: translateY(-2px);
+}
+.service-icon { font-size: 32px; margin-bottom: 10px; }
+.service-name { font-weight: 600; margin-bottom: 5px; }
+.service-desc { font-size: 12px; color: #94a3b8; }
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 768px) {
+    body {
+        padding-top: 0;
+        padding-bottom: 0;
+        justify-content: flex-start;
+        min-height: 100vh;
+    }
+    .scene {
+        margin-top: 0;
+        margin-bottom: 20px;
+        max-width: 100%;
+        border-radius: 0 0 16px 16px;
+    }
+    .card {
+         border-radius: 0 0 16px 16px;
+         box-shadow: none;
+    }
+    main {
+        margin-top: 0;
+        border-radius: 0 0 16px 16px;
+    }
+}
+@media (max-width: 380px) {
+    .email-group {
+        flex-wrap: wrap;
+    }
+    .email-group span {
+        display: none;
+    }
+    .email-group input,
+    .email-group select {
+        flex: 100%;
+    }
+}
+
+/* --- Przejścia kroków logowania (morph scale+blur, jak przełączanie kart
+       logowanie<->rejestracja; choreografią steruje portal.js) --- */
+#auth-flow {
+    position: relative;
+}
+#step-identity, #step-dynamic {
+    transition:
+        opacity 0.4s cubic-bezier(0.4, 0.0, 0.2, 1),
+        transform 0.4s cubic-bezier(0.4, 0.0, 0.2, 1),
+        filter 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+}
+/* klon starej treści nakładany na czas przejścia (selectTarget) */
+.step-ghost {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    z-index: 2;
+    pointer-events: none;
+    transition:
+        opacity 0.4s cubic-bezier(0.4, 0.0, 0.2, 1),
+        transform 0.4s cubic-bezier(0.4, 0.0, 0.2, 1),
+        filter 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+/* stary krok: odpływa powiększając się i blurując, nie zajmuje miejsca */
+.step-leaving {
+    position: absolute !important;
+    top: 0; left: 0; right: 0;
+    z-index: 2;
+    opacity: 0 !important;
+    transform: scale(1.08) !important;
+    filter: blur(10px) !important;
+    pointer-events: none;
+}
+/* nowy krok: wyłania się spod spodu (mniejszy i rozmyty -> ostry) */
+.step-enter {
+    opacity: 0 !important;
+    transform: scale(0.92) !important;
+    filter: blur(10px) !important;
+}
+.switch-link {
+    transition: opacity 0.4s ease;
+}
+/* Płynna zmiana wysokości karty przy przejściach kroków (steruje portal.js).
+   Musi mieć specyficzność >= .card.active, inaczej transition karty ją nadpisze. */
+.card.card-h-anim {
+    transition: height 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
+    overflow: hidden;
+}
