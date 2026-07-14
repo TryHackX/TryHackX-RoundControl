@@ -1,197 +1,197 @@
-# TryHackX Mail Panel — nakładka administracyjna dla Roundcube
+# TryHackX Mail Panel — administrative overlay for Roundcube
 
-Samodzielna nakładka na Roundcube (czysty PHP 8.1+, **zero zależności Composera**)
-dająca własny portal logowania/rejestracji, panel administracyjny kont pocztowych
-i warstwę bezpieczeństwa spinającą Postfix + Dovecot + Fail2Ban.
+A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependencies**)
+that adds its own login/registration portal, an admin panel for mail accounts,
+and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-- **Portal logowania** (`portal.php`) — wspólny ekran do webmaila i panelu
-  (flow: e-mail → wybór usługi → hasło) + **publiczna rejestracja kont** z limitami
-  per-IP, polityką haseł i opcjonalną reCAPTCHA,
-- **Panel administratora** (`panel/`) — konta (wyszukiwarka po e-mail/IP/dacie/quocie/%użycia,
-  quota w jednostkach dwójkowych, dzienny limit wysyłki per konto, reset hasła,
-  bany, usuwanie ze skrzynką z dysku), blokady IP (lokalne + Fail2Ban) ze skanerem
-  podejrzanych IP, logi (rejestracje, logowania adminów, audyt) z uniwersalną
-  wyszukiwarką, edycja Fail2Ban i limitów Postfixa,
-- **Samoobsługa hasła** — plugin Roundcube `password` (SQL → `$6$` do virtual_users),
-- **Dzienny limit wysyłki** — policy service Postfiksa (per konto / globalny),
-- **Zabezpieczenia**: CSRF, rate-limiting, blokady brute-force, reCAPTCHA
-  fail-closed, CSP bez inline-JS, utwardzone sesje, wzorzec PRG, audyt akcji.
+- **Login portal** (`portal.php`) — a shared entry screen for webmail and the panel
+  (flow: e-mail → pick service → password) + **public account registration** with per-IP
+  limits, a password policy and optional reCAPTCHA,
+- **Admin panel** (`panel/`) — accounts (search by e-mail/IP/date/quota/%usage,
+  quota in binary units, per-account daily send limit, password reset,
+  bans, deletion together with the on-disk mailbox), IP blocks (local + Fail2Ban) with a
+  suspicious-IP scanner, logs (registrations, admin logins, audit) with a universal
+  search, editing of Fail2Ban and Postfix limits,
+- **Password self-service** — the Roundcube `password` plugin (SQL → `$6$` into virtual_users),
+- **Daily send limit** — a Postfix policy service (per account / global),
+- **Security**: CSRF, rate-limiting, brute-force lockouts, fail-closed reCAPTCHA,
+  a CSP with no inline JS, hardened sessions, the PRG pattern, action auditing.
 
-## Szybka instalacja
+## Quick install
 
-Zakłada działający Roundcube 1.6+ i bazę `mailserver` (Postfix/Dovecot virtual users).
-Skopiuj zawartość pakietu do katalogu Roundcube (zachowując drzewko), potem:
+Assumes a working Roundcube 1.6+ and a `mailserver` database (Postfix/Dovecot virtual users).
+Copy the package contents into the Roundcube directory (preserving the tree), then:
 
 ```bash
-php install.php        # .env, import schematu, pierwszy administrator (Argon2id)
-sudo bash install.sh   # skrypty, sudoers, Fail2Ban, policy service, plugin password
-# na końcu: dołącz panel_config.php w config/config.inc.php (patrz krok 5)
+php install.php        # .env, schema import, first administrator (Argon2id)
+sudo bash install.sh   # scripts, sudoers, Fail2Ban, policy service, password plugin
+# finally: include panel_config.php in config/config.inc.php (see step 5)
 ```
 
-Oba instalatory są **interaktywne i idempotentne** (bramka potwierdzenia per krok,
-kopie zapasowe przed edycją). Szczegóły i instalacja ręczna — sekcje poniżej.
+Both installers are **interactive and idempotent** (a confirmation gate per step,
+backups before editing). Details and manual installation — see the sections below.
 
-## Układ repozytorium
+## Repository layout
 
 ```
-├── install.php / install.sh      # instalatory (aplikacja / system)
-├── portal.php  app/  assets/     # nakładka: portal + panel (kod + szablony + CSS/JS)
+├── install.php / install.sh      # installers (application / system)
+├── portal.php  app/  assets/     # overlay: portal + panel (code + templates + CSS/JS)
 ├── panel/  config/panel_config.php
-├── plugins/custom_auth/          # przekierowanie niezalogowanych do portalu
+├── plugins/custom_auth/          # redirect unauthenticated users to the portal
 ├── plugins/password/config.inc.php.example
-├── scripts/                      # skrypty do /usr/local/bin (skaner, policy, delete-user…)
-├── system/                       # szablony integracji (sudoers, fail2ban, postfix, policy.cf)
-├── sql/panel_schema.sql          # schemat bazy (IF NOT EXISTS)
-├── tests/run.php                 # testy (bezzależnościowy runner; dev)
+├── scripts/                      # scripts for /usr/local/bin (scanner, policy, delete-user…)
+├── system/                       # integration templates (sudoers, fail2ban, postfix, policy.cf)
+├── sql/panel_schema.sql          # database schema (IF NOT EXISTS)
+├── tests/run.php                 # tests (dependency-free runner; dev)
 ├── .env.example  .gitignore  LICENSE
 ```
 
-> **Sekrety poza repo:** `.env`, `plugins/password/config.inc.php`,
-> `/etc/mailpanel-policy.cf` i zrzuty `all_settings/` są w `.gitignore`.
-> Nigdy nie commituj realnych haseł ani kluczy DKIM.
+> **Secrets stay out of the repo:** `.env`, `plugins/password/config.inc.php`,
+> `/etc/mailpanel-policy.cf` and the `all_settings/` dumps are in `.gitignore`.
+> Never commit real passwords or DKIM keys.
 
 ---
 
-## 1. Wymagania
+## 1. Requirements
 
-| Składnik | Wersja / uwaga |
+| Component | Version / note |
 |---|---|
-| System | **Debian 13 (trixie)** — cel instalatorów i szablonów (Dovecot 2.4, Postfix 3.10, Fail2Ban 1.1); na Windows/dev integracje systemowe same się wyłączają |
-| Roundcube | 1.6+ (testowane na 1.7.2), zainstalowany i działający |
-| PHP | 8.1+ z rozszerzeniami: pdo_mysql, sodium/argon2 (standard w dystrybucjach) |
-| MariaDB / MySQL | baza `mailserver` (Postfix/Dovecot virtual users) |
-| Apache | `mod_rewrite` + `AllowOverride All` dla katalogu Roundcube |
-| HTTPS | wymagane na produkcji (sesja z flagą Secure, HSTS) |
+| OS | **Debian 13 (trixie)** — the target of the installers and templates (Dovecot 2.4, Postfix 3.10, Fail2Ban 1.1); on Windows/dev the system integrations disable themselves |
+| Roundcube | 1.6+ (tested on 1.7.2), installed and running |
+| PHP | 8.1+ with extensions: pdo_mysql, sodium/argon2 (standard in distributions) |
+| MariaDB / MySQL | a `mailserver` database (Postfix/Dovecot virtual users) |
+| Apache | `mod_rewrite` + `AllowOverride All` for the Roundcube directory |
+| HTTPS | required in production (session with the Secure flag, HSTS) |
 
-Zakładamy, że Roundcube jest w **korzeniu domeny** (np. `/var/www/roundcube` →
-`https://poczta.twojadomena.pl/`). Przy instalacji w podkatalogu popraw dwa
-redirecty w `plugins/custom_auth/custom_auth.php` (`/portal.php` → pełna ścieżka).
+We assume Roundcube sits at the **domain root** (e.g. `/var/www/roundcube` →
+`https://mail.yourdomain.com/`). For an installation in a subdirectory, fix the two
+redirects in `plugins/custom_auth/custom_auth.php` (`/portal.php` → full path).
 
-## 2. Struktura pakietu (= struktura na serwerze)
+## 2. Package structure (= structure on the server)
 
-Wszystko kopiujesz do katalogu głównego Roundcube, **zachowując drzewko**:
+You copy everything into the Roundcube root directory, **preserving the tree**:
 
 ```
-roundcube/                        ← katalog główny Twojego Roundcube
-├── .htaccess                     ← PODMIEŃ (blokady app/, .env, sql_backup…)
-├── .env                          ← UTWÓRZ z .env.example (sekrety, NIE z pakietu!)
-├── portal.php                    ← NOWY: portal logowania/rejestracji
-├── app/                          ← NOWY: cały kod aplikacji (blokowany z WWW)
+roundcube/                        ← your Roundcube root directory
+├── .htaccess                     ← REPLACE (blocks app/, .env, sql_backup…)
+├── .env                          ← CREATE from .env.example (secrets, NOT from the package!)
+├── portal.php                    ← NEW: login/registration portal
+├── app/                          ← NEW: all application code (blocked from the web)
 │   ├── .htaccess                 ←   deny all
 │   ├── bootstrap.php             ←   autoloader + .env
-│   ├── web.php                   ←   kernel WWW (sesja, tryb błędów)
-│   ├── src/                      ←   klasy (Auth, Panel, Portal, Security…)
-│   └── templates/                ←   szablony HTML (portal + panel)
-├── assets/                       ← NOWY: CSS/JS/ikony (jedyny publiczny katalog)
+│   ├── web.php                   ←   web kernel (session, error mode)
+│   ├── src/                      ←   classes (Auth, Panel, Portal, Security…)
+│   └── templates/                ←   HTML templates (portal + panel)
+├── assets/                       ← NEW: CSS/JS/icons (the only public directory)
 │   ├── design-system.css  portal.css  portal.js  panel.css  panel.js
-│   └── vendor/remixicon/         ←   ikony self-hostowane (bez CDN)
-├── panel/                        ← PODMIEŃ zawartość (3 pliki)
+│   └── vendor/remixicon/         ←   self-hosted icons (no CDN)
+├── panel/                        ← REPLACE contents (3 files)
 │   ├── index.php  logout.php  user_ips.php
 ├── config/
-│   └── panel_config.php          ← NOWY/PODMIEŃ: wpięcie ustawień rc_* do RC
+│   └── panel_config.php          ← NEW/REPLACE: wires rc_* settings into RC
 ├── plugins/
-│   └── custom_auth/              ← NOWY: przekierowanie niezalogowanych do portalu
-├── sql/panel_schema.sql          ← (nie musi być na serwerze — do importu bazy)
-└── tests/run.php                 ← (opcjonalnie; uruchamiaj tylko na dev)
+│   └── custom_auth/              ← NEW: redirect unauthenticated users to the portal
+├── sql/panel_schema.sql          ← (need not live on the server — for the DB import)
+└── tests/run.php                 ← (optional; run only on dev)
 ```
 
-Reszta Roundcube (`program/`, `skins/`, `vendor/`, `config/config.inc.php`…)
-zostaje bez zmian — poza jedną linijką w kroku 5.
+The rest of Roundcube (`program/`, `skins/`, `vendor/`, `config/config.inc.php`…)
+stays unchanged — apart from one line in step 5.
 
-## 3. Krok 1 — Pliki
+## 3. Step 1 — Files
 
 ```bash
-# z katalogu pakietu:
+# from the package directory:
 rsync -av --exclude README.md --exclude sql/ ./ /var/www/roundcube/
 chown -R www-data:www-data /var/www/roundcube/app /var/www/roundcube/assets \
     /var/www/roundcube/portal.php /var/www/roundcube/panel /var/www/roundcube/plugins/custom_auth
 ```
 
-Usuń pozostałości starych wersji panelu, jeśli istnieją (zastąpione przez `app/`):
-`bootstrap.php` (w korzeniu), `panel/config.php`, `panel/_csrf.php`,
+Remove leftovers of old panel versions if present (replaced by `app/`):
+`bootstrap.php` (in the root), `panel/config.php`, `panel/_csrf.php`,
 `panel/styles.css`, `panel/light-mode.css`, `panel/dark-mode.css`, `panel/style-index.css`.
 
-## 4. Krok 2 — Baza danych
+## 4. Step 2 — Database
 
 ```bash
-# 1) użytkownik DB dla panelu (EXECUTE potrzebne dla procedury sp_register_login)
+# 1) DB user for the panel (EXECUTE needed for the sp_register_login procedure)
 mysql -u root -p <<'SQL'
 CREATE DATABASE IF NOT EXISTS mailserver CHARACTER SET utf8mb4;
-CREATE USER IF NOT EXISTS 'mailpanel'@'localhost' IDENTIFIED BY 'SILNE_HASLO';
+CREATE USER IF NOT EXISTS 'mailpanel'@'localhost' IDENTIFIED BY 'STRONG_PASSWORD';
 GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON mailserver.* TO 'mailpanel'@'localhost';
 FLUSH PRIVILEGES;
 SQL
 
-# 2) schemat (bezpieczny dla istniejących danych: IF NOT EXISTS / INSERT IGNORE)
+# 2) schema (safe for existing data: IF NOT EXISTS / INSERT IGNORE)
 mysql -u root -p mailserver < sql/panel_schema.sql
 ```
 
-Następnie (jeśli świeża baza) dodaj domenę i pierwszego administratora:
+Then (if it is a fresh database) add the domain and the first administrator:
 
 ```bash
-php -r 'echo password_hash("TwojeHasloAdmina", PASSWORD_ARGON2ID), PHP_EOL;'
+php -r 'echo password_hash("YourAdminPassword", PASSWORD_ARGON2ID), PHP_EOL;'
 ```
 
 ```sql
-INSERT INTO virtual_domains (name) VALUES ('twojadomena.pl');
+INSERT INTO virtual_domains (name) VALUES ('yourdomain.com');
 INSERT INTO panel_admins (email, pwd_hash, created_at)
-VALUES ('admin@twojadomena.pl', '<HASH_Z_POWYŻSZEJ_KOMENDY>', NOW());
+VALUES ('admin@yourdomain.com', '<HASH_FROM_THE_COMMAND_ABOVE>', NOW());
 ```
 
-> **Dwa rodzaje haseł** (nie pomyl!):
-> - `panel_admins.pwd_hash` — hasło do **panelu**, Argon2id (`$argon2id$...`),
-> - `virtual_users.password` — hasło **skrzynki** (Dovecot), SHA-512 crypt (`$6$...`).
->   Konta zakładane przez rejestrację w portalu dostają je automatycznie.
+> **Two kinds of passwords** (don't mix them up!):
+> - `panel_admins.pwd_hash` — the **panel** password, Argon2id (`$argon2id$...`),
+> - `virtual_users.password` — the **mailbox** password (Dovecot), SHA-512 crypt (`$6$...`).
+>   Accounts created via portal registration get it automatically.
 
-## 5. Krok 3 — `.env` i wpięcie w Roundcube
+## 5. Step 3 — `.env` and wiring into Roundcube
 
 ```bash
 cd /var/www/roundcube
-cp .env.example .env && nano .env          # APP_ENV=prod + dane bazy
+cp .env.example .env && nano .env          # APP_ENV=prod + database credentials
 chown root:www-data .env && chmod 640 .env
 ```
 
-W `config/config.inc.php`:
+In `config/config.inc.php`:
 
 ```php
-// 1) dodaj pluginy do listy (password = samoobsługa zmiany hasła skrzynki):
+// 1) add the plugins to the list (password = mailbox password self-service):
 $config['plugins'] = ['archive', 'zipdownload', 'newmail_notifier', 'custom_auth', 'password'];
 
-// 2) na SAMYM KOŃCU pliku dołącz konfigurację panelu:
+// 2) at the VERY END of the file, include the panel configuration:
 require_once __DIR__ . '/panel_config.php';
 ```
 
-`panel_config.php` mapuje klucze `rc_*` z bazy (edytowalne w panelu) na opcje
-Roundcube (opóźnienie wysyłki, limit odbiorców itd.) oraz wymusza
+`panel_config.php` maps the `rc_*` keys from the database (editable in the panel) to Roundcube
+options (send delay, recipient limit, etc.) and enforces
 `force_https`, `ip_check`, `identities_level=3`.
 
-### Samoobsługa zmiany hasła (plugin `password`)
+### Password self-service (the `password` plugin)
 
-Bez tego użytkownik nie zmieni hasła w webmailu. Plugin `password` jest w
-komplecie Roundcube — trzeba go tylko skonfigurować (sterownik SQL → zapis
-hasha `$6$` do `virtual_users`, zgodnie z Dovecotem). Instalacja skryptem:
+Without it a user cannot change their password in webmail. The `password` plugin ships with
+Roundcube — you only need to configure it (SQL driver → writing a `$6$`
+hash into `virtual_users`, consistent with Dovecot). Install via script:
 
 ```bash
-bash scripts/install-password-plugin.sh    # tworzy usera DB roundcubepw + config
-# potem ręcznie dodaj 'password' do $config['plugins'] (patrz wyżej)
+bash scripts/install-password-plugin.sh    # creates the roundcubepw DB user + config
+# then manually add 'password' to $config['plugins'] (see above)
 ```
 
-Skrypt tworzy usera DB `roundcubepw` (tylko `SELECT, UPDATE ON
-mailserver.virtual_users`) i `plugins/password/config.inc.php` (szablon:
-`plugins/password/config.inc.php` w pakiecie). Kluczowe opcje: sterownik
-`sql`, `password_algorithm = sha512-crypt`, pusty prefix (Dovecot trzyma `$6$`
-bez `{SHA512-CRYPT}`), `password_confirm_current = true` (wymaga starego
-hasła), min. długość 10 + wymagany znak niealfanumeryczny. Efekt: **Ustawienia
-→ Hasło** w webmailu; admin dodatkowo resetuje hasła kont z panelu (karta
-Użytkownicy → „Hasło").
+The script creates the `roundcubepw` DB user (only `SELECT, UPDATE ON
+mailserver.virtual_users`) and `plugins/password/config.inc.php` (template:
+`plugins/password/config.inc.php` in the package). Key options: the
+`sql` driver, `password_algorithm = sha512-crypt`, an empty prefix (Dovecot stores `$6$`
+without `{SHA512-CRYPT}`), `password_confirm_current = true` (requires the old
+password), min. length 10 + a required non-alphanumeric character. Result: **Settings
+→ Password** in webmail; additionally the admin resets account passwords from the panel
+(Users tab → "Password").
 
-> Uwaga: to hasło jest niezależne od hasła SSH konta systemowego. Zmiana hasła
-> skrzynki nie dotyka `/etc/shadow` i odwrotnie.
+> Note: this password is independent of the SSH password of the system account. Changing
+> the mailbox password does not touch `/etc/shadow` and vice versa.
 
-## 6. Krok 4 — sudoers i uprawnienia (integracje systemowe)
+## 6. Step 4 — sudoers and permissions (system integrations)
 
-Panel wykonuje operacje systemowe jako `www-data` przez `sudo`. Wpisz `sudo visudo`
-i dodaj na końcu:
+The panel runs system operations as `www-data` through `sudo`. Run `sudo visudo`
+and add at the end:
 
 ```
 www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client ping, /usr/bin/fail2ban-client status, /usr/bin/fail2ban-client status *, /usr/bin/fail2ban-client set * unbanip *, /usr/bin/fail2ban-client set * banip *, /usr/bin/fail2ban-client reload
@@ -203,33 +203,33 @@ www-data ALL=(root) NOPASSWD: /usr/bin/doveadm -f flow quota get -u *
 www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh *
 ```
 
-Co które daje (bez wpisu dana funkcja pokazuje czytelny komunikat, reszta działa):
+What each one enables (without an entry, that feature shows a readable message; the rest works):
 
-| Wpis | Funkcja panelu |
+| Entry | Panel feature |
 |---|---|
-| `fail2ban-client ping/status` | lista banów F2B w zakładce „Blokady IP" |
-| `fail2ban-client set * unbanip *` | przycisk „Unban (F2B)" |
-| `fail2ban-client set * banip *` | ręczna blokada IP + bany ze skanera |
-| `fail2ban-client get * banip *` | kolumna „Wygasa" z pozostałym czasem bana |
-| `fail2ban-client set * bantime *` | bany czasowe ze skanera (jail `panel-tempban`) |
-| `fail2ban-client reload` | automatyczne przeładowanie po zapisie zakładki „Fail2Ban" |
-| `update-postfix-limits.sh` | aplikowanie limitów Postfixa („Bezpieczeństwo") |
-| `mailpanel-delete-user` | usuwanie plików skrzynki przy kasowaniu konta |
-| `mailpanel-scan.sh *` | skaner podejrzanych IP (obsługuje 3. argument: `ssh`/`dovecot`/`postfix`) |
+| `fail2ban-client ping/status` | the F2B ban list in the "IP blocks" tab |
+| `fail2ban-client set * unbanip *` | the "Unban (F2B)" button |
+| `fail2ban-client set * banip *` | manual IP block + bans from the scanner |
+| `fail2ban-client get * banip *` | the "Expires" column with the remaining ban time |
+| `fail2ban-client set * bantime *` | timed bans from the scanner (jail `panel-tempban`) |
+| `fail2ban-client reload` | automatic reload after saving the "Fail2Ban" tab |
+| `update-postfix-limits.sh` | applying Postfix limits ("Security") |
+| `mailpanel-delete-user` | deleting mailbox files when removing an account |
+| `mailpanel-scan.sh *` | the suspicious-IP scanner (accepts a 3rd argument: `ssh`/`dovecot`/`postfix`) |
 
-### Jaile panelu (blokady „na stałe" i czasowe)
+### Panel jails ("permanent" and timed blocks)
 
-Skaner i przycisk „Zarządzaj" używają dwóch dedykowanych jaili, których filtry
-nigdy nie łapią nic automatycznie (przyjmują tylko ręczne `banip` z panelu).
+The scanner and the "Manage" button use two dedicated jails whose filters
+never catch anything automatically (they only accept manual `banip` from the panel).
 
-> `install.sh` instaluje je jako **`/etc/fail2ban/jail.d/mailpanel.local`**
-> (gotowy plik: `system/fail2ban/jail.d/mailpanel.local`) — Fail2Ban czyta
-> `jail.d/*.local` automatycznie, a `jail.local` zostaje czysty dla jaili
-> standardowych edytowanych z panelu. Ręcznie możesz je też dopisać do
-> `jail.local` (wariant legacy) — ale nie w obu miejscach naraz:
+> `install.sh` installs them as **`/etc/fail2ban/jail.d/mailpanel.local`**
+> (ready-made file: `system/fail2ban/jail.d/mailpanel.local`) — Fail2Ban reads
+> `jail.d/*.local` automatically, and `jail.local` stays clean for the standard
+> jails edited from the panel. You can also add them manually to
+> `jail.local` (legacy variant) — but not in both places at once:
 
 ```ini
-# Jail dla blokad STAŁYCH z panelu (bantime = -1).
+# Jail for PERMANENT blocks from the panel (bantime = -1).
 [panel-permaban]
 enabled = true
 filter = panel-permaban
@@ -241,8 +241,8 @@ bantime.increment = false
 findtime = 1d
 maxretry = 1000000
 
-# Jail dla blokad CZASOWYCH z panelu (skaner: 1h..30 dni).
-# Panel ustawia bantime bezpośrednio przed banip, więc każdy ban ma własny czas.
+# Jail for TIMED blocks from the panel (scanner: 1h..30 days).
+# The panel sets bantime right before banip, so each ban has its own duration.
 [panel-tempban]
 enabled = true
 filter = panel-tempban
@@ -255,8 +255,8 @@ findtime = 1d
 maxretry = 1000000
 ```
 
-Filtry (`/etc/fail2ban/filter.d/panel-permaban.conf` i `panel-tempban.conf` —
-w drugim podmień słowo `permaban` na `tempban`):
+Filters (`/etc/fail2ban/filter.d/panel-permaban.conf` and `panel-tempban.conf` —
+in the second one replace the word `permaban` with `tempban`):
 
 ```ini
 [Definition]
@@ -264,94 +264,94 @@ failregex = ^__mailpanel_permaban_never_match__ <HOST>$
 ignoreregex =
 ```
 
-Puste logi: `touch /var/log/mailpanel-permaban.log /var/log/mailpanel-tempban.log`,
-po wszystkim `fail2ban-client reload`.
+Empty logs: `touch /var/log/mailpanel-permaban.log /var/log/mailpanel-tempban.log`,
+and when done `fail2ban-client reload`.
 
-> **Fallback reloadu:** `install.sh` (sekcja 8) stawia dodatkowo timer systemd
+> **Reload fallback:** `install.sh` (section 8) additionally installs a systemd timer
 > `mailpanel-f2b-reload` (`scripts/mailpanel-f2b-reload.php` +
-> `system/systemd/*.{service,timer}`) — co minutę porównuje mtime `jail.local`
-> i przeładowuje Fail2Ban, gdyby bezpośredni `sudo fail2ban-client reload`
-> z panelu nie zadziałał. Stan trzyma w `/var/lib/mailpanel/f2b_state.json`.
+> `system/systemd/*.{service,timer}`) — every minute it compares the mtime of `jail.local`
+> and reloads Fail2Ban in case a direct `sudo fail2ban-client reload`
+> from the panel did not work. It keeps state in `/var/lib/mailpanel/f2b_state.json`.
 
-Edycja konfiguracji w zakładce „Fail2Ban" wymaga dodatkowo prawa zapisu do pliku:
+Editing the configuration in the "Fail2Ban" tab additionally requires write access to the file:
 
 ```bash
 chgrp www-data /etc/fail2ban/jail.local
 chmod 664 /etc/fail2ban/jail.local
 ```
 
-Skrypty `/usr/local/bin/update-postfix-limits.sh` i `/usr/local/bin/mailpanel-delete-user`
-to Twoje istniejące skrypty (te same, których używał stary panel). Panel rozpoznaje
-ich dostępność automatycznie (sonda co 5 minut).
+The scripts `/usr/local/bin/update-postfix-limits.sh` and `/usr/local/bin/mailpanel-delete-user`
+are your existing scripts (the same ones the old panel used). The panel detects
+their availability automatically (a probe every 5 minutes).
 
-Uwaga: `APP_ENV=prod` w `.env` jest wymagane — w trybie `dev` integracje
-systemowe są celowo wyłączone.
+Note: `APP_ENV=prod` in `.env` is required — in `dev` mode the system
+integrations are deliberately disabled.
 
-### Dzienny limit wysyłki (Postfix policy service)
+### Daily send limit (Postfix policy service)
 
-Ustawienie „Limit wysyłki (na dzień)" oraz limity indywidualne (modal „Zmiana
-Quota") egzekwuje osobny policy service Postfiksa — bez niego wartości są tylko
-zapisywane w bazie. Instalacja:
+The "Send limit (per day)" setting and individual limits (the "Change
+Quota" modal) are enforced by a separate Postfix policy service — without it the values are
+only saved in the database. Installation:
 
 ```bash
-# 1) skrypt polityki
+# 1) policy script
 install -o root -g root -m 755 scripts/mailpanel-policy-daily.php /usr/local/bin/
 
-# 2) użytkownik DB o minimalnych uprawnieniach + licznik (tabela jest w panel_schema.sql)
+# 2) DB user with minimal privileges + counter (the table is in panel_schema.sql)
 mysql -u root -p <<'SQL'
-CREATE USER IF NOT EXISTS 'mailpolicy'@'localhost' IDENTIFIED BY 'SILNE_HASLO_POLICY';
+CREATE USER IF NOT EXISTS 'mailpolicy'@'localhost' IDENTIFIED BY 'STRONG_POLICY_PASSWORD';
 GRANT SELECT ON mailserver.virtual_users TO 'mailpolicy'@'localhost';
 GRANT SELECT ON mailserver.app_settings  TO 'mailpolicy'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON mailserver.send_counters TO 'mailpolicy'@'localhost';
 FLUSH PRIVILEGES;
 SQL
 
-# 3) konfiguracja (czytelna dla "nobody", pod którym działa spawn)
+# 3) configuration (readable by "nobody", the user the spawn runs as)
 cat > /etc/mailpanel-policy.cf <<'CFG'
 dsn = "mysql:host=127.0.0.1;dbname=mailserver;charset=utf8mb4"
 user = mailpolicy
-password = "SILNE_HASLO_POLICY"
+password = "STRONG_POLICY_PASSWORD"
 timezone = Europe/Warsaw
 CFG
 chown root:nogroup /etc/mailpanel-policy.cf && chmod 640 /etc/mailpanel-policy.cf
 ```
 
-W `/etc/postfix/main.cf`:
+In `/etc/postfix/main.cf`:
 
 ```
 mua_data_restrictions = reject_unauth_pipelining, check_policy_service unix:private/policy-daily
 ```
 
-W `/etc/postfix/master.cf` — w blokach `submission` i `submissions` dopisz
-`-o smtpd_data_restrictions=$mua_data_restrictions`, a na końcu pliku dodaj usługę:
+In `/etc/postfix/master.cf` — in the `submission` and `submissions` blocks add
+`-o smtpd_data_restrictions=$mua_data_restrictions`, and at the end of the file add the service:
 
 ```
 policy-daily unix  -       n       n       -       0       spawn
   user=nobody argv=/usr/bin/php /usr/local/bin/mailpanel-policy-daily.php
 ```
 
-Po `postfix check && systemctl reload postfix` limit działa dla WSZYSTKICH
-wysyłek uwierzytelnionych SASL (webmail Roundcube i klienci zewnętrzni jak
-Thunderbird — oba idą przez port 587/465). Port 25 (poczta przychodząca) nie
-jest dotykany. Awaria bazy = fail-open (poczta wychodzi, limit nieegzekwowany).
-Semantyka limitów: konto `NULL` = globalny z panelu, `0` = bez limitu.
+After `postfix check && systemctl reload postfix` the limit applies to ALL
+SASL-authenticated sends (Roundcube webmail and external clients such as
+Thunderbird — both go through port 587/465). Port 25 (incoming mail) is not
+touched. A database failure = fail-open (mail goes out, the limit unenforced).
+Limit semantics: account `NULL` = the global one from the panel, `0` = no limit.
 
-Nadawca odbitej wiadomości dostaje błąd `554 5.7.1` już w kliencie (webmail
-pokazuje go przy „Wyślij"), a przy PIERWSZYM odbiciu danego dnia dodatkowo
-grzecznościowy e-mail do własnej skrzynki (flaga `send_counters.notified`,
-kopertowy nadawca `<>` — bez pętli zwrotek). Wyłączenie powiadomień:
-`notify = 0` w `/etc/mailpanel-policy.cf`.
+The sender of a bounced message gets a `554 5.7.1` error already in the client (webmail
+shows it on "Send"), and on the FIRST bounce of a given day additionally a
+courtesy e-mail to their own mailbox (the `send_counters.notified` flag, envelope
+sender `<>` — no bounce loops). To disable notifications:
+`notify = 0` in `/etc/mailpanel-policy.cf`.
 
-Test ręczny:
+Manual test:
 
 ```bash
-printf 'request=smtpd_access_policy\nsasl_username=user@twojadomena.pl\n\n' \
+printf 'request=smtpd_access_policy\nsasl_username=user@yourdomain.com\n\n' \
   | sudo -u nobody php /usr/local/bin/mailpanel-policy-daily.php   # -> action=DUNNO
 ```
 
-## 7. Krok 5 — Apache
+## 7. Step 5 — Apache
 
-W vhostcie katalog Roundcube musi honorować `.htaccess`:
+In the vhost, the Roundcube directory must honor `.htaccess`:
 
 ```apache
 <Directory /var/www/roundcube>
@@ -360,70 +360,70 @@ W vhostcie katalog Roundcube musi honorować `.htaccess`:
 </Directory>
 ```
 
-> **Roundcube 1.7+** (webroot = `public_html/`): kod nakładki zostaje POZA
-> webrootem, a do `public_html/` trafiają tylko symlinki — tworzy je
-> `install.sh` (sekcja 7): `assets`, `portal.php`, `panel`, `.htaccess`.
-> Dyrektywę `<Directory>` ustaw wtedy na `/var/www/roundcube/public_html`
-> z `Options FollowSymLinks`.
+> **Roundcube 1.7+** (webroot = `public_html/`): the overlay code stays OUTSIDE
+> the webroot, and only symlinks land in `public_html/` — created by
+> `install.sh` (section 7): `assets`, `portal.php`, `panel`, `.htaccess`.
+> In that case point the `<Directory>` directive at `/var/www/roundcube/public_html`
+> with `Options FollowSymLinks`.
 
-`.htaccess` z pakietu blokuje dostęp WWW do: `app/`, `config/`, `logs/`, `temp/`,
-`vendor/`, `sql_backup/`, `_legacy/`, `tests/`, plików `.env` i dokumentacji.
+The `.htaccess` from the package blocks web access to: `app/`, `config/`, `logs/`, `temp/`,
+`vendor/`, `sql_backup/`, `_legacy/`, `tests/`, `.env` files and documentation.
 
-## 8. Weryfikacja po instalacji
+## 8. Post-install verification
 
-| Test | Oczekiwany wynik |
+| Test | Expected result |
 |---|---|
-| `https://domena/portal.php` | ekran logowania (ciemny motyw) |
-| `https://domena/.env` | **403** |
-| `https://domena/app/bootstrap.php` | **403** |
-| `https://domena/config/panel_config.php` | **403** |
-| logowanie e-mailem admina → „Panel Admina" | panel ze stylami i ikonami |
-| zakładka „Blokady IP" | brak czerwonego ostrzeżenia o Fail2Ban |
-| zakładka „Bezpieczeństwo" | brak ostrzeżenia o sudo dla Postfixa |
-| logowanie zwykłym kontem → „Webmail" | skrzynka Roundcube |
-| wejście na `https://domena/` bez sesji | redirect do portalu (plugin custom_auth) |
+| `https://domain/portal.php` | login screen (dark theme) |
+| `https://domain/.env` | **403** |
+| `https://domain/app/bootstrap.php` | **403** |
+| `https://domain/config/panel_config.php` | **403** |
+| log in with the admin e-mail → "Admin Panel" | panel with styles and icons |
+| the "IP blocks" tab | no red Fail2Ban warning |
+| the "Security" tab | no warning about sudo for Postfix |
+| log in with a regular account → "Webmail" | Roundcube mailbox |
+| visit `https://domain/` without a session | redirect to the portal (custom_auth plugin) |
 
-## 9. reCAPTCHA (opcjonalnie)
+## 9. reCAPTCHA (optional)
 
-Panel → Ustawienia → Google reCAPTCHA: wklej Site Key + Secret Key (typ v2
-„Nie jestem robotem") i zaznacz „Aktywne". Weryfikacja jest **fail-closed** —
-błąd/timeout po stronie Google odrzuca próbę zamiast ją przepuścić.
-Awaryjne wyłączenie z SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_enabled';`
+Panel → Settings → Google reCAPTCHA: paste the Site Key + Secret Key (type v2
+"I'm not a robot") and check "Active". Verification is **fail-closed** —
+an error/timeout on Google's side rejects the attempt instead of letting it through.
+Emergency disable from SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_enabled';`
 
-## 10. Tryb deweloperski (lokalnie, bez serwera pocztowego)
+## 10. Developer mode (locally, without a mail server)
 
-`.env`: `APP_ENV=dev` → logowanie do webmaila weryfikuje hasło względem hasha
-`$6$` z `virtual_users` (bez IMAP), integracje systemowe wyłączone, pełne
-komunikaty błędów. Testy: `php tests/run.php` (używa bazy z `.env`, sprząta po
-sobie — uruchamiaj na dev, nie na produkcji).
+`.env`: `APP_ENV=dev` → logging into webmail verifies the password against the
+`$6$` hash from `virtual_users` (no IMAP), system integrations disabled, full
+error messages. Tests: `php tests/run.php` (uses the database from `.env`, cleans up
+after itself — run on dev, not in production).
 
-## 11. Bezpieczeństwo — co jest w środku i o czym pamiętać
+## 11. Security — what's inside and what to keep in mind
 
-Wbudowane: CSRF na każdej mutacji (wszystkie mutacje przez POST + PRG),
-rate-limiting logowania (konto i IP) z automatycznym banem, throttling
-rejestracji per-IP, Argon2id dla adminów / SHA-512 crypt dla skrzynek,
-CSP bez inline-JS (ikony self-hostowane), sesja `HttpOnly/SameSite/Secure` +
-`use_strict_mode` + regeneracja ID po logowaniu + limit bezczynności 60 min,
-nagłówki HSTS/X-Frame-Options/nosniff, dziennik audytowy akcji administratorów.
+Built in: CSRF on every mutation (all mutations via POST + PRG),
+login rate-limiting (account and IP) with an automatic ban, per-IP registration
+throttling, Argon2id for admins / SHA-512 crypt for mailboxes,
+a CSP with no inline JS (self-hosted icons), a `HttpOnly/SameSite/Secure` session +
+`use_strict_mode` + ID regeneration after login + a 60-minute idle limit,
+HSTS/X-Frame-Options/nosniff headers, an audit log of administrator actions.
 
-Twoje obowiązki:
-- **kopie baz trzymaj poza webrootem** (nigdy w katalogu Roundcube),
-- po migracji ze starego panelu **zrotuj** hasła DB i klucze reCAPTCHA, które
-  były zaszyte w starych plikach (`panel/config.php` itd.),
-- `des_key` Roundcube traktuj jak sekret (żyje w `config.inc.php`),
-- aktualizuj Roundcube (`program/`, `vendor/`) niezależnie — pakiet nie
-  modyfikuje rdzenia, więc aktualizacje RC nie nadpisują panelu.
+Your responsibilities:
+- **keep database backups outside the webroot** (never in the Roundcube directory),
+- after migrating from the old panel, **rotate** the DB passwords and reCAPTCHA keys that
+  were hardcoded in the old files (`panel/config.php` etc.),
+- treat Roundcube's `des_key` as a secret (it lives in `config.inc.php`),
+- update Roundcube (`program/`, `vendor/`) independently — the package does not
+  modify the core, so RC updates don't overwrite the panel.
 
-## 12. Rozwiązywanie problemów
+## 12. Troubleshooting
 
-| Objaw | Przyczyna / rozwiązanie |
+| Symptom | Cause / fix |
 |---|---|
-| Portal/panel bez stylów | cache przeglądarki (Ctrl+Shift+R) lub brak `assets/` na serwerze |
-| Wszędzie 404/500 po wgraniu | brak `AllowOverride All` albo `.env` nieczytelny dla www-data |
-| „DB Error" / błąd 500 na portalu | złe dane w `.env` (DSN/użytkownik/hasło) |
-| Czerwony box „Brak dostępu do Fail2Ban" | brak wpisów sudoers albo `APP_ENV=dev` |
-| „Brak uprawnień sudo" przy Postfix | brak wpisu sudoers dla `update-postfix-limits.sh` |
-| Zapis Fail2Ban: „nie przeładowano usługi" | dodaj `fail2ban-client reload` do sudoers |
-| Zakładka Fail2Ban: „brak uprawnień odczytu" | `chgrp www-data && chmod 664` na `jail.local` |
-| Login webmail nie działa, panel działa | sprawdź `imap_host` w `config.inc.php` (to zwykłe logowanie RC) |
-| Po zalogowaniu wraca do portalu | ciasteczka: wymagane HTTPS na prod (sesja ma flagę Secure) |
+| Portal/panel with no styles | browser cache (Ctrl+Shift+R) or `assets/` missing on the server |
+| 404/500 everywhere after upload | no `AllowOverride All`, or `.env` unreadable by www-data |
+| "DB Error" / 500 on the portal | wrong credentials in `.env` (DSN/user/password) |
+| Red "No access to Fail2Ban" box | missing sudoers entries or `APP_ENV=dev` |
+| "No sudo permission" on Postfix | missing sudoers entry for `update-postfix-limits.sh` |
+| Fail2Ban save: "service not reloaded" | add `fail2ban-client reload` to sudoers |
+| Fail2Ban tab: "no read permission" | `chgrp www-data && chmod 664` on `jail.local` |
+| Webmail login fails, panel works | check `imap_host` in `config.inc.php` (that's plain RC login) |
+| After login it returns to the portal | cookies: HTTPS required in prod (the session has the Secure flag) |
