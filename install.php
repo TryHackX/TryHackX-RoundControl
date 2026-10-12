@@ -5,8 +5,8 @@ declare(strict_types=1);
 /**
  * Instalator warstwy aplikacyjnej panelu (CLI).
  * Generuje .env, importuje schemat bazy i zakłada pierwszego administratora.
- * Integracje systemowe (sudoers, Fail2Ban, Postfix, plugin password) robi
- * osobny install.sh (uruchamiany jako root).
+ * Integracje systemowe (sudoers, helper Fail2Ban — od 1.0.1 jail.local należy do roota —,
+ * Postfix, plugin password) robi osobny install.sh (uruchamiany jako root).
  *
  * Użycie:  php install.php
  */
@@ -221,7 +221,9 @@ ok('Warstwa aplikacji gotowa.');
 out('');
 out('Następne kroki:');
 out('  1) Integracje systemowe (jako root):   sudo bash install.sh');
-out('     (sekcja 7 ustawi uprawnienia .env, sekcja 9 wepnie panel w config.inc.php)');
+out('     (sekcje 2-3: helper Fail2Ban + sudoers z dokładnymi argumentami, jail.local = root:root 644;');
+out('      sekcja 7 ustawi uprawnienia .env, sekcja 9 wepnie panel w config.inc.php)');
+out('     F2B_JAIL_LOCAL w .env zostaw /etc/fail2ban/jail.local — tylko ten plik obsługuje helper.');
 out('  2) Zaloguj się do panelu przez portal (admin → Panel Admina).');
 out('');
 out('Wskazówka (świeży serwer): jeśli user DB jeszcze nie istniał, uruchom');

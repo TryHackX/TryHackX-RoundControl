@@ -5,6 +5,8 @@
 # Idempotentny, z bramką potwierdzenia per sekcja i kopiami zapasowymi.
 # Ponowne uruchomienie NIE rotuje istniejących sekretów i NIE duplikuje
 # konfiguracji (jaile w /etc/fail2ban/jail.d/, sekcje wykrywane).
+# 1.0.1: sekcje 2/3/8 = poprawka bezpieczeństwa (helper Fail2Ban + sudoers z dokładnymi
+# argumentami, jail.local należy do roota) — na istniejącej instalacji wystarczy uruchomić ponownie.
 # Warstwę aplikacji (.env, schemat, admin) instaluje osobno: php install.php
 # =====================================================================
 set -uo pipefail
@@ -28,6 +30,22 @@ run_sql() {
     warn "Błąd MySQL: ${out:-nieznany} — sekcja niedokończona."
     return 1
   fi
+}
+
+# Helper Fail2Ban (1.0.1, poprawka bezpieczeństwa). /etc/fail2ban/jail.local należy do roota, a panel
+# (www-data) tylko PROPONUJE zmiany w /var/lib/mailpanel-f2b/jail.local.proposed — root-owy helper
+# (przez sudo, bez argumentów) sprawdza, że zmieniły się wyłącznie wartości opcji edytowanych z panelu,
+# robi fail2ban-client -t, instaluje plik i przeładowuje Fail2Ban. jail.local zapisywalny przez www-data
+# to droga do roota (fail2ban działa jako root, a jail może wskazać dowolną akcję). Idempotentne.
+install_f2b_helper() {
+  command -v php >/dev/null || warn "Brak php w PATH — helper Fail2Ban wymaga php-cli (apt install php-cli)."
+  install -o root -g root -m 755 "$SRC/scripts/mailpanel-f2b-apply.php" /usr/local/sbin/mailpanel-f2b-apply || return 1
+  if command -v php >/dev/null && ! php -l /usr/local/sbin/mailpanel-f2b-apply >/dev/null 2>&1; then
+    warn "helper mailpanel-f2b-apply nie przechodzi php -l — sprawdź plik"
+    return 1
+  fi
+  install -d -o "$WEB_USER" -g "$WEB_USER" -m 750 /var/lib/mailpanel-f2b || return 1
+  ok "helper /usr/local/sbin/mailpanel-f2b-apply (755 root) + /var/lib/mailpanel-f2b (750 $WEB_USER)"
 }
 
 [ "$(id -u)" -eq 0 ] || die "Uruchom jako root (sudo bash install.sh)."
@@ -113,16 +131,36 @@ fi
 
 # --- 2. sudoers ---
 hr
-if ask "2) Zainstalować regułę sudoers (/etc/sudoers.d/mailpanel)"; then
-  tmp=$(mktemp)
-  cp "$SRC/system/sudoers.d/mailpanel" "$tmp"
-  if visudo -cf "$tmp" >/dev/null 2>&1; then
-    install -o root -g root -m 440 "$tmp" /etc/sudoers.d/mailpanel
-    ok "sudoers zainstalowany i zwalidowany"
+if ask "2) Zainstalować helper Fail2Ban i regułę sudoers (/etc/sudoers.d/mailpanel)"; then
+  # Reguły fail2ban-client mają DOKŁADNE argumenty (^regex$) — wymagają sudo >= 1.9.10 (Debian 13: 1.9.16).
+  # Starsze sudo traktuje ^...$ dosłownie, więc nic by nie pasowało; nie instalujemy wtedy niczego.
+  SV=$(sudo -V 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+  if [ -z "$SV" ] || [ "$(printf '%s\n1.9.10\n' "$SV" | sort -V | head -1)" != "1.9.10" ]; then
+    warn "sudo ${SV:-nieznane} < 1.9.10 — brak argumentów ^regex\$; sudoers NIE zainstalowany (zaktualizuj sudo)"
+  elif install_f2b_helper; then   # helper najpierw — reguła sudoers wskazuje na niego
+    tmp=$(mktemp)
+    cp "$SRC/system/sudoers.d/mailpanel" "$tmp"
+    SUDOERS_OK=0
+    if visudo -cf "$tmp" >/dev/null 2>&1; then
+      install -o root -g root -m 440 "$tmp" /etc/sudoers.d/mailpanel && SUDOERS_OK=1
+      ok "sudoers zainstalowany i zwalidowany (visudo -cf): dokładne argumenty, bez wildcardów w fail2ban-client"
+    else
+      warn "Walidacja sudoers nie przeszła — pomijam (sprawdź $SRC/system/sudoers.d/mailpanel)"
+    fi
+    rm -f "$tmp"
+    # Stare reguły z wildcardami (np. README 1.0: wpisy dopisane do /etc/sudoers przez visudo) zostają w mocy,
+    # dopóki ich ktoś nie usunie — instalator nie edytuje cudzych plików sudoers, tylko je wskazuje.
+    SKIP='^/etc/sudoers.d/mailpanel:'; [ "$SUDOERS_OK" -eq 1 ] || SKIP='^$'   # własny plik pomijamy tylko gdy właśnie się zainstalował
+    OLD=$(grep -nE '^[[:space:]]*[^#[:space:]].*fail2ban-client.*[*]' /etc/sudoers /etc/sudoers.d/* 2>/dev/null \
+          | grep -v "$SKIP" || true)
+    if [ -n "$OLD" ]; then
+      echo -e "${c_red}✗ STARE reguły fail2ban-client poza /etc/sudoers.d/mailpanel — z wildcardem '*' dają www-data drogę do roota.${c_rst}"
+      echo -e "${c_red}  USUŃ je (visudo, albo visudo -f <plik>), a potem sprawdź: sudo -l -U $WEB_USER${c_rst}"
+      echo "$OLD" | sed 's/^/     /'
+    fi
   else
-    warn "Walidacja sudoers nie przeszła — pomijam (sprawdź $SRC/system/sudoers.d/mailpanel)"
+    warn "Instalacja helpera Fail2Ban nie powiodła się — sudoers NIE zainstalowany."
   fi
-  rm -f "$tmp"
 fi
 
 # --- 3. Fail2Ban ---
@@ -143,11 +181,15 @@ if ask "3) Skonfigurować Fail2Ban (filtry + jaile panelu)"; then
     ok "jaile panelu: /etc/fail2ban/jail.d/mailpanel.local"
   fi
 
+  # jail.local należy do ROOTA (root:root 644) — od 1.0.1 panel go nie zapisuje (patrz install_f2b_helper).
+  # Stare kopie jail.local.bak-* (robione kiedyś przez panel) też przechodzą na roota, 600.
   if [ -f /etc/fail2ban/jail.local ]; then
-    chgrp "$WEB_USER" /etc/fail2ban/jail.local && chmod 664 /etc/fail2ban/jail.local
-    ok "jail.local zapisywalny przez panel (664 :$WEB_USER)"
+    install_f2b_helper
+    chown root:root /etc/fail2ban/jail.local && chmod 644 /etc/fail2ban/jail.local
+    for b in /etc/fail2ban/jail.local.bak-*; do [ -e "$b" ] && chown root:root "$b" && chmod 600 "$b"; done
+    ok "jail.local: root:root 644 (panel tylko proponuje zmiany; instaluje je helper mailpanel-f2b-apply)"
   else
-    warn "Brak /etc/fail2ban/jail.local — utwórz wg README (jaile sshd/dovecot/postfix-sasl/roundcube-auth/recidive)."
+    warn "Brak /etc/fail2ban/jail.local — utwórz wg README (jaile sshd/dovecot/postfix-sasl/roundcube-auth/recidive), jako root:root 644."
   fi
 
   if command -v fail2ban-client >/dev/null; then
@@ -155,6 +197,21 @@ if ask "3) Skonfigurować Fail2Ban (filtry + jaile panelu)"; then
       fail2ban-client reload >/dev/null 2>&1 && ok "konfiguracja poprawna, fail2ban przeładowany"
     else
       warn "fail2ban-client -t zgłasza błąd konfiguracji — NIE przeładowano (sprawdź: fail2ban-client -t)"
+    fi
+  fi
+
+  # Test przez sudo jako użytkownik panelu: propozycja identyczna z jail.local => helper odpowiada "bez zmian"
+  # (nic nie instaluje). Sprawdza razem regułę sudoers, helpera i uprawnienia katalogu propozycji.
+  if [ -f /etc/fail2ban/jail.local ] && [ -x /usr/local/sbin/mailpanel-f2b-apply ] && [ -d /var/lib/mailpanel-f2b ] \
+     && grep -q 'mailpanel-f2b-apply' /etc/sudoers.d/mailpanel 2>/dev/null; then
+    PROP=/var/lib/mailpanel-f2b/jail.local.proposed
+    cp /etc/fail2ban/jail.local "$PROP" && chown "$WEB_USER":"$WEB_USER" "$PROP"
+    R=$(sudo -u "$WEB_USER" sudo -n /usr/local/sbin/mailpanel-f2b-apply 2>&1)
+    rm -f "$PROP"
+    if [ "$R" = "bez zmian" ]; then
+      ok "test helpera jako $WEB_USER przez sudo: 'bez zmian' (sudoers + helper + katalog propozycji działają)"
+    else
+      warn "test helpera jako $WEB_USER nie przeszedł: ${R:-brak odpowiedzi} (sprawdź krok 2 i: sudo -l -U $WEB_USER)"
     fi
   fi
 fi
@@ -263,21 +320,22 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
   ok "właściciel app/ assets/ = $WEB_USER"
 fi
 
-# --- 8. Timer auto-reloadu Fail2Ban (fallback po edycji z panelu) ---
+# --- 8. Przestarzały timer auto-reloadu Fail2Ban (wersja 1.0) ---
 hr
-if ask "8) Zainstalować timer mailpanel-f2b-reload (reload F2B po zmianie jail.local)"; then
-  # Panel przeładowuje Fail2Ban przez sudo od razu po zapisie; timer to siatka
-  # bezpieczeństwa — co minutę porównuje mtime jail.local i robi reload, gdyby
-  # bezpośrednie przeładowanie nie doszło do skutku (np. brak wpisu sudoers).
-  install -o root -g root -m 755 "$SRC/scripts/mailpanel-f2b-reload.php" /usr/local/sbin/
-  install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-f2b-reload.service" /etc/systemd/system/
-  install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-f2b-reload.timer"   /etc/systemd/system/
-  systemctl daemon-reload
-  if systemctl enable --now mailpanel-f2b-reload.timer >/dev/null 2>&1; then
-    ok "mailpanel-f2b-reload.timer aktywny (interwał 1 min)"
-  else
-    warn "Nie udało się włączyć timera — sprawdź: systemctl status mailpanel-f2b-reload.timer"
+# Do 1.0 timer mailpanel-f2b-reload co minutę porównywał mtime jail.local i robił ślepy reload. Od 1.0.1 jedyną
+# drogą zapisu jest helper mailpanel-f2b-apply (root): sprawdza propozycję, robi fail2ban-client -t i sam przeładowuje —
+# timer jest zbędny (i dublował reload po każdym zapisie). Nie instalujemy go już; stary usuwamy (za zgodą).
+if [ -e /etc/systemd/system/mailpanel-f2b-reload.timer ] || [ -e /usr/local/sbin/mailpanel-f2b-reload.php ]; then
+  if ask "8) Usunąć przestarzały timer mailpanel-f2b-reload (od 1.0.1 reload robi helper mailpanel-f2b-apply)"; then
+    systemctl disable --now mailpanel-f2b-reload.timer >/dev/null 2>&1
+    rm -f /etc/systemd/system/mailpanel-f2b-reload.timer /etc/systemd/system/mailpanel-f2b-reload.service \
+          /usr/local/sbin/mailpanel-f2b-reload.php /var/lib/mailpanel/f2b_state.json
+    rmdir /var/lib/mailpanel 2>/dev/null
+    systemctl daemon-reload
+    ok "timer mailpanel-f2b-reload usunięty"
   fi
+else
+  ok "8) brak przestarzałego timera mailpanel-f2b-reload — nic do zrobienia"
 fi
 
 # --- 9. Wpięcie panelu w config.inc.php Roundcube ---
@@ -345,3 +403,5 @@ echo "   - https://<host>/.env        → 403"
 echo "   - panel: Fail2Ban/Bezpieczeństwo bez czerwonych ostrzeżeń"
 echo "   - test limitu: nadlimitowa wysyłka SMTP → 554"
 echo "   - fail2ban-client status     → jaile panel-permaban / panel-tempban"
+echo "   - stat -c '%A %U:%G' /etc/fail2ban/jail.local  → -rw-r--r-- root:root (panel go nie zapisuje)"
+echo "   - sudo -l -U $WEB_USER | grep fail2ban-client  → tylko dokładne reguły ^regex\$, bez znaku *"

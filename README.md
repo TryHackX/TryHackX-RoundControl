@@ -4,6 +4,9 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
+**Version 1.0.1** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — a **security release**. If you run 1.0, upgrade now:
+[Upgrading from 1.0](#upgrading-from-10-security-release-101).
+
 - **Login portal** (`portal.php`) — a shared entry screen for webmail and the panel
   (flow: e-mail → pick service → password) + **public account registration** with per-IP
   limits, a password policy and optional reCAPTCHA,
@@ -24,12 +27,100 @@ Copy the package contents into the Roundcube directory (preserving the tree), th
 
 ```bash
 php install.php        # .env, schema import, first administrator (Argon2id)
-sudo bash install.sh   # scripts, sudoers, Fail2Ban, policy service, password plugin
+sudo bash install.sh   # scripts, sudoers + Fail2Ban helper, Fail2Ban, policy service, password plugin
 # finally: include panel_config.php in config/config.inc.php (see step 5)
 ```
 
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
+
+## Upgrading from 1.0 (security release 1.0.1)
+
+**What was wrong.** In 1.0 the sudo rules for `fail2ban-client` used `*` wildcards (`set * banip *`, `status *` …).
+In sudoers a `*` inside arguments also matches **spaces**, so any code running as `www-data` — any PHP site on the
+box, not only the panel — could run e.g. `fail2ban-client set <jail> action <name> actionban '<command>' banip x`
+… and Fail2Ban would run that command **as root**. The same escalation was open through `/etc/fail2ban/jail.local`,
+which 1.0 made writable by `www-data` (664): a jail may name any action.
+
+**What 1.0.1 changes.**
+- `fail2ban-client` rules take **exact arguments** (`^regex$`, needs sudo ≥ 1.9.10 — Debian 13 has 1.9.16); the
+  `doveadm quota` rule is exact too;
+- `jail.local` is **`root:root` 644**. The "Fail2Ban" tab writes a *proposal* to
+  `/var/lib/mailpanel-f2b/jail.local.proposed` and runs the root helper `mailpanel-f2b-apply` through sudo; the helper
+  installs it only if **nothing but the values of the options edited in the tab changed** and each value is well-formed,
+  tests it with `fail2ban-client -t`, and reloads Fail2Ban (otherwise it refuses and changes nothing);
+- the `ReadWritePaths=/etc/fail2ban/jail.local` php-fpm drop-in (if you added one) and the `mailpanel-f2b-reload`
+  timer are no longer needed.
+
+**Upgrade — option A (installer).** Copy the 1.0.1 package over the Roundcube directory (the `rsync` from step 1
+below), run `sudo bash install.sh` and answer **yes (`t`)** to sections 2, 3 and 8. Section 2 lists any *old* wildcard
+rules it finds in `/etc/sudoers` or `/etc/sudoers.d/` — remove them as shown in step 5 below.
+
+**Upgrade — option B (the same steps by hand).** As root, in the unpacked 1.0.1 package, `RC=/var/www/roundcube`.
+The order matters: new rules and helper first, old rules last.
+
+```bash
+# 0) preconditions: sudo >= 1.9.10, php-cli, fail2ban
+RC=/var/www/roundcube                     # your Roundcube directory
+sudo -V | head -1 ; php -v | head -1 ; fail2ban-client -t
+
+# 1) the helper first (a sudoers rule can only be tested against a command that exists) + the proposal directory
+install -o root -g root -m 755 scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
+php -l /usr/local/sbin/mailpanel-f2b-apply
+install -d -o www-data -g www-data -m 750 /var/lib/mailpanel-f2b
+
+# 2) the new sudoers file (validated BEFORE it is installed)
+visudo -cf system/sudoers.d/mailpanel
+install -o root -g root -m 440 system/sudoers.d/mailpanel /etc/sudoers.d/mailpanel
+visudo -c
+
+# 3) the only application file that changed: the panel now proposes instead of writing jail.local
+install -o www-data -g www-data -m 644 app/src/System/Commands.php $RC/app/src/System/Commands.php
+php -l $RC/app/src/System/Commands.php        # if opcache.validate_timestamps=0: systemctl reload php*-fpm
+
+# 4) jail.local becomes root's (and the old copies the panel used to make)
+chown root:root /etc/fail2ban/jail.local && chmod 644 /etc/fail2ban/jail.local
+for b in /etc/fail2ban/jail.local.bak-*; do [ -e "$b" ] && chown root:root "$b" && chmod 600 "$b"; done
+fail2ban-client -t
+
+# 5) remove the OLD wildcard rules wherever they live (README 1.0 said "sudo visudo and add at the end", so usually
+#    /etc/sudoers; other files if you split them). The first command lists them; the new file is not listed.
+grep -nE '^[[:space:]]*[^#[:space:]].*fail2ban-client.*[*]' /etc/sudoers /etc/sudoers.d/* | grep -v '^/etc/sudoers.d/mailpanel:'
+#    For /etc/sudoers (backup, filter, VALIDATE, only then install; if such a line also lists OTHER commands,
+#    edit it with `visudo` instead of filtering):
+cp -a /etc/sudoers /root/sudoers.bak-$(date +%F)
+grep -vE '^www-data[[:space:]].*fail2ban-client' /etc/sudoers > /etc/sudoers.new
+visudo -cf /etc/sudoers.new && install -o root -g root -m 440 /etc/sudoers.new /etc/sudoers ; rm -f /etc/sudoers.new
+#    For another file /etc/sudoers.d/<name>: `visudo -f /etc/sudoers.d/<name>` and delete the fail2ban-client lines.
+#    Re-run the grep: it must print nothing.
+
+# 6) optional: the old mtime-watching timer (the helper reloads Fail2Ban itself)
+systemctl disable --now mailpanel-f2b-reload.timer
+rm -f /etc/systemd/system/mailpanel-f2b-reload.{timer,service} /usr/local/sbin/mailpanel-f2b-reload.php
+systemctl daemon-reload
+#    and the php-fpm drop-in, if you had one:  ReadWritePaths=/etc/fail2ban/jail.local  -> delete it, reload php-fpm
+```
+
+**Verify.**
+
+```bash
+stat -c '%A %U:%G' /etc/fail2ban/jail.local      # -rw-r--r-- root:root
+for c in "ping" "status" "status dovecot" "set dovecot banip 203.0.113.7" "set dovecot unbanip 2001:db8::7" \
+         "set panel-tempban bantime 86400" "get dovecot banip --with-time" "reload"; do
+  sudo -l -U www-data /usr/bin/fail2ban-client $c >/dev/null 2>&1 && echo "allowed (as it should be): $c" || echo "NOT allowed (should be): $c"
+done
+for c in "set dovecot action nftables actionban touch banip 1.2.3.4" "set dovecot banip 1.2.3.4 extra" "start" "stop"; do
+  sudo -l -U www-data /usr/bin/fail2ban-client $c >/dev/null 2>&1 && echo "!!! allowed (must NOT be): $c" || echo "refused (good): $c"
+done
+# the helper end to end, as the panel calls it: an unchanged proposal -> "bez zmian" ("no changes")
+cp /etc/fail2ban/jail.local /var/lib/mailpanel-f2b/jail.local.proposed
+chown www-data:www-data /var/lib/mailpanel-f2b/jail.local.proposed
+sudo -u www-data sudo -n /usr/local/sbin/mailpanel-f2b-apply
+```
+
+Then open the panel's **Fail2Ban** tab and save once. If something in step 5 goes wrong, `/root/sudoers.bak-*` is
+the copy of `/etc/sudoers` from before; do not "roll back" by making `jail.local` writable for `www-data` again —
+that is the hole this release closes (an error message from the helper says what it refused and why).
 
 ## Repository layout
 
@@ -40,9 +131,12 @@ backups before editing). Details and manual installation — see the sections be
 ├── plugins/custom_auth/          # redirect unauthenticated users to the portal
 ├── plugins/password/config.inc.php.example
 ├── scripts/                      # scripts for /usr/local/bin (scanner, policy, delete-user…)
+│   └── mailpanel-f2b-apply.php   #   root helper → /usr/local/sbin (installs the panel's jail.local proposal)
 ├── system/                       # integration templates (sudoers, fail2ban, postfix, policy.cf)
 ├── sql/panel_schema.sql          # database schema (IF NOT EXISTS)
-├── tests/run.php                 # tests (dependency-free runner; dev)
+├── tests/run.php                 # tests (dependency-free runner; dev, needs the DB)
+├── tests/sudoers_test.php        # sudoers rules + Fail2Ban helper consistency (no DB, no sudo; runs anywhere)
+├── CHANGELOG.md
 ├── .env.example  .gitignore  LICENSE
 ```
 
@@ -190,32 +284,38 @@ password), min. length 10 + a required non-alphanumeric character. Result: **Set
 
 ## 6. Step 4 — sudoers and permissions (system integrations)
 
-The panel runs system operations as `www-data` through `sudo`. Run `sudo visudo`
-and add at the end:
+The panel runs system operations as `www-data` through `sudo`. The rules live in
+**`system/sudoers.d/mailpanel`** — install the whole file (`install.sh` section 2 does this and validates it first):
 
-```
-www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client ping, /usr/bin/fail2ban-client status, /usr/bin/fail2ban-client status *, /usr/bin/fail2ban-client set * unbanip *, /usr/bin/fail2ban-client set * banip *, /usr/bin/fail2ban-client reload
-www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * banip *
-www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client set * bantime *
-www-data ALL=(root) NOPASSWD: /usr/local/bin/update-postfix-limits.sh
-www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-delete-user.sh
-www-data ALL=(root) NOPASSWD: /usr/bin/doveadm -f flow quota get -u *
-www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh *
+```bash
+# 1) the Fail2Ban helper first: a sudoers rule can only be tested against a command that exists
+install -o root -g root -m 755 scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
+install -d -o www-data -g www-data -m 750 /var/lib/mailpanel-f2b      # where the panel leaves its proposal
+# 2) the rules (sudo >= 1.9.10; validate BEFORE installing)
+visudo -cf system/sudoers.d/mailpanel
+install -o root -g root -m 440 system/sudoers.d/mailpanel /etc/sudoers.d/mailpanel
 ```
 
-What each one enables (without an entry, that feature shows a readable message; the rest works):
+Do **not** paste wildcard rules for `fail2ban-client` (`set * banip *` and the like) into `visudo`: in sudoers a `*`
+in arguments also matches spaces, which lets any code running as `www-data` run arbitrary `fail2ban-client`
+commands (e.g. replace a jail's `actionban`, which Fail2Ban then runs as root). The shipped file uses exact
+`^regex$` arguments instead.
+
+What each entry enables (without an entry, that feature shows a readable message; the rest works):
 
 | Entry | Panel feature |
 |---|---|
-| `fail2ban-client ping/status` | the F2B ban list in the "IP blocks" tab |
-| `fail2ban-client set * unbanip *` | the "Unban (F2B)" button |
-| `fail2ban-client set * banip *` | manual IP block + bans from the scanner |
-| `fail2ban-client get * banip *` | the "Expires" column with the remaining ban time |
-| `fail2ban-client set * bantime *` | timed bans from the scanner (jail `panel-tempban`) |
-| `fail2ban-client reload` | automatic reload after saving the "Fail2Ban" tab |
+| `fail2ban-client ping`, `status`, `status <jail>` | the F2B ban list in the "IP blocks" tab |
+| `fail2ban-client set <jail> unbanip <ip>` | the "Unban (F2B)" button |
+| `fail2ban-client set <jail> banip <ip>` | manual IP block + bans from the scanner |
+| `fail2ban-client get <jail> banip --with-time` | the "Expires" column with the remaining ban time |
+| `fail2ban-client set <jail> bantime <seconds>` | timed bans from the scanner (jail `panel-tempban`) |
+| `fail2ban-client reload` | reload after saving the "Fail2Ban" tab |
+| `mailpanel-f2b-apply` | saving the "Fail2Ban" tab (see "Editing Fail2Ban from the panel" below) |
 | `update-postfix-limits.sh` | applying Postfix limits ("Security") |
 | `mailpanel-delete-user` | deleting mailbox files when removing an account |
-| `mailpanel-scan.sh *` | the suspicious-IP scanner (accepts a 3rd argument: `ssh`/`dovecot`/`postfix`) |
+| `doveadm -f flow quota get -u <user>` | quota usage on the account list |
+| `mailpanel-scan.sh *` | the suspicious-IP scanner (accepts a 3rd argument: `ssh`/`dovecot`/`postfix`). The `*` is acceptable here because the script validates strictly: both dates must match `YYYY-MM-DD`, the source is a whitelist, extra arguments are ignored |
 
 ### Panel jails ("permanent" and timed blocks)
 
@@ -267,18 +367,23 @@ ignoreregex =
 Empty logs: `touch /var/log/mailpanel-permaban.log /var/log/mailpanel-tempban.log`,
 and when done `fail2ban-client reload`.
 
-> **Reload fallback:** `install.sh` (section 8) additionally installs a systemd timer
-> `mailpanel-f2b-reload` (`scripts/mailpanel-f2b-reload.php` +
-> `system/systemd/*.{service,timer}`) — every minute it compares the mtime of `jail.local`
-> and reloads Fail2Ban in case a direct `sudo fail2ban-client reload`
-> from the panel did not work. It keeps state in `/var/lib/mailpanel/f2b_state.json`.
+### Editing Fail2Ban from the panel (`jail.local` belongs to root)
 
-Editing the configuration in the "Fail2Ban" tab additionally requires write access to the file:
+`/etc/fail2ban/jail.local` must be **`root:root` 644** — it must *not* be writable by `www-data`: Fail2Ban runs as
+root and a jail may name any action, so a `jail.local` the web user can write is a way to root. The "Fail2Ban" tab
+therefore does not write the file itself: it writes a *proposal* to `/var/lib/mailpanel-f2b/jail.local.proposed`
+(directory `www-data` 750) and runs `sudo -n /usr/local/sbin/mailpanel-f2b-apply`. That root helper installs the
+proposal only if it differs from the current file **solely in the values of the options the tab edits**
+(`[DEFAULT]`, `[roundcube-auth]`, `[dovecot]`, `[postfix-sasl]`, `[recidive]`: `enabled`, `findtime`, `bantime`,
+`maxretry`, `bantime.increment`, `bantime.factor`, `bantime.maxtime`, `ignoreip`), each value well-formed
+(times, numbers, true/false, IP / CIDR lists). It keeps a copy in `/var/backups/mailpanel-f2b/`, runs
+`fail2ban-client -t` (restoring the old file if Fail2Ban rejects it) and reloads Fail2Ban. Anything else — a new line,
+a changed section header, a changed jail outside that list — is refused with `odrzucone: …` and nothing is changed.
+Edit everything else in `jail.local` as root, by hand. `F2B_JAIL_LOCAL` in `.env` must stay
+`/etc/fail2ban/jail.local` (the only file the helper handles).
 
-```bash
-chgrp www-data /etc/fail2ban/jail.local
-chmod 664 /etc/fail2ban/jail.local
-```
+There is no reload timer any more: the helper reloads Fail2Ban itself. (1.0 shipped `mailpanel-f2b-reload`, a
+timer that blindly reloaded on every `jail.local` mtime change; `install.sh` section 8 removes it.)
 
 The scripts `/usr/local/bin/update-postfix-limits.sh` and `/usr/local/bin/mailpanel-delete-user`
 are your existing scripts (the same ones the old panel used). The panel detects
@@ -395,7 +500,10 @@ Emergency disable from SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_en
 `.env`: `APP_ENV=dev` → logging into webmail verifies the password against the
 `$6$` hash from `virtual_users` (no IMAP), system integrations disabled, full
 error messages. Tests: `php tests/run.php` (uses the database from `.env`, cleans up
-after itself — run on dev, not in production).
+after itself — run on dev, not in production); `php tests/sudoers_test.php` (the sudoers rules and the
+Fail2Ban helper vs. `Commands.php`; needs no database and no sudo, safe anywhere).
+
+In `dev` mode the Fail2Ban tab cannot save (there is no root helper): editing `jail.local` is a server feature.
 
 ## 11. Security — what's inside and what to keep in mind
 
@@ -405,6 +513,9 @@ throttling, Argon2id for admins / SHA-512 crypt for mailboxes,
 a CSP with no inline JS (self-hosted icons), a `HttpOnly/SameSite/Secure` session +
 `use_strict_mode` + ID regeneration after login + a 60-minute idle limit,
 HSTS/X-Frame-Options/nosniff headers, an audit log of administrator actions.
+System operations run through `sudo` with **exact-argument** rules (no `*` wildcards on `fail2ban-client`), and the
+panel no longer writes a file that a root service reads: `jail.local` is `root:root`, edits go through a
+validating root helper (see "Editing Fail2Ban from the panel").
 
 Your responsibilities:
 - **keep database backups outside the webroot** (never in the Roundcube directory),
@@ -423,7 +534,10 @@ Your responsibilities:
 | "DB Error" / 500 on the portal | wrong credentials in `.env` (DSN/user/password) |
 | Red "No access to Fail2Ban" box | missing sudoers entries or `APP_ENV=dev` |
 | "No sudo permission" on Postfix | missing sudoers entry for `update-postfix-limits.sh` |
-| Fail2Ban save: "service not reloaded" | add `fail2ban-client reload` to sudoers |
-| Fail2Ban tab: "no read permission" | `chgrp www-data && chmod 664` on `jail.local` |
+| Fail2Ban save: "service not reloaded" | the `fail2ban-client reload` rule is missing from `/etc/sudoers.d/mailpanel` (install the 1.0.1 file) |
+| Fail2Ban save: "Fail2Ban: sudo: a password is required" / "…not allowed to execute…" | the helper or its sudoers rule is missing: `install.sh` section 2 (or the manual steps in "Upgrading from 1.0") |
+| Fail2Ban save: "Nie mogę zapisać /var/lib/mailpanel-f2b/jail.local.proposed" | the directory is missing or not `www-data` 750: `install -d -o www-data -g www-data -m 750 /var/lib/mailpanel-f2b` |
+| Fail2Ban save: "Fail2Ban: odrzucone: …" | the helper refused the proposal (the text says which line/value); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
+| Fail2Ban tab: "no read permission" | `jail.local` must be readable by `www-data`: `root:root` **644** (do **not** make it writable by `www-data`) |
 | Webmail login fails, panel works | check `imap_host` in `config.inc.php` (that's plain RC login) |
 | After login it returns to the portal | cookies: HTTPS required in prod (the session has the Secure flag) |

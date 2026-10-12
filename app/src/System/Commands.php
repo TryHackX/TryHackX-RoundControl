@@ -269,9 +269,6 @@ final class Commands
     public static function fail2banSaveConfig(array $post): void
     {
         $file = self::jailFile();
-        if (!is_writable($file)) {
-            throw new \RuntimeException($file . ' nie jest zapisywalny (brak uprawnień www-data).');
-        }
 
         $map = [
             'DEFAULT' => [
@@ -307,8 +304,19 @@ final class Commands
             }
         }
 
-        @copy($file, $file . '.bak-' . date('YmdHis'));
-        file_put_contents($file, implode(PHP_EOL, $lines) . PHP_EOL, LOCK_EX);
+        // 2026-10-13: jail.local belongs to root. www-data writing it was a way to root (fail2ban runs as root and a
+        // jail may name any action). The panel PROPOSES the file; mailpanel-f2b-apply (root, through sudo) checks that
+        // only the values of the options edited here changed, each well-formed, installs it, tests it and reloads fail2ban.
+        $proposed = '/var/lib/mailpanel-f2b/jail.local.proposed';
+        if (file_put_contents($proposed, implode(PHP_EOL, $lines) . PHP_EOL, LOCK_EX) === false) {
+            throw new \RuntimeException('Nie mogę zapisać ' . $proposed);
+        }
+        $out = [];
+        $ret = 0;
+        exec('sudo -n /usr/local/sbin/mailpanel-f2b-apply 2>&1', $out, $ret);
+        if ($ret !== 0) {
+            throw new \RuntimeException('Fail2Ban: ' . implode(' ', $out));
+        }
     }
 
     /** @return array<string,string> */

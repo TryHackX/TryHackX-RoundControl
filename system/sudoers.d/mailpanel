@@ -1,20 +1,40 @@
-# /etc/sudoers.d/mailpanel  —  uprawnienia panelu (www-data) do operacji systemowych.
-# Instalacja:  install -o root -g root -m 440 mailpanel /etc/sudoers.d/mailpanel
-#              visudo -cf /etc/sudoers.d/mailpanel   # walidacja składni
+# /etc/sudoers.d/mailpanel  -  rights of the mail panel (www-data) for system operations.
+# Install:  install -o root -g root -m 440 mailpanel /etc/sudoers.d/mailpanel
+#           visudo -cf /etc/sudoers.d/mailpanel   # syntax check BEFORE (install.sh does it)
+# Needs sudo >= 1.9.10 (arguments written as ^regex$). Debian 13 ships 1.9.16.
 #
-# Bez danego wpisu odpowiednia funkcja panelu pokazuje czytelny komunikat,
-# reszta działa. Każda linia = jedna zdolność (least privilege).
+# Without an entry the matching panel feature shows a readable message, the rest works.
+# One line = one capability (least privilege).
 
-# Fail2Ban: lista/status banów, ręczny ban/unban, przeładowanie po zapisie configu
-www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client ping, /usr/bin/fail2ban-client status, /usr/bin/fail2ban-client status *, /usr/bin/fail2ban-client set * unbanip *, /usr/bin/fail2ban-client set * banip *, /usr/bin/fail2ban-client reload
-# Kolumna „Wygasa" (pozostały czas) + bany czasowe ze skanera
-www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * banip *
-www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client set * bantime *
-# Limity antyspamowe Postfix (zakładka Bezpieczeństwo)
+# Fail2Ban - EXACT arguments only (1.0.1, security fix).
+# In sudoers a `*` inside arguments also matches spaces, so the old rules ("set * banip *" and friends)
+# let www-data (= any PHP code on the box) run ANY fail2ban-client command that merely contained " banip ",
+# e.g. replace a jail's actionban with a command that fail2ban then runs as root. `^...$` arguments are
+# regular expressions matched against the WHOLE argument string - nothing can be appended or inserted.
+#   status                  - jail list / ban list in the "IP blocks" tab
+#   set J banip|unbanip IP  - manual ban / unban, bans from the scanner
+#   set J bantime N         - timed bans from the scanner (jail panel-tempban)
+#   get J banip --with-time - the "Expires" column
+#   reload                  - reload after saving the "Fail2Ban" tab
+#   mailpanel-f2b-apply     - root helper that installs the panel's PROPOSED jail.local after checking that only the
+#                             panel-editable values changed (jail.local itself is root:root 644, not writable by www-data)
+Cmnd_Alias MAILPANEL_F2B = /usr/bin/fail2ban-client ping, \
+    /usr/bin/fail2ban-client status, \
+    /usr/bin/fail2ban-client reload, \
+    /usr/bin/fail2ban-client ^status [A-Za-z0-9_-]+$, \
+    /usr/bin/fail2ban-client ^set [A-Za-z0-9_-]+ (banip|unbanip) [0-9A-Fa-f.\:]+$, \
+    /usr/bin/fail2ban-client ^set [A-Za-z0-9_-]+ bantime -?[0-9]+$, \
+    /usr/bin/fail2ban-client ^get [A-Za-z0-9_-]+ banip --with-time$, \
+    /usr/local/sbin/mailpanel-f2b-apply
+www-data ALL=(root) NOPASSWD: MAILPANEL_F2B
+
+# Postfix anti-spam limits ("Security" tab); the script accepts integers only
 www-data ALL=(root) NOPASSWD: /usr/local/bin/update-postfix-limits.sh
-# Usuwanie plików skrzynki przy kasowaniu konta
+# Deleting mailbox files when an account is removed; the script validates the e-mail and the path
 www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-delete-user.sh
-# Wykorzystanie quoty na liście kont (doveadm)
-www-data ALL=(root) NOPASSWD: /usr/bin/doveadm -f flow quota get -u *
-# Skaner podejrzanych IP (3. arg: ssh|dovecot|postfix)
+# Quota usage on the account list (doveadm) - exact arguments, one user name
+www-data ALL=(root) NOPASSWD: /usr/bin/doveadm ^-f flow quota get -u [A-Za-z0-9._@+-]+$
+# Suspicious-IP scanner: SINCE UNTIL [ssh|dovecot|postfix]. The `*` is acceptable HERE because the script
+# validates strictly (both dates must match ^YYYY-MM-DD$, the source is a whitelist, extra arguments are
+# ignored) and only passes the validated values, quoted, to journalctl.
 www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh *
