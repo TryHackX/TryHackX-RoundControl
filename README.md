@@ -4,13 +4,19 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.3.0** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — **Polish and English** (switcher on every page, language
-management and JSON language packs in the panel), **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile,
-hCaptcha), a **footer** with the version shown only to administrators, calmer save messages, one-line table headers.
-If you run 1.2.0: [Upgrading from 1.2.0](#upgrading-from-120-to-130). If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120),
-then the 1.3.0 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package (it
-installs the current version directly) plus `install.sh` section 12. If you run 1.0: run `install.sh` from this package
-(it covers every older version).
+**Version 1.3.1** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — **English by default** for new installations (installer
+in English with `--lang=pl` available, default interface language asked during installation, English output of
+`install.sh` and the root helpers); 1.3.0 brought **Polish and English** (switcher on every page, language management
+and JSON language packs in the panel), **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile, hCaptcha)
+and a **footer** with the version shown only to administrators.
+If you run 1.3.0: [Upgrading from 1.3.0](#upgrading-from-130-to-131) (**keeps your language**). If you run 1.2.0:
+[Upgrading from 1.2.0](#upgrading-from-120-to-130), then the 1.3.1 steps. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120),
+then the 1.3.0 and 1.3.1 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package
+(it installs the current version directly) plus `install.sh` section 12. If you run 1.0: run `install.sh` from this
+package (it covers every older version).
+**Any existing installation that should stay Polish — first, before the new code:**
+`mysql mailserver -e "INSERT IGNORE INTO app_settings (k, v) VALUES ('default_language', 'pl')"` (1.3.1 falls back to
+English when no language is stored).
 
 - **Login portal** (`portal.php`) — a shared entry screen for webmail and the panel
   (flow: e-mail → password → in; an administrator who also has a mailbox then picks a tile: Webmail or Admin panel)
@@ -38,7 +44,8 @@ Assumes a working Roundcube 1.6+ and a `mailserver` database (Postfix/Dovecot vi
 Copy the package contents into the Roundcube directory (preserving the tree), then:
 
 ```bash
-php install.php        # .env, schema import, first administrator (Argon2id)
+php install.php        # .env, schema import, default interface language (en), first administrator (Argon2id)
+                       # English by default; --lang=pl for a Polish installer (an interactive terminal is asked first)
 sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban helper, Fail2Ban, policy service,
                        # password plugin, file ownership, quarantine timer
 # finally: include panel_config.php in config/config.inc.php (see step 5)
@@ -46,6 +53,34 @@ sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban
 
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
+
+## Upgrading from 1.3.0 to 1.3.1
+
+**Code plus the root helpers, and one setting that keeps your language.** 1.3.1 makes the public repository English
+by default: a fresh installation speaks English unless the installer is told otherwise, and the installers, the root
+helpers and the scripts print English. An existing installation must keep its language, so **store the current
+default explicitly BEFORE the new code goes in** (1.3.0 had no stored value and fell back to Polish; 1.3.1 falls back
+to English). `INSERT IGNORE` keeps a default you already chose in *Settings → Interface languages*. No schema change,
+no new grant, no sudo / php-fpm / Apache / Fail2Ban configuration change (the helpers keep their paths, arguments and exit
+codes). Details: [CHANGELOG](CHANGELOG.md).
+
+```bash
+PKG=/root/rc-1.3.1 ; RC=/var/www/roundcube ; TS=$(date +%F-%H%M%S)
+tar czf /root/roundcube-pre-1.3.1-$TS.tgz -C "$(dirname $RC)" "$(basename $RC)"        # backup (owners and modes kept)
+mkdir -p /root/helpers-pre-1.3.1-$TS && cp -a /usr/local/sbin/mailpanel-f2b-apply /usr/local/bin/mailpanel-policy-daily.php /root/helpers-pre-1.3.1-$TS/
+# 1) keep the language of the running site (Polish here) - BEFORE the code:
+mysql mailserver -e "INSERT IGNORE INTO app_settings (k, v) VALUES ('default_language', 'pl')"
+# 2) code (root:root) and the helpers whose messages changed (same paths, arguments and exit codes)
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/app $PKG/assets $PKG/panel $PKG/portal.php $PKG/.htaccess $RC/
+install -o root -g root -m 755 $PKG/scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
+install -o root -g root -m 755 $PKG/scripts/mailpanel-policy-daily.php /usr/local/bin/
+find $RC/app $RC/panel $RC/portal.php -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors'   # prints nothing
+curl -s https://<mail-host>/portal.php | grep -o '<html lang="[a-z]*">'      # <html lang="pl"> - still Polish
+```
+
+The Fail2Ban helper now answers `unchanged` / `saved and reloaded (N changes)` / `refused: …` (the panel understands the
+old Polish answers too, so the order of the two steps above does not matter). Going back: unpack the tarball over the same
+paths and copy the two helpers back; the stored `default_language` can stay (1.3.0 reads it the same way).
 
 ## Upgrading from 1.2.0 to 1.3.0
 
@@ -276,7 +311,7 @@ systemctl show $FPM -p ProtectSystem -p ReadWritePaths
 # 7) prove the helpers work under THE SAME sandbox and through sudo as $PU (what the panel does)
 systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/fail2ban/jail.local \
   /usr/local/sbin/mailpanel-f2b-apply --selftest                                # -> selftest ok
-sudo -u $PU sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local         # -> bez zmian
+sudo -u $PU sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local         # -> unchanged (before 1.3.1: "bez zmian")
 CUR=$(postconf -h smtpd_client_message_rate_limit)
 systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/postfix \
   /usr/sbin/postconf -e "smtpd_client_message_rate_limit=$CUR" && echo "postconf -e works under the sandbox"
@@ -406,7 +441,7 @@ done
 for c in "set dovecot action nftables actionban touch banip 1.2.3.4" "set dovecot banip 1.2.3.4 extra" "start" "stop"; do
   sudo -l -U www-data /usr/bin/fail2ban-client $c >/dev/null 2>&1 && echo "!!! allowed (must NOT be): $c" || echo "refused (good): $c"
 done
-# the helper end to end, as the panel calls it (1.1.0: the proposal is read from stdin): unchanged -> "bez zmian" ("no changes")
+# the helper end to end, as the panel calls it (1.1.0: the proposal is read from stdin): unchanged -> "unchanged" (before 1.3.1 the helper printed "bez zmian")
 sudo -u www-data sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local
 ```
 
@@ -686,7 +721,7 @@ systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePa
 ```
 
 Every helper checks each write and exits non-zero with a clear message on failure; the panel shows that message instead
-of "saved". If you see `read-only file system` or `nie mogę otworzyć … do zapisu`, the drop-in is missing or php-fpm was
+of "saved". If you see `read-only file system` or `cannot open … for writing` (before 1.3.1: `nie mogę otworzyć … do zapisu`), the drop-in is missing or php-fpm was
 not restarted.
 
 What each entry enables (without an entry, that feature shows a readable message; the rest works):
@@ -947,7 +982,9 @@ Emergency disable from SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_en
 
 ### Languages
 
-Polish (default) and English are part of the code (`app/lang/pl/`, `app/lang/en/`). The visitor picks a language with
+English and Polish are part of the code (`app/lang/en/`, `app/lang/pl/`). The default interface language is stored in
+`app_settings.default_language` (`install.php` asks, English by default; without a stored value the panel uses English).
+The visitor picks a language with
 the switcher (portal: top right; panel: header) — remembered in the `lang` cookie; without a choice the browser's
 language is used when enabled, otherwise the default from *Settings → Interface languages*. There you can also enable /
 disable languages, set the default (also used for the audit log and the policy service's notice), copy a language as a
@@ -1050,15 +1087,15 @@ Your responsibilities:
 | Red "No access to Fail2Ban" box | missing sudoers entries or `APP_ENV=dev` |
 | "No sudo permission" on Postfix | missing sudoers entry for `update-postfix-limits.sh` |
 | Fail2Ban save: "Fail2Ban: sudo: a password is required" / "…not allowed to execute…" | the helper or its sudoers rule is missing: `install.sh` section 2 (or "Upgrading from 1.0.1 to 1.1.0", step 3). The rule is `mailpanel-f2b-apply ""` — the helper takes no arguments |
-| Fail2Ban save: "odrzucone: nie mogę otworzyć /etc/fail2ban/jail.local do zapisu" / any `read-only file system` | the php-fpm drop-in is missing or php-fpm was not restarted: "php-fpm sandbox" above (`ReadWritePaths=/etc/fail2ban/jail.local`, `systemctl restart`) |
+| Fail2Ban save: "refused: cannot open /etc/fail2ban/jail.local for writing" (before 1.3.1: "odrzucone: nie mogę otworzyć …") / any `read-only file system` | the php-fpm drop-in is missing or php-fpm was not restarted: "php-fpm sandbox" above (`ReadWritePaths=/etc/fail2ban/jail.local`, `systemctl restart`) |
 | Fail2Ban save: "odrzucone: …" | the helper refused the proposal (the text says which line/value) or Fail2Ban rejected it (`fail2ban-client -t`; the previous file was restored); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
-| Fail2Ban save: "BŁĄD: …" (exit 3) | the write could not be completed **and** the previous content could not be restored: the message names the backup in `/var/backups/mailpanel-f2b/` — copy it back as root and run `fail2ban-client -t` |
-| Postfix limits: "Postfix NIE został zmieniony: … ReadWritePaths=/etc/postfix" | the drop-in lacks `/etc/postfix` (or no restart): "php-fpm sandbox" above |
-| Deleting an account: "pliki poczty NIE zostały przeniesione do kwarantanny (kod N)" | the account is gone from the database but the maildir is still in place; codes: 4 no such directory, 6 the account still exists in Dovecot, 7 `doveadm` could not confirm, 3 path outside `/var/mail/vhosts`, 5/8 move or quarantine failed — see the header of `scripts/mailpanel-delete-user.sh` |
-| Registration says a name is "zarezerwowana" / "niedostępna" | reserved list, an alias that names it, or a recently deleted account (*Settings*: reserved names, hold days); an administrator can create it with the consent box in *Add user* — except an alias address ("To adres aliasu"): delete the alias there first, or keep it |
-| Panel: "Sesja administratora wygasła — zaloguj się ponownie." bar | the admin session ended (1 h idle, 12 h, password changed elsewhere, 5 wrong confirmation passwords — the audit log says `REAUTH_LOCKOUT`); nothing was saved by the request that hit it — log in again |
-| Panel: "Token bezpieczeństwa nie pasuje do sesji" | the page belongs to an older session (e.g. you logged in again in another tab): reload the page (F5) |
-| Login: the *Webmail* tile is greyed out | the administrator password is not the password of the mailbox with the same address: log out ("Wyloguj — zmień użytkownika") and log in with the mailbox password — it opens webmail directly |
+| Fail2Ban save: "FAILED: …" (before 1.3.1: "BŁĄD: …"; exit 3) | the write could not be completed **and** the previous content could not be restored: the message names the backup in `/var/backups/mailpanel-f2b/` — copy it back as root and run `fail2ban-client -t` |
+| Postfix limits: "Postfix was NOT changed: … ReadWritePaths=/etc/postfix" (pl: "Postfix NIE został zmieniony") | the drop-in lacks `/etc/postfix` (or no restart): "php-fpm sandbox" above |
+| Deleting an account: "the mail files were NOT moved to the quarantine (code N)" (pl: "pliki poczty NIE zostały przeniesione do kwarantanny") | the account is gone from the database but the maildir is still in place; codes: 4 no such directory, 6 the account still exists in Dovecot, 7 `doveadm` could not confirm, 3 path outside `/var/mail/vhosts`, 5/8 move or quarantine failed — see the header of `scripts/mailpanel-delete-user.sh` |
+| Registration says a name is "reserved" / "not available" (pl: "zarezerwowana" / "niedostępna") | reserved list, an alias that names it, or a recently deleted account (*Settings*: reserved names, hold days); an administrator can create it with the consent box in *Add user* — except an alias address ("This is an alias address"; pl: "To adres aliasu"): delete the alias there first, or keep it |
+| Panel: "The administrator session has expired — sign in again." bar (pl: "Sesja administratora wygasła") | the admin session ended (1 h idle, 12 h, password changed elsewhere, 5 wrong confirmation passwords — the audit log says `REAUTH_LOCKOUT`); nothing was saved by the request that hit it — log in again |
+| Panel: "The security token does not match the session" (pl: "Token bezpieczeństwa nie pasuje do sesji") | the page belongs to an older session (e.g. you logged in again in another tab): reload the page (F5) |
+| Login: the *Webmail* tile is greyed out | the administrator password is not the password of the mailbox with the same address: log out ("Sign out — change user"; pl: "Wyloguj — zmień użytkownika") and log in with the mailbox password — it opens webmail directly |
 | `fail2ban-regex … mailpanel-portal` → `0 matched` | the 1.1.0 filter is still installed (it never matched): install `system/fail2ban/filter.d/mailpanel-portal.conf` from 1.2.0 |
 | Fail2Ban tab: "no read permission" | `jail.local` must be readable by the PHP user: `root:root` **644** (do **not** make it writable for it) |
 | Webmail login fails, panel works | check `imap_host` in `config.inc.php` (that's plain RC login) |

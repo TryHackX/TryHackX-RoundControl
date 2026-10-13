@@ -124,21 +124,21 @@ function backups(): array { global $bak; return glob($bak . '/jail.local.*') ?: 
 
 reset_state($base);
 [$rc, $out] = helper($base);
-eq([$rc, $out], [0, 'bez zmian'], 'niezmieniona propozycja -> "bez zmian", exit 0');
+eq([$rc, $out], [0, 'unchanged'], 'niezmieniona propozycja -> "unchanged", exit 0');
 eq(file_get_contents($live), $base, 'bez zmian: plik nietknięty');
 eq(backups(), [], 'bez zmian: bez kopii zapasowej');
 ok(!is_file($h . '/calls.log'), 'bez zmian: fail2ban-client nie wywołany');
 
 // ta sama opcja i wartość, inny odstęp = nie zmiana semantyczna
 [$rc, $out] = helper(replaceLine($base, "maxretry = 3\n", "maxretry =   3\n"));
-eq([$rc, $out], [0, 'bez zmian'], 'zmiana samego odstępu -> "bez zmian"');
+eq([$rc, $out], [0, 'unchanged'], 'zmiana samego odstępu -> "unchanged"');
 
 // prawidłowa zmiana
 $new = replaceLine($base, "[dovecot]\nenabled = true\nfindtime = 10m\nmaxretry = 5", "[dovecot]\nenabled = true\nfindtime = 10m\nmaxretry = 7");
 reset_state($base);
 [$rc, $out] = helper($new);
 eq($rc, 0, 'prawidłowa zmiana: exit 0');
-ok(str_starts_with($out, 'zapisane i przeładowane (1 zmian'), 'prawidłowa zmiana: komunikat ("' . $out . '")');
+ok(str_starts_with($out, 'saved and reloaded (1 changes)'), 'prawidłowa zmiana: komunikat ("' . $out . '")');
 eq(file_get_contents($live), $new, 'plik w miejscu == propozycja');
 eq(count(backups()), 1, 'powstała jedna kopia zapasowa');
 eq(file_get_contents(backups()[0] ?? ''), $base, 'kopia zapasowa == oryginał');
@@ -176,16 +176,16 @@ $refusals = [
 foreach ($refusals as $label => $prop) {
     reset_state($base);
     [$rc, $out] = helper($prop);
-    ok($rc === 1 && str_starts_with($out, 'odrzucone:'), "odrzucone ($label): exit 1, komunikat [" . substr($out, 0, 70) . ']');
+    ok($rc === 1 && str_starts_with($out, 'refused:'), "odrzucone ($label): exit 1, komunikat [" . substr($out, 0, 70) . ']');
     eq(file_get_contents($live), $base, "odrzucone ($label): plik nietknięty");
     ok(!is_file($h . '/calls.log'), "odrzucone ($label): fail2ban-client nie wywołany");
 }
 
 reset_state($base);
 [$rc, $out] = helper('');
-ok($rc === 1 && str_contains($out, 'pusta'), 'pusta propozycja -> odrzucone');
+ok($rc === 1 && str_contains($out, 'empty'), 'pusta propozycja -> odrzucone');
 [$rc, $out] = helper(str_repeat("# x\n", 20000));
-ok($rc === 1 && str_contains($out, 'za duża'), 'propozycja > 64 KiB -> odrzucone');
+ok($rc === 1 && str_contains($out, 'too large'), 'propozycja > 64 KiB -> odrzucone');
 [$rc, $out] = helper($base . "\0");
 ok($rc === 1, 'bajt zerowy -> odrzucone');
 
@@ -193,7 +193,7 @@ ok($rc === 1, 'bajt zerowy -> odrzucone');
 reset_state($base);
 file_put_contents($h . '/t_rc', '1');
 [$rc, $out] = helper($new);
-ok($rc === 1 && str_contains($out, 'przywrócono'), 'błąd fail2ban -t: exit 1 i "przywrócono" (' . substr($out, 0, 90) . ')');
+ok($rc === 1 && str_contains($out, 'restored'), 'błąd fail2ban -t: exit 1 i "przywrócono" (' . substr($out, 0, 90) . ')');
 eq(file_get_contents($live), $base, 'błąd fail2ban -t: plik == oryginał (przywrócony w miejscu)');
 eq(count(backups()), 1, 'błąd fail2ban -t: kopia zapasowa zostaje');
 eq(file($h . '/calls.log', FILE_IGNORE_NEW_LINES), ['-t'], 'błąd fail2ban -t: reload nie wywołany');
@@ -202,8 +202,8 @@ eq(file($h . '/calls.log', FILE_IGNORE_NEW_LINES), ['-t'], 'błąd fail2ban -t: 
 reset_state($base);
 file_put_contents($h . '/reload_rc', '1');
 [$rc, $out] = helper($new);
-ok($rc === 2 && str_contains($out, 'reload nie powiódł się'), 'błąd reload: exit 2 (' . substr($out, 0, 90) . ')');
-ok(!str_contains($out, 'zapisane i przeładowane'), 'błąd reload: NIE raportuje sukcesu');
+ok($rc === 2 && str_contains($out, 'the reload failed'), 'błąd reload: exit 2 (' . substr($out, 0, 90) . ')');
+ok(!str_contains($out, 'saved and reloaded'), 'błąd reload: NIE raportuje sukcesu');
 eq(file_get_contents($live), $new, 'błąd reload: nowa treść zostaje (przeszła -t)');
 
 // jail.local niezapisywalny (read-only): zapis się nie udaje => odmowa, nie "sukces"
@@ -214,7 +214,7 @@ if ($isRoot) {
     reset_state($base);
     chmod($live, 0444);
     [$rc, $out] = helper($new);
-    ok($rc !== 0 && !str_contains($out, 'zapisane i przeładowane'), 'jail.local read-only: exit != 0 i brak fałszywego sukcesu (' . substr($out, 0, 80) . ')');
+    ok($rc !== 0 && !str_contains($out, 'saved and reloaded'), 'jail.local read-only: exit != 0 i brak fałszywego sukcesu (' . substr($out, 0, 80) . ')');
     eq(file_get_contents($live), $base, 'jail.local read-only: plik nietknięty');
     chmod($live, 0666);
 }
@@ -230,7 +230,7 @@ write($h . '/afile', 'x');
 write($h . '/prepend_badbak.php', '<?php define("LIVE", ' . var_export($live, true) . '); define("BAK", ' . var_export($h . '/afile/sub', true) . ');'
     . ' define("F2B", "php " . ' . var_export('"' . $fake . '"', true) . ');');
 [$rc, $out] = runProc(['php', '-d', 'auto_prepend_file=' . $h . '/prepend_badbak.php', $root . '/scripts/mailpanel-f2b-apply.php'], $new);
-ok($rc === 1 && str_starts_with($out, 'odrzucone:'), 'katalog kopii niedostępny: odmowa (' . substr($out, 0, 70) . ')');
+ok($rc === 1 && str_starts_with($out, 'refused:'), 'katalog kopii niedostępny: odmowa (' . substr($out, 0, 70) . ')');
 eq(file_get_contents($live), $base, 'katalog kopii niedostępny: plik nietknięty');
 
 // przycinanie kopii: zostają najnowsze KEEP_BACKUPS (=3)

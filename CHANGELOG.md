@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.3.1 — 2026-10-13 — English by default, phones, language switcher
+
+**Code plus the two root helpers whose messages changed** (same paths, arguments and exit codes). No schema change, no
+new grant, no sudo / php-fpm / Apache / Fail2Ban configuration change. **An existing installation must store its
+language before the new code goes in** — see [README → Upgrading from 1.3.0 to 1.3.1](README.md#upgrading-from-130-to-131).
+
+Changed — English by default (the repository is public):
+
+- **Fallback language:** without `app_settings.default_language` the portal, the panel, the audit log and the policy
+  service now use **English** (1.3.0: Polish). Polish stays the reference language of the keys. Upgrades store the
+  current language explicitly first (`INSERT IGNORE … ('default_language', 'pl')`), so a running site keeps Polish.
+- **`install.php` speaks English** by default; `--lang=pl` (or the first question in an interactive terminal) switches
+  it to Polish. Its texts are a small catalogue inside the installer (English + Polish, identical keys — a test checks
+  it), not app/lang: the installer runs as root before `.env` and the database exist, and its texts are not part of the
+  interface packs administrators translate in the panel. It now **asks for the default interface language** (English by
+  default; a re-run offers the stored value, so it never flips a running site) and stores it. Yes / no accepts y / t.
+- **`install.sh` and the helpers print English.** `mailpanel-f2b-apply` answers `unchanged` / `saved and reloaded (N
+  changes)` / `refused: …` / `saved and checked, but the reload failed: …` / `FAILED: …` (exit codes unchanged); the panel
+  keys on the exit code and shows a translated message with the helper's detail, and still understands the old Polish
+  `bez zmian` (helper and code can be updated in either order). The other helpers already printed English.
+  `install-password-plugin.sh` too. The policy service follows the stored default language as before.
+
+Changed — phones and the header:
+
+- **Portal on a phone:** the language button sits in its own row above the card (it used to sit on the card's corner),
+  the card has rounded corners and a margin instead of sticking to the top edge, the hidden card (registration / login)
+  no longer lengthens the page (the footer is at the bottom of the screen), slimmer padding at 360 px so reCAPTCHA keeps
+  its full size; landscape phones get the card at the top instead of below the fold.
+- **Panel on a phone:** the e-mail without the "Logged in as" label next to the buttons, four counters in one row on
+  landscape phones / small tablets (was 3 + 1), smaller header and dialog margins on low screens, a narrower coverage
+  bar in the language table. Checked at 360–430 px and in landscape: no horizontal page scroll; tables scroll inside
+  their frame, tabs scroll, dialogs fit.
+- **Header:** the language switcher sits right next to the light / dark toggle (Log out comes before them).
+- **Language switcher refreshes itself:** after copying, uploading, deleting, enabling or disabling a language (or
+  changing the default) the header switcher and the "source language" list update immediately — no page reload. (The
+  portal's switcher is on another page: it shows the new list on its next load.)
+
+Tests: `tests/i18n_test.php` (installer catalogue parity, every installer key exists, no Polish outside the catalogue,
+`--help` / `--lang` handling, English fallback), `tests/http_test.php` (no stored language → English portal, stored `pl`
+→ Polish, switcher and source list in the language-operation response, header order), `tests/db_test.php` (policy
+service: English without a stored language), `tests/scripts_test.php` (English helper output).
+
 ## 1.3.0 — 2026-10-13 — languages, CAPTCHA providers, footer, polish
 
 **Code** plus one new data directory (`/var/lib/roundcontrol/lang`, owned by the pool user) and a reinstalled policy

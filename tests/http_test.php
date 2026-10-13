@@ -193,8 +193,9 @@ try {
     $admin->prepare('INSERT INTO virtual_aliases (domain_id, source, destination) VALUES (?, ?, ?)')
           ->execute([$dom, 'postmaster@example.test', 'jan@example.test']);
     // limity logowania wyżej niż liczba złych prób w testach (wszystkie żądania idą z 127.0.0.1)
+    // jak produkcja po aktualizacji do 1.3.1: polski zapisany jawnie (bez ustawienia od 1.3.1 obowiązuje angielski)
     $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('admin_lock_threshold', '50'), ('recaptcha_enabled', '0'),
-                  ('allow_registration', '1'), ('registration_enabled', '1')");
+                  ('allow_registration', '1'), ('registration_enabled', '1'), ('default_language', 'pl')");
 
     file_put_contents($tmp . '/app.env', "APP_ENV=dev\nAPP_TIMEZONE=UTC\nPANEL_DB_DSN=\"$dsnBase;dbname=$db;charset=utf8mb4\"\n"
         . "PANEL_DB_USER=$uPanel\nPANEL_DB_PASS=$pw\nLANG_DATA_DIR=" . str_replace('\\', '/', $tmp) . "/lang\n");
@@ -467,13 +468,15 @@ try {
     $pub = (new Client($base))->page('/portal.php');
     ok(str_contains($pub['body'], 'TryHackX RoundControl') && str_contains($pub['body'], 'https://github.com/TryHackX/TryHackX-RoundControl'), 'portal: stopka z nazwą i repozytorium');
     $verRe = '/\b1\.[0-9]\.[0-9]\b/';
-    ok(!str_contains($pub['body'], '1.3.0') && !preg_match('/\bv(?:ersion|ersja)?\s*1\.\d/i', $pub['body']) && !preg_match($verRe, $pub['headers']), 'portal: żadnego numeru wersji w HTML ani nagłówkach');
+    preg_match("/define\('APP_VERSION', '([0-9.]+)'\)/", (string) file_get_contents($root . '/app/bootstrap.php'), $vm);
+    $appVer = $vm[1] ?? 'x.y.z';
+    ok(!str_contains($pub['body'], $appVer) && !preg_match('/\bv(?:ersion|ersja)?\s*1\.\d/i', $pub['body']) && !preg_match($verRe, $pub['headers']), 'portal: żadnego numeru wersji w HTML ani nagłówkach');
     ok(!preg_match('/\?v=\d+\.\d+/', $pub['body']), 'adresy assetów bez numeru wersji (skrót pliku)');
     foreach (['assets/portal.js', 'assets/portal.css', 'assets/panel.js', 'assets/panel.css', 'assets/design-system.css'] as $asset) {
         ok(!preg_match($verRe, (string) file_get_contents($root . '/' . $asset)), "$asset (publiczny): bez numerów wydań w komentarzach");
     }
     $pg = $p3->page('/panel/index.php');
-    ok(preg_match('/app-footer-version[^>]*>[^<]*1\.3\.0/', $pg['body']) === 1, 'panel administratora: wersja w stopce');
+    ok(preg_match('/app-footer-version[^>]*>[^<]*' . preg_quote($appVer, '/') . '/', $pg['body']) === 1, 'panel administratora: wersja w stopce (' . $appVer . ')');
 
     /* ------------------------------------------------------------------ 1.3.0: języki */
     group('1.3.0: wybór języka — ?lang, ciasteczko, Accept-Language; angielska wersja bez polskiego');
@@ -524,6 +527,10 @@ try {
     ok(($r['ok'] ?? true) === false, 'drugi raz ten sam kod: odmowa');
     $r = $p3->panel(['lang_op' => 'toggle', 'code' => 'de'])['json'] ?? [];
     ok(($r['ok'] ?? false) === true && str_contains((new Client($base))->page('/portal.php?lang=de')['body'], '<html lang="de">'), 'włączony de: portal ?lang=de działa');
+    ok(str_contains((string) ($r['data']['lang_switch_html'] ?? ''), 'hreflang="de"') && str_contains((string) ($r['data']['lang_switch_html'] ?? ''), 'tab=settings')
+        && in_array(['de', 'DE — Deutsch'], $r['data']['lang_sources'] ?? [], true), '1.3.1: odpowiedź niesie nowy przełącznik języka (z de) i listę źródeł — bez przeładowania strony');
+    $hdr = $p3->page('/panel/index.php')['body'];
+    ok(preg_match('~logout-form.*?</form>\s*(?:<\?php.*?\?>\s*)?<div class="header-tools">\s*<span id="langSwitchSlot"[^>]*>.*?</span>\s*<button[^>]*id="themeToggle"~s', $hdr) === 1, '1.3.1: w nagłówku Wyloguj, potem język tuż obok przełącznika motywu');
     $r = $p3->panel(['lang_op' => 'default', 'code' => 'de'])['json'] ?? [];
     ok(($r['ok'] ?? false) === true && $setting('default_language') === 'de', 'de jako domyślny');
     $r = $p3->panel(['lang_op' => 'toggle', 'code' => 'de'])['json'] ?? [];
@@ -576,6 +583,15 @@ try {
     ok(($r['ok'] ?? false) === true && !is_file($tmp . '/lang/xx.json') && !in_array('xx', explode(',', $setting('enabled_languages')), true), 'usunięcie języka dodanego: plik i wpis znikają');
     $p3->panel(['lang_op' => 'delete', 'code' => 'de']);
     eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LANGUAGE'") >= 8, true, 'operacje na językach w dzienniku audytowym');
+    group('1.3.1: bez zapisanego języka domyślnego — angielski (świeża instalacja); zapisany pl zostaje polski');
+    $admin->exec("DELETE FROM app_settings WHERE k = 'default_language'");
+    $fresh = (new Client($base))->page('/portal.php');
+    ok(str_contains($fresh['body'], '<html lang="en">') && str_contains($fresh['body'], 'Sign in'), 'brak default_language: portal po angielsku');
+    $r = (new Client($base))->req('GET', '/portal.php', [], ['Accept-Language: de-DE,de;q=0.9']);
+    ok(str_contains($r['body'], '<html lang="en">'), '... także dla przeglądarki w niewłączonym języku (de)');
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('default_language', 'pl')");
+    $r = (new Client($base))->req('GET', '/portal.php', [], ['Accept-Language: de-DE,de;q=0.9']);
+    ok(str_contains($r['body'], '<html lang="pl">') && str_contains($r['body'], 'Logowanie'), 'default_language = pl (aktualizacja produkcji): portal po polsku');
     $log = (string) @file_get_contents($tmp . '/server.log');
     ok(!preg_match('/PHP (Warning|Notice|Deprecated|Fatal)/', $log), 'serwer: brak ostrzeżeń PHP' . (preg_match('/PHP (Warning|Notice|Deprecated|Fatal)[^\n]*/', $log, $mm) ? ' — ' . $mm[0] : ''));
 } catch (Throwable $e) {

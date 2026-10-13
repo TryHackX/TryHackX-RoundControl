@@ -210,17 +210,51 @@ $resolve = static function (array $get, array $cookie, string $al): string {
     Lang::init();
     return Lang::current();
 };
-eq($resolve([], [], ''), 'pl', 'nic -> domyślny (pl)');
+eq($resolve([], [], ''), 'en', 'nic (bez ustawienia default_language) -> angielski (1.3.1)');
 eq($resolve([], [], 'en-GB,en;q=0.9'), 'en', 'Accept-Language en -> en');
 eq($resolve([], ['lang' => 'pl'], 'en'), 'pl', 'ciasteczko ma pierwszeństwo przed Accept-Language');
 eq($resolve(['lang' => 'en'], ['lang' => 'pl'], 'pl'), 'en', '?lang= ma pierwszeństwo przed ciasteczkiem');
 eq($resolve(['lang' => 'xx'], ['lang' => 'en'], ''), 'en', 'nieznany ?lang= pominięty');
-eq($resolve([], ['lang' => '../../etc'], ''), 'pl', 'śmieci w ciasteczku pominięte');
-eq($resolve(['lang' => ['en']], [], ''), 'pl', '?lang[]= (tablica) pominięte');
+eq($resolve([], ['lang' => '../../etc'], 'pl'), 'pl', 'śmieci w ciasteczku pominięte (dalej Accept-Language)');
+eq($resolve(['lang' => ['pl']], [], ''), 'en', '?lang[]= (tablica) pominięte');
+eq(Lang::FALLBACK_DEFAULT, 'en', 'bez ustawienia język domyślny = en; wzorzec kluczy = pl');
+eq(Lang::REFERENCE, 'pl', 'wzorzec kluczy nadal pl');
 Lang::force('en');
 eq(Lang::t('common.footer.author'), $enAll['common.footer.author'], 't() w bieżącym języku');
 eq(Lang::t('no.such.key'), 'no.such.key', 'brak klucza -> sam klucz');
 Lang::force('pl');
+
+group('1.3.1: instalator CLI (install.php) — angielski domyślnie, katalog en/pl');
+$run = static function (array $args) use ($root): array {
+    $p = proc_open(array_merge([PHP_BINARY, $root . '/install.php'], $args), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    fclose($pipes[0]);
+    $o = (string) stream_get_contents($pipes[1]); $e = (string) stream_get_contents($pipes[2]);
+    fclose($pipes[1]); fclose($pipes[2]);
+    return [proc_close($p), $o, $e];
+};
+[$rc, $o] = $run(['--dump-catalogue']);
+$cat = json_decode($o, true);
+ok($rc === 0 && is_array($cat) && isset($cat['en'], $cat['pl']), 'install.php --dump-catalogue: katalog en + pl');
+$cat = is_array($cat) ? $cat : ['en' => [], 'pl' => []];
+eq(array_keys($cat['pl']), array_keys($cat['en']), 'instalator: pl i en mają te same klucze (w tej samej kolejności)');
+foreach ($cat['en'] as $k => $v) {
+    eq(params((string) $v), params((string) ($cat['pl'][$k] ?? '')), "instalator $k: te same parametry");
+    ok(!preg_match(PL_CHARS, (string) $v), "instalator en $k: bez polskich znaków");
+}
+$isrc = (string) file_get_contents($root . '/install.php');
+preg_match_all('/\bL\(\s*\'([a-z0-9_]+)\'\s*[,)]/', $isrc, $m);
+ok(count($m[1]) > 30, 'instalator używa L()');
+foreach (array_unique($m[1]) as $k) {
+    ok(isset($cat['en'][$k]), "instalator: klucz $k istnieje");
+}
+$outside = (string) preg_replace(['~// catalogue:begin.*?// catalogue:end~s', '~^.*// bilingual question.*$~m'], '', $isrc);
+$bad = array_values(array_filter(phpPolishLiterals($outside), static fn() => true));
+ok($bad === [] && !preg_match(PL_CHARS, $outside), 'instalator: polski tekst tylko w katalogu' . ($bad ? ' — ' . implode(' | ', array_slice($bad, 0, 3)) : ''));
+[$rc, $o] = $run(['--help']);
+ok($rc === 0 && str_contains($o, 'Usage: php install.php') && !preg_match(PL_CHARS, $o), '--help: po angielsku');
+[$rc, , $e] = $run(['--lang=xx']);
+ok($rc === 2 && str_contains($e, 'Unknown language'), '--lang=xx: odmowa (kod 2)');
+ok(str_contains($isrc, "\$LANG = 'en';") && str_contains($isrc, "'en';\n    \$ui = "), 'instalator: domyślnie angielski (instalator i język interfejsu)');
 
 group('Filtr wartości (wgrywane pakiety)');
 foreach ([
