@@ -37,24 +37,25 @@ final class Pagination
         $from       = $total > 0 ? $off + 1 : 0;
         $to         = min($off + $per, $total);
 
-        $btn = static fn(int $p, string $text, bool $active = false): string =>
-            '<button class="pagination-btn' . ($active ? ' active' : '') . '" data-nav="' . $nav . '" data-page="' . $p . '">' . $text . '</button>';
+        // 1.2.0: przyciski "Pierwsza / Poprzednia / Następna / Ostatnia" są ZAWSZE (nieaktywne, gdy nie ma dokąd iść),
+        // a okno numerów ma stałą liczbę pozycji — klikany przycisk nie ucieka spod kursora po zmianie strony.
+        $btn = static fn(int $p, string $text, bool $active = false, bool $off = false, string $aria = ''): string =>
+            '<button type="button" class="pagination-btn' . ($active ? ' active' : '') . '" data-nav="' . $nav . '" data-page="' . $p . '"'
+            . ($active ? ' aria-current="page"' : '') . ($off ? ' disabled' : '') . ($aria !== '' ? ' aria-label="' . $aria . '"' : '') . '>' . $text . '</button>';
 
-        $html  = '<div class="pagination-info">' . $label . ' ' . $from . ' - ' . $to . ' z ' . $total . '</div>';
-        $html .= '<div class="pagination-controls">';
+        $html  = '<div class="pagination-info" aria-live="polite">' . $label . ' ' . $from . ' - ' . $to . ' z ' . $total . '</div>';
+        $html .= '<nav class="pagination-controls" aria-label="Strony listy">';
 
-        if ($page > 1) {
-            $html .= $btn(1, '« Pierwsza');
-            $html .= $btn($page - 1, '‹ Poprzednia');
+        $html .= $btn(1, '« Pierwsza', false, $page <= 1, 'Pierwsza strona');
+        $html .= $btn(max(1, $page - 1), '‹ Poprzednia', false, $page <= 1, 'Poprzednia strona');
+        $width = min(5, $totalPages);
+        $start = max(1, min($page - 2, $totalPages - $width + 1));
+        for ($i = $start; $i < $start + $width; $i++) {
+            $html .= $btn($i, (string) $i, $i === $page, false, 'Strona ' . $i);
         }
-        for ($i = max(1, $page - 2); $i <= min($totalPages, $page + 2); $i++) {
-            $html .= $btn($i, (string) $i, $i === $page);
-        }
-        if ($page < $totalPages) {
-            $html .= $btn($page + 1, 'Następna ›');
-            $html .= $btn($totalPages, 'Ostatnia »');
-        }
+        $html .= $btn(min($totalPages, $page + 1), 'Następna ›', false, $page >= $totalPages, 'Następna strona');
+        $html .= $btn($totalPages, 'Ostatnia »', false, $page >= $totalPages, 'Ostatnia strona (' . $totalPages . ')');
 
-        return $html . '</div>';
+        return $html . '</nav>';
     }
 }

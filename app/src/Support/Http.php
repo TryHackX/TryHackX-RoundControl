@@ -27,11 +27,36 @@ final class Http
         return is_string($value) ? $value : $default;
     }
 
+    /**
+     * Żądanie wysłane przez fetch() panelu/portalu (1.2.0): pole _ajax albo nagłówek X-Requested-With. Odpowiedź ma być
+     * JSON-em — także odmowa (sesja wygasła, CSRF), zamiast przekierowania, którego fetch nie pokaże.
+     */
+    public static function isAjax(): bool
+    {
+        return isset($_POST['_ajax']) || isset($_POST['ajax_scan_ban'])
+            || (string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== '';
+    }
+
+    /** isAjax() albo endpoint odczytu panelu (?ajax_...=1). */
+    public static function wantsJson(): bool
+    {
+        if (self::isAjax()) {
+            return true;
+        }
+        foreach (array_keys($_GET) as $k) {
+            if (str_starts_with((string) $k, 'ajax_')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Wyślij odpowiedź JSON i zakończ żądanie. */
     public static function json(array $data): never
     {
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode($data, JSON_UNESCAPED_UNICODE);
+        header('Cache-Control: no-store');
+        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 

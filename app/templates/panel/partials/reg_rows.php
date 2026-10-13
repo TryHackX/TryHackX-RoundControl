@@ -5,12 +5,15 @@ use App\Support\Html;
 use App\Support\Ip;
 
 /** @var array<int,array> $rows */
+if ($rows === []): ?>
+<tr class="empty-row"><td colspan="5" class="empty-state-text">Brak zdarzeń.</td></tr>
+<?php endif;
 foreach ($rows as $l):
     $ip = Ip::toStr($l['ip']) ?? '';
 ?>
 <tr>
     <td><?= Html::e($l['created_at']) ?></td>
-    <td><span class="badge-ip" data-action="search-ip" data-ip="<?= Html::e($ip) ?>"><?= Html::e($ip) ?></span></td>
+    <td><button type="button" class="badge-ip" data-action="search-ip" data-ip="<?= Html::e($ip) ?>" title="Szukaj kont z tym IP"><?= Html::e($ip) ?></button></td>
     <td><?= Html::e($l['email']) ?></td>
     <td>
         <?php if ($l['status'] === 'success'): ?>

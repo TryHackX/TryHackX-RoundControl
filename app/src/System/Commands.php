@@ -447,16 +447,20 @@ final class Commands
         return ['ok' => $ret === 0, 'code' => $ret, 'out' => implode(' ', $out)];
     }
 
-    /** Czytelny opis kodu wyjścia mailboxDelete() dla administratora. */
+    /**
+     * Czytelny opis kodu wyjścia mailboxDelete() dla administratora. Od 1.1.0 skrzynka NIE jest kasowana od razu:
+     * trafia do kwarantanny /var/mail/deleted/<domena>__<nazwa>__<RRRRmmddGGMMSS>, którą timer
+     * mailpanel-purge-deleted czyści po 30 dniach (do tego czasu katalog da się odzyskać ręcznie).
+     */
     public static function mailboxDeleteMessage(int $code): string
     {
         return match ($code) {
-            0       => 'Katalog poczty przeniesiony do kwarantanny (/var/mail/deleted, domyślnie 30 dni).',
-            4       => 'Uwaga: na dysku nie było katalogu poczty tego konta (nic do usunięcia).',
+            0       => 'Pliki poczty przeniesione do kwarantanny /var/mail/deleted — zostaną skasowane automatycznie po 30 dniach (do tego czasu można je odzyskać).',
+            4       => 'Na dysku nie było katalogu poczty tego konta (nic do przeniesienia).',
             6       => 'Uwaga: konto nadal istnieje w Dovecot — pliki NIE zostały ruszone.',
             7       => 'Uwaga: nie można potwierdzić w Dovecot, że konto nie istnieje (doveadm) — pliki NIE zostały ruszone.',
-            -1      => 'Pliki nie zostały usunięte (brak konfiguracji sudo lub tryb dev).',
-            default => "Uwaga: NIE usunięto plików poczty (kod $code) — sprawdź /var/mail/vhosts i dziennik, usuń ręcznie.",
+            -1      => 'Pliki poczty nie zostały przeniesione do kwarantanny (brak konfiguracji sudo lub tryb dev) — zostały na dysku.',
+            default => "Uwaga: pliki poczty NIE zostały przeniesione do kwarantanny (kod $code) — sprawdź /var/mail/vhosts i dziennik; przenieś je ręcznie.",
         };
     }
 

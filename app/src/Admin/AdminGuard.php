@@ -56,8 +56,9 @@ final class AdminGuard
     {
         Session::destroy();
         if ($json) {
+            // 1.2.0: zapytania fetch() dostają JSON z wyjaśnieniem (panel pokazuje go i link do logowania), nie stronę portalu
             http_response_code(403);
-            Http::json(['error' => 'forbidden']);
+            Http::json(['ok' => false, 'auth' => true, 'error' => 'Sesja administratora wygasła — zaloguj się ponownie.']);
         }
         header('Location: ../portal.php');
         exit;

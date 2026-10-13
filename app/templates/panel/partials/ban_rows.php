@@ -24,13 +24,13 @@ $remaining = static function (int $ts): string {
 };
 
 if ($bans === []): ?>
-<tr><td colspan="5" class="empty-state-text">Brak aktywnych blokad (SQL oraz Fail2Ban).</td></tr>
+<tr class="empty-row"><td colspan="5" class="empty-state-text">Brak aktywnych blokad (SQL oraz Fail2Ban).</td></tr>
 <?php else: ?>
 <?php foreach ($bans as $b):
     $cls = $b['type'] === 'local' ? 'badge-type-local' : 'badge-jail jail-' . Html::e($b['service']);
     $untilEpoch = $b['until_epoch'] ?? null;
 ?>
-<tr>
+<tr data-ip="<?= Html::e((string) $b['ip_address']) ?>">
     <td><span class="<?= $cls ?>"><?= Html::e($b['service']) ?></span></td>
     <td><strong><?= Html::e((string) $b['ip_address']) ?></strong></td>
     <td><?= Html::e($b['reason']) ?></td>
@@ -46,8 +46,9 @@ if ($bans === []): ?>
                 data-action="manage-ban"
                 data-ip="<?= Html::e((string) $b['ip_address']) ?>"
                 data-type="<?= Html::e($b['type']) ?>"
-                data-jail="<?= Html::e((string) $b['jail']) ?>">
-            <i class="ri-settings-3-line"></i> Zarządzaj
+                data-jail="<?= Html::e((string) $b['jail']) ?>"
+                aria-label="Zarządzaj blokadą <?= Html::e((string) $b['ip_address']) ?>">
+            <i class="ri-settings-3-line" aria-hidden="true"></i> Zarządzaj
         </button>
     </td>
 </tr>
