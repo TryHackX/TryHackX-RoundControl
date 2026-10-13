@@ -8,7 +8,7 @@
 # main.cf lives in /etc. php-fpm runs with ProtectSystem=full, and a process started through sudo from PHP-FPM inherits
 # that sandbox: /etc is READ-ONLY for this script too. `postconf -e` creates a temporary file in /etc/postfix and
 # renames it over main.cf, so it needs the whole directory writable: add /etc/postfix to the php-fpm drop-in
-# (ReadWritePaths=/etc/fail2ban/jail.local /etc/postfix; install.sh section 10). File permissions still keep www-data
+# (ReadWritePaths=/etc/fail2ban/jail.local /etc/postfix; install.sh section 10). File permissions still keep the PHP user
 # out of /etc/postfix — ReadWritePaths only lifts the read-only mount, not the owner/mode checks.
 #
 # Exit codes: 0 applied and reloaded   1 bad arguments   2 cannot read the current values

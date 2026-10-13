@@ -4,8 +4,20 @@
 
 **Upgrade is recommended for every installation** (exact steps:
 [README → Upgrading from 1.0.1 to 1.1.0](README.md#upgrading-from-101-to-110)). It needs a database import
-(`sql/panel_schema.sql`, `sql/upgrade_1.1.0.sql`, grants), new helper / script versions, the php-fpm drop-in and a
-php-fpm **restart** — do not just copy the PHP files.
+(`sql/panel_schema.sql`, `sql/upgrade_1.1.0.sql`, grants), new helper / script versions, the panel's own PHP-FPM pool,
+the php-fpm drop-in and a php-fpm **restart** — do not just copy the PHP files. `sudo bash install.sh` does all of it.
+
+Added — Roundcube + the panel in their own PHP-FPM pool:
+
+- Until now one pool `[www]` (`www-data`) ran every PHP site of the server, so a flaw in any of them could read the
+  panel's database password and Roundcube's `des_key` and use the panel's sudo rules. `install.sh` section 1b creates
+  the system user `mailweb` (`PANEL_USER=`), the pool `[mailweb]` (`system/php-fpm/roundcontrol-pool.conf`: own socket
+  `0660 www-data`, `pm = ondemand`, own session directory with its own garbage collection), points Roundcube's files in
+  every `<VirtualHost>` of the mail site at it (`system/apache/roundcontrol-fpm-handler.conf`, nested in `<Directory>` so
+  global aliases such as `/phpmyadmin` stay in `[www]`; validated with `apache2ctl configtest`, restored
+  on failure), and gives `mailweb` what it writes (`temp/`, `logs/`, Roundcube's `log_dir` and its logrotate `create`
+  line) and reads (secrets `root:mailweb 640`). The sudo rules name the pool user through one `User_Alias` line;
+  `www-data` keeps none of them. The other sites are not touched. `PANEL_USER=www-data` keeps the shared pool.
 
 Fixed — account names and deletion:
 
@@ -22,12 +34,14 @@ Fixed — account names and deletion:
   maildir was never found by the delete script, which still reported success. `mailpanel-delete-user.sh` now exits
   non-zero when nothing is found (4) or on any failure, refuses `.`, `..`, empty names and slashes, asks Dovecot whether
   the account still exists (refuses if it does or cannot tell), checks the real path, and **moves** the maildir to
-  `/var/mail/deleted` (purged after 30 days by a cron job) instead of `rm -rf`. The panel checks the exit code and shows
+  `/var/mail/deleted` (purged after 30 days by the systemd timer `mailpanel-purge-deleted.timer`, which takes the age from
+  the deletion time in the entry's name — `mv` keeps the maildir's old mtime, and servers without `cron` never run
+  `/etc/cron.daily`) instead of `rm -rf`. The panel checks the exit code and shows
   a visible error when the files were not dealt with. Deleting an account removes, in one transaction, the aliases that
   point at it (alias rows with a *list* of targets are reported, not edited), its login history and its send counter,
   and records a tombstone: the name is not given out again for `deleted_name_hold_days` (default 365). `upgrade_1.1.0.sql`
   lower-cases existing addresses — note that `WHERE email <> LOWER(email)` finds nothing (case-insensitive column),
-  it needs `BINARY`.
+  it needs `BINARY` — and stops before any change when two accounts differ only by case.
 - **Root helpers reported success when their writes failed.** php-fpm runs with `ProtectSystem=full` and a process
   started through `sudo` inherits that sandbox, so `/etc` is read-only for the root helpers as well (except the
   `ReadWritePaths=` entries of the php-fpm drop-in). `mailpanel-f2b-apply` now rewrites `jail.local` **in place** (open,
@@ -65,13 +79,20 @@ Fixed — login, bans, limits:
   content, and the application `.env` (writable by `www-data` when the code belongs to it) is not read at all; section 0 no
   longer runs `ALTER USER` on existing accounts (a re-run could reset the `mailuser` password and lock Postfix / Dovecot
   out of the database) and creates missing accounts with random passwords; the old wildcard sudo rules are found in
-  `/etc/sudoers` and `/etc/sudoers.d/*` and removed on request (`scripts/mailpanel-sudoers-cleanup.sh`: comments them
-  out, `visudo -cf`, backup). `doveadm quota` and `mailpanel-scan.sh` rules are exact `^regex$` (the latter kept a `*`).
+  `/etc/sudoers` and `/etc/sudoers.d/*` and removed on request (`scripts/mailpanel-sudoers-cleanup.sh`: reads rules as
+  logical lines, so a multi-line `Cmnd_Alias` is removed whole; comments them out, `visudo -cf`, backup, and restores
+  everything it changed if `visudo -c` on the whole configuration fails). Every rule has exact arguments now:
+  `doveadm quota` and `mailpanel-scan.sh` `^regex$` (the latter kept a `*`), `update-postfix-limits.sh` and
+  `mailpanel-delete-user.sh` `""` or `^regex$` (they used to accept any arguments). The rules file is installed under a
+  name sudo ignores, moved into place and the WHOLE configuration checked with `visudo -c` (previous file restored on
+  failure); the alias is named `ROUNDCONTROL_F2B`, because a second definition of the same alias in another file (1.0.x
+  installs may have `MAILPANEL_F2B`) is a syntax error that disables sudo for everyone.
 
 Changed — hardening:
 
-- **File ownership:** code is `root:root` (755 / 644); `www-data` only reads it; `temp/` and `logs/` are the only writable
-  directories (`install.sh` section 7, README). `.htaccess` now really blocks `scripts/`, `system/`, `sql/`, `sql_backup/`,
+- **File ownership:** code is `root:root` (755 / 644); the PHP user only reads it; `temp/` and `logs/` (and Roundcube's
+  `log_dir` outside the tree) are the only writable directories; copies with secrets (`config.inc.php.bak*`,
+  `config.old.php`, `.env.*`) become `root:root 600` (`install.sh` sections 1b and 7, README). `.htaccess` now really blocks `scripts/`, `system/`, `sql/`, `sql_backup/`,
   `_legacy/`, `tests/`, installers, `.env*` copies and backup / dump extensions (the old rules only matched names without
   a dot), with a `<FilesMatch>` fallback; `scripts/*.php` refuse to run outside the CLI; the configuration is read from
   `/etc/mailpanel/panel.env` when present; `.gitignore` added.

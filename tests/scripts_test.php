@@ -611,6 +611,97 @@ if ($bash === null) {
     }
 }
 
+/* ====================================================================== install.sh: osobna pula PHP-FPM (sekcja 1b) */
+group('install.sh: pula PHP-FPM — log_dir, logrotate, vhosty Apache, szablon puli');
+
+if ($bash === null) {
+    skip('brak bash');
+} else {
+    $inst = str_replace("\r\n", "\n", (string) file_get_contents($root . '/install.sh'));
+    ok(preg_match('/# --- helpers begin.*?\n(.*?)\n# --- helpers end/s', $inst, $hm1) === 1
+        && preg_match('/# --- pool helpers begin.*?\n(.*?)\n# --- pool helpers end/s', $inst, $hm2) === 1, 'bloki funkcji install.sh znalezione');
+    $pw = $work . '/pool';
+    foreach (['sites', 'avail', 'logrotate.d', 'backup', 'rc/config', 'rc/temp', 'rc/logs', 'log/roundcube'] as $sub) { mkdir($pw . '/' . $sub, 0777, true); }
+    file_put_contents($pw . '/helpers.sh', $hm1[1] . "\n" . $hm2[1] . "\n");
+    $TP = toPosix($pw);
+    $prelude = 'set -uo pipefail; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }; chown() { :; }; chmod() { :; }' . "\n"
+        . 'apache2ctl() { [ -e "$T/apache_bad" ] && return 1; return 0; }; systemctl() { echo "systemctl $*" >> "$T/calls"; return 0; }' . "\n"
+        . 'logrotate() { [ -e "$T/logrotate_bad" ] && return 1; return 0; }' . "\n"
+        . '. "$T/helpers.sh"' . "\n"
+        . 'APACHE_SITES="$T/sites"; LOGROTATE_D="$T/logrotate.d"; RC_BACKUP_ROOT="$T/backup"; RC_DIR="$T/rc"; SRC="$R"' . "\n"
+        . 'PANEL_USER=mailweb; APACHE_USER=www-data; PHP_VER=8.5' . "\n";
+    $pool = static function (string $body) use ($bash, $TP, $root, $prelude): array {
+        return runProc([$bash, '-c', $prelude . $body], '', array_merge(getenv(), ['T' => $TP, 'R' => toPosix($root)]));
+    };
+
+    // log_dir z config.inc.php (dane, nie kod)
+    $cfgFile = $pw . '/rc/config/config.inc.php';
+    file_put_contents($cfgFile, "<?php\n\$config['log_dir'] = 'logs/';\n\$config['log_dir'] = '$TP/log/roundcube/';\n");
+    [, $out] = $pool('rc_log_dir');
+    eq($out, "$TP/log/roundcube", 'rc_log_dir: ostatnie przypisanie, ścieżka bezwzględna poza drzewem, bez końcowego /');
+    file_put_contents($cfgFile, "<?php\n\$config[\"log_dir\"] = \"/var/log/\";\n");
+    [, $out] = $pool('v=$(rc_log_dir 2>/dev/null); printf "[%s]" "$v"');
+    eq($out, '[]', 'rc_log_dir: /var/log (cudzy katalog) NIE jest zwracany — nie oddamy /var/log użytkownikowi PHP');
+    file_put_contents($cfgFile, "<?php\n\$config['log_dir'] = '$TP/rc/logs';\n");
+    [, $out] = $pool('v=$(rc_log_dir 2>/dev/null); printf "[%s]" "$v"');
+    eq($out, '[]', 'rc_log_dir: katalog w drzewie Roundcube obsługuje runtime_ownership (logs/)');
+    file_put_contents($cfgFile, "<?php\n\$config['log_dir'] = '/var/log/roundcube/../../etc';\n");
+    [, $out] = $pool('v=$(rc_log_dir 2>/dev/null); printf "[%s]" "$v"');
+    eq($out, '[]', 'rc_log_dir: ścieżka z .. odrzucona');
+
+    // logrotate: create … www-data www-data -> mailweb
+    $lr = "$TP/log/roundcube/userlogins.log {\n  weekly\n  create 0640 www-data www-data\n  postrotate\n    true\n  endscript\n}\n";
+    file_put_contents($pw . '/logrotate.d/roundcube-userlogins', $lr);
+    file_put_contents($pw . '/logrotate.d/other', "/var/log/other.log {\n  create 0640 www-data adm\n}\n");
+    [$rc, $out] = $pool('logrotate_user "$T/log/roundcube" mailweb');
+    ok(str_contains((string) file_get_contents($pw . '/logrotate.d/roundcube-userlogins'), "  create 0640 mailweb mailweb\n"), 'logrotate: logi Roundcube odtwarzane dla mailweb');
+    ok(str_contains((string) file_get_contents($pw . '/logrotate.d/other'), 'create 0640 www-data adm'), 'logrotate: plik innego logu nietknięty');
+    ok(count(glob($pw . '/backup/roundcontrol-logrotate-backup-*/roundcube-userlogins') ?: []) === 1, 'logrotate: kopia oryginału');
+    file_put_contents($pw . '/logrotate.d/roundcube-userlogins', $lr);
+    touch($pw . '/logrotate_bad');
+    [, $out] = $pool('logrotate_user "$T/log/roundcube" mailweb');
+    eq((string) file_get_contents($pw . '/logrotate.d/roundcube-userlogins'), $lr, 'logrotate -d odrzuca zmianę: plik przywrócony');
+    unlink($pw . '/logrotate_bad');
+
+    // vhosty: blok tylko w <VirtualHost> z DocumentRoot Roundcube (także w <IfModule>), idempotentnie, z przywróceniem
+    $vh443 = "<IfModule mod_ssl.c>\n<VirtualHost *:443>\n    ServerName mail.example.org\n    DocumentRoot $TP/rc/public_html\n    RewriteEngine on\n</VirtualHost>\n</IfModule>\n";
+    $vh80  = "<VirtualHost *:80>\n    ServerName mail.example.org\n    DocumentRoot \"$TP/rc/public_html/\"\n</VirtualHost>\n";
+    $other = "<VirtualHost *:443>\n    ServerName forum.example.org\n    DocumentRoot /var/www/forum\n</VirtualHost>\n";
+    file_put_contents($pw . '/avail/mail-ssl.conf', $vh443);
+    file_put_contents($pw . '/sites/mail.conf', $vh80);
+    file_put_contents($pw . '/sites/forum.conf', $other);
+    $linkOk = @symlink($pw . '/avail/mail-ssl.conf', $pw . '/sites/mail-ssl.conf');
+    if (!$linkOk) { copy($pw . '/avail/mail-ssl.conf', $pw . '/sites/mail-ssl.conf'); }
+    $sslFile = $linkOk ? $pw . '/avail/mail-ssl.conf' : $pw . '/sites/mail-ssl.conf';
+    $sock = '/run/php/php8.5-fpm-mailweb.sock';
+    [$rc, $out] = $pool('switch_vhosts ' . $sock);
+    $s443 = (string) file_get_contents($sslFile);
+    $s80  = (string) file_get_contents($pw . '/sites/mail.conf');
+    ok($rc === 0 && str_contains($s443, 'SetHandler "proxy:unix:' . $sock . '|fcgi://localhost"'), 'vhost 443: handler puli wstawiony' . ($linkOk ? ' (do celu dowiązania)' : ''));
+    ok((bool) preg_match('~SetHandler[^\n]*\n\s*</FilesMatch>\n\s*</Directory>\n</VirtualHost>\n</IfModule>~', $s443), 'vhost 443: blok tuż przed </VirtualHost>');
+    // zagnieżdżony w <Directory RC_DIR>: aliasy globalne (np. /phpmyadmin) na tym hoście zostają w puli [www]
+    ok(str_contains($s443, '<Directory "' . $TP . '/rc">' . "\n" . '        <FilesMatch "\.ph(?:ar|p|tml)$">'), 'vhost 443: handler tylko dla plików pod RC_DIR (<Directory> w vhoście)');
+    ok(str_contains($s80, $sock) && str_contains($s80, '<FilesMatch "\.ph(?:ar|p|tml)$">'), 'vhost 80: handler wstawiony (ten sam wzorzec co conf-enabled/php*-fpm.conf)');
+    ok(!preg_match('/@[A-Z_]+@/', $s443 . $s80), 'vhost: brak niewypełnionych znaczników');
+    eq((string) file_get_contents($pw . '/sites/forum.conf'), $other, 'vhost innej strony nietknięty (zostaje w puli [www])');
+    [$rc, $out] = $pool('switch_vhosts ' . $sock);
+    ok($rc === 0 && (string) file_get_contents($sslFile) === $s443 && substr_count((string) file_get_contents($pw . '/sites/mail.conf'), $sock) === 1, 'drugie uruchomienie: bez zmian (idempotentne)');
+    file_put_contents($sslFile, $vh443);
+    file_put_contents($pw . '/sites/mail.conf', $vh80);
+    touch($pw . '/apache_bad');
+    [$rc, $out] = $pool('switch_vhosts ' . $sock);
+    ok($rc !== 0 && (string) file_get_contents($sslFile) === $vh443 && (string) file_get_contents($pw . '/sites/mail.conf') === $vh80, 'configtest nie przechodzi: vhosty przywrócone, kod != 0');
+    unlink($pw . '/apache_bad');
+
+    // szablon puli
+    [$rc, $out] = $pool('render_template "$R/system/php-fpm/roundcontrol-pool.conf" @POOL@ mailweb | render_template - @PANEL_USER@ mailweb'
+        . ' | render_template - @APACHE_USER@ www-data | render_template - @SOCKET@ ' . $sock . ' | render_template - @SESSION_DIR@ /var/lib/php/sessions-mailweb');
+    ok(!str_contains($out, '@') && str_contains($out, "[mailweb]\nuser = mailweb\ngroup = mailweb"), 'szablon puli: wszystkie znaczniki wypełnione, [mailweb] user/group');
+    ok(str_contains($out, "listen = $sock\nlisten.owner = www-data\nlisten.group = www-data\nlisten.mode = 0660"), 'szablon puli: gniazdo tylko dla Apache (0660 www-data)');
+    ok(str_contains($out, 'php_admin_value[session.save_path] = /var/lib/php/sessions-mailweb') && str_contains($out, 'php_value[session.gc_probability] = 1'), 'szablon puli: własny katalog sesji + własne GC (phpsessionclean go nie czyści)');
+    ok((bool) preg_match('/^pm = ondemand$/m', $out) && (bool) preg_match('/^pm\.max_children = \d+$/m', $out), 'szablon puli: pm ondemand z limitem procesów');
+}
+
 /* ====================================================================== kontrole statyczne */
 group('kontrole statyczne');
 
@@ -664,6 +755,11 @@ ok(!str_contains($instCode, 'chown -R "$WEB_USER":"$WEB_USER" "$RC_DIR/app"'), '
 ok(!preg_match('#install[^\n]*/etc/cron\.daily#', $instCode) && str_contains($instCode, 'enable --now mailpanel-purge-deleted.timer'),
     'install.sh: czyszczenie kwarantanny przez timer systemd, nic do /etc/cron.daily (serwer bez crona)');
 ok(!str_contains((string) file_get_contents($root . '/scripts/mailpanel-purge-deleted'), '-mtime'), 'purge: wiek z nazwy, nie z mtime (mv zachowuje mtime skrzynki)');
+ok(str_contains($instCode, 'render_template "$SRC/system/sudoers.d/mailpanel" "User_Alias ROUNDCONTROL_USER = mailweb" "User_Alias ROUNDCONTROL_USER = $RUN_USER"'),
+    'install.sh: reguły sudo dla użytkownika, który NAPRAWDĘ wykonuje PHP Roundcube (RUN_USER: pula mailweb albo www-data)');
+ok(str_contains($instCode, '"php-fpm$PHP_VER" -t') && str_contains($instCode, 'apache2ctl configtest') && str_contains($instCode, 'runtime_ownership "$APACHE_USER"'),
+    'install.sh: pula sprawdzana php-fpm -t, vhosty apache2ctl configtest, przy błędzie własność wraca do Apache');
+ok(!preg_match('/\$WEB_USER\b/', $instCode) && !preg_match('/\$\{WEB_USER\}/', $instCode), 'install.sh: brak gołego $WEB_USER (set -u; nazwa z 1.0.x tylko jako ${WEB_USER:-…})');
 ok(str_contains($instCode, 'install_sudoers_file') && preg_match('/mv -f "\$stage" "\$dst"[^\n]*\n\s*if visudo -c /', $instCode) === 1,
     'install.sh: po wstawieniu pliku sudoers sprawdzana jest CAŁA konfiguracja (visudo -c), z przywróceniem');
 $htaccess = (string) file_get_contents($root . '/.htaccess');

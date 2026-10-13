@@ -14,14 +14,23 @@
 #    dla www-data, gdy kod należy do www-data. Nigdy `source` takiego pliku.
 #  * sekcja 0 nie zmienia haseł istniejących kont DB (wcześniej ALTER USER przy każdym uruchomieniu mógł zabrać
 #    Postfixowi i Dovecotowi dostęp do bazy);
-#  * kod aplikacji należy do roota; dla www-data zapisywalne są wyłącznie temp/ i logs/ Roundcube.
+#  * kod aplikacji należy do roota; dla użytkownika PHP panelu zapisywalne są wyłącznie temp/ i logs/ Roundcube
+#    (oraz jego log_dir, jeśli leży poza drzewem).
+#  * Roundcube i panel dostają WŁASNĄ pulę PHP-FPM i własnego użytkownika (sekcja 1b, PANEL_USER, domyślnie mailweb):
+#    inne strony serwera (pula [www], www-data) nie czytają sekretów panelu i nie mają jego reguł sudo.
+#
+# Zmienne (opcjonalne):  RC_DIR=/var/www/roundcube   PANEL_USER=mailweb   APACHE_USER=www-data   PHP_VER=8.5
+#   PANEL_USER=www-data (albo dawne WEB_USER=www-data) = bez osobnej puli: Roundcube zostaje we wspólnej puli [www].
 # Warstwę aplikacji (.env, schemat, admin) instaluje osobno: php install.php
 # =====================================================================
 set -uo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 RC_DIR="${RC_DIR:-/var/www/roundcube}"
-WEB_USER="${WEB_USER:-www-data}"
+APACHE_USER="${APACHE_USER:-www-data}"              # użytkownik Apache: łączy się z gniazdem puli, czyta pliki statyczne
+PANEL_USER="${PANEL_USER:-${WEB_USER:-mailweb}}"    # użytkownik puli PHP-FPM Roundcube + panelu (WEB_USER: nazwa z 1.0.x)
+PHP_VER="${PHP_VER:-}"                              # wersja PHP-FPM (puste = wykryj z /etc/php/*/fpm)
+RUN_USER="$APACHE_USER"                             # kto NAPRAWDĘ wykonuje PHP Roundcube (ustala sekcja 1b)
 
 c_grn='\033[32m'; c_red='\033[31m'; c_yel='\033[33m'; c_rst='\033[0m'; c_b='\033[1m'
 ok()   { echo -e "${c_grn}✓${c_rst} $*"; }
@@ -114,6 +123,196 @@ secure_secret_copies() {
   ok "kopie plików z sekretami (config.inc.php.bak*, config.old.php, .env.*): $n szt. — root:root 600"
 }
 
+# --- pool helpers begin (tests/scripts_test.php sources exactly this block) ----------------------------------------
+# osobna pula PHP-FPM (sekcja 1b) i własność plików. Ścieżki systemowe są tu stałymi (testy podmieniają je po wczytaniu).
+APACHE_SITES=/etc/apache2/sites-enabled
+LOGROTATE_D=/etc/logrotate.d
+RC_BACKUP_ROOT=/root
+
+# Wersja PHP-FPM: jedyna zainstalowana albo ta, której usługa działa.
+detect_php_ver() {
+  local d v cand=()
+  for d in /etc/php/*/fpm/pool.d; do
+    [ -d "$d" ] || continue
+    v=${d#/etc/php/}; v=${v%%/*}
+    [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] && cand+=("$v")
+  done
+  [ "${#cand[@]}" -eq 1 ] && { printf '%s' "${cand[0]}"; return 0; }
+  for v in "${cand[@]}"; do
+    systemctl is-active --quiet "php$v-fpm" && { printf '%s' "$v"; return 0; }
+  done
+  return 1
+}
+
+pool_sock()  { printf '/run/php/php%s-fpm-%s.sock' "$PHP_VER" "$PANEL_USER"; }
+pool_conf()  { printf '/etc/php/%s/fpm/pool.d/%s.conf' "$PHP_VER" "$PANEL_USER"; }
+
+# Pliki vhostów Apache (sites-enabled, po rozwinięciu dowiązań), których DocumentRoot to RC_DIR albo RC_DIR/public_html.
+rc_vhost_files() {
+  local f real seen=" "
+  for f in "$APACHE_SITES"/*; do
+    [ -e "$f" ] || continue
+    real=$(readlink -f -- "$f") || continue
+    case "$seen" in *" $real "*) continue ;; esac
+    seen="$seen$real "
+    grep -qE "^[[:space:]]*DocumentRoot[[:space:]]+\"?${RC_DIR}(/public_html)?/?\"?[[:space:]]*$" "$real" && printf '%s\n' "$real"
+  done
+}
+
+# Czy Roundcube NAPRAWDĘ działa w osobnej puli: użytkownik i plik puli istnieją, a vhost kieruje PHP na jej gniazdo.
+pool_ready() {
+  local f found=0
+  [ "$PANEL_USER" != "$APACHE_USER" ] && [ -n "$PHP_VER" ] && [ -f "$(pool_conf)" ] && id -u "$PANEL_USER" >/dev/null 2>&1 || return 1
+  while IFS= read -r f; do
+    grep -qF "$(pool_sock)" "$f" && found=1
+  done < <(rc_vhost_files)
+  [ "$found" -eq 1 ]
+}
+
+set_run_user() { if pool_ready; then RUN_USER=$PANEL_USER; else RUN_USER=$APACHE_USER; fi; }
+
+# log_dir Roundcube, jeśli leży POZA drzewem (np. /var/log/roundcube) i jest wyraźnie jego własnym katalogiem; inaczej
+# pusto. Czytane z config.inc.php jako tekst (nigdy nie wykonywane). Katalog o obcej nazwie (np. /var/log) — nie ruszamy.
+rc_log_dir() {
+  local cfg="$RC_DIR/config/config.inc.php" v
+  [ -f "$cfg" ] || return 0
+  v=$(grep -E "^[[:space:]]*\\\$config\[['\"]log_dir['\"]\][[:space:]]*=" "$cfg" | tail -1 \
+      | sed -nE "s/.*=[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*;.*/\1/p")
+  v=${v%/}
+  [[ "$v" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$v" != *..* ]] || return 0
+  case "$v" in "$RC_DIR" | "$RC_DIR"/*) return 0 ;; esac      # w drzewie: logs/ obsługuje runtime_ownership
+  if [[ ! "${v##*/}" =~ ^(roundcube|rcube|webmail) ]]; then
+    warn "log_dir Roundcube ($v) nie wygląda na jego własny katalog — nadaj go ręcznie użytkownikowi PHP: chown -R <user>: $v" >&2
+    return 0
+  fi
+  printf '%s' "$v"
+}
+
+# logrotate dla katalogu $1 ma odtwarzać pliki dla użytkownika $2 (linia `create MODE USER GROUP`); kopia + logrotate -d.
+logrotate_user() {
+  local dir=$1 u=$2 f tmp bdir
+  [ -n "$dir" ] && [ -d "$LOGROTATE_D" ] || return 0
+  for f in "$LOGROTATE_D"/*; do
+    [ -f "$f" ] && grep -qF -- "$dir" "$f" || continue
+    tmp=$(mktemp)
+    sed -E "s/^([[:space:]]*create[[:space:]]+[0-7]+)[[:space:]]+[A-Za-z0-9_-]+[[:space:]]+[A-Za-z0-9_-]+[[:space:]]*$/\1 $u $u/" "$f" > "$tmp"
+    if cmp -s "$tmp" "$f"; then rm -f "$tmp"; continue; fi
+    bdir="$RC_BACKUP_ROOT/roundcontrol-logrotate-backup-$(date +%Y%m%d%H%M%S)"
+    mkdir -p "$bdir" && cp -p "$f" "$bdir/" && cat "$tmp" > "$f"
+    rm -f "$tmp"
+    if command -v logrotate >/dev/null && ! logrotate -d "$f" >/dev/null 2>&1; then
+      cp -p "$bdir/$(basename "$f")" "$f"
+      warn "logrotate -d odrzuca zmieniony $f — przywrócono (zmień ręcznie linię create na: create 0640 $u $u)"
+    else
+      ok "$f: logi odtwarzane dla $u (create … $u $u; kopia w $bdir)"
+    fi
+  done
+}
+
+# Wszystko, co proces PHP Roundcube/panelu ZAPISUJE (temp/, logs/, log_dir poza drzewem), należy do $1; sekrety, które
+# CZYTA, są root:$1 640. Wywoływane przy przełączaniu puli (1b) i po porządkowaniu własności (7).
+runtime_ownership() {
+  local u=$1 d f ld
+  for d in "$RC_DIR/temp" "$RC_DIR/logs"; do
+    [ -d "$d" ] && chown -R "$u:$u" "$d"
+  done
+  ld=$(rc_log_dir)
+  if [ -n "$ld" ] && [ -d "$ld" ]; then
+    chown -R "$u:$u" "$ld"
+    logrotate_user "$ld" "$u"
+  fi
+  for f in "$RC_DIR/config/config.inc.php" "$RC_DIR/plugins/password/config.inc.php" "$RC_DIR/.env" /etc/mailpanel/panel.env; do
+    [ -f "$f" ] && [ ! -L "$f" ] && { chown root:"$u" "$f"; chmod 640 "$f"; }
+  done
+  [ -d /etc/mailpanel ] && { chown root:"$u" /etc/mailpanel; chmod 750 /etc/mailpanel; }
+  ok "zapisywalne dla $u: temp/ logs/${ld:+ $ld}; sekrety (config.inc.php, password/config.inc.php, .env) root:$u 640"
+}
+
+# Wstawia blok SetHandler (gniazdo puli) do każdego <VirtualHost> z DocumentRoot = RC_DIR(/public_html), sprawdza
+# apache2ctl configtest i przeładowuje Apache. Przy błędzie przywraca pliki. Idempotentne (gniazdo już jest = bez zmian).
+switch_vhosts() {
+  local sock=$1 f tmp block bdir rc changed=() files=()
+  mapfile -t files < <(rc_vhost_files)
+  if [ "${#files[@]}" -eq 0 ]; then
+    warn "nie znalazłem vhosta Apache z DocumentRoot $RC_DIR(/public_html) w $APACHE_SITES — dopisz ręcznie blok z system/apache/roundcontrol-fpm-handler.conf"
+    return 1
+  fi
+  block=$(render_template "$SRC/system/apache/roundcontrol-fpm-handler.conf" @SOCKET@ "$sock" | render_template - @PANEL_USER@ "$PANEL_USER" | render_template - @RC_DIR@ "$RC_DIR")
+  bdir="$RC_BACKUP_ROOT/roundcontrol-apache-backup-$(date +%Y%m%d%H%M%S)"
+  for f in "${files[@]}"; do
+    tmp=$(mktemp)
+    RC_ROOT="$RC_DIR" RC_SOCK="$sock" RC_BLOCK="$block" awk '
+      BEGIN { rc = ENVIRON["RC_ROOT"]; sock = ENVIRON["RC_SOCK"]; block = ENVIRON["RC_BLOCK"]; n = 0 }
+      /^[ \t]*<VirtualHost[ \t>]/ { inv = 1; hit = 0; has = 0 }
+      inv && /^[ \t]*DocumentRoot[ \t]/ { dr = $2; gsub(/"/, "", dr); sub(/\/+$/, "", dr); if (dr == rc || dr == rc "/public_html") hit = 1 }
+      inv && index($0, sock) > 0 { has = 1 }
+      /^[ \t]*<\/VirtualHost>/ { if (inv && hit && !has) { print block; n++ } inv = 0 }
+      { print }
+      END { exit (n > 0 ? 0 : 3) }
+    ' "$f" > "$tmp"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      mkdir -p "$bdir" && cp -p "$f" "$bdir/" && cat "$tmp" > "$f" && changed+=("$f")
+    elif [ "$rc" -ne 3 ]; then
+      warn "awk nie przetworzył $f"
+    fi
+    rm -f "$tmp"
+  done
+  if [ "${#changed[@]}" -eq 0 ]; then
+    ok "vhosty Roundcube już kierują PHP do puli $PANEL_USER ($sock)"
+    return 0
+  fi
+  if ! apache2ctl configtest >/dev/null 2>&1 || ! systemctl reload apache2; then
+    for f in "${changed[@]}"; do cp -p "$bdir/$(basename "$f")" "$f"; done
+    systemctl reload apache2 >/dev/null 2>&1
+    warn "apache2ctl configtest / reload nie przeszedł z nowym handlerem — vhosty przywrócone z $bdir"
+    return 1
+  fi
+  ok "vhosty (${changed[*]}): PHP -> $sock (kopie w $bdir); Apache przeładowany"
+}
+
+# Sekcja 1b: użytkownik systemowy, katalog sesji, plik puli (php-fpm -t), reload php-fpm, własność plików dla puli,
+# handler w vhostach. Przy błędzie po zmianie własności wraca ona do użytkownika Apache (Roundcube dalej działa w [www]).
+setup_pool() {
+  local svc="php$PHP_VER-fpm" conf sock sess tmp bdir i
+  conf=$(pool_conf); sock=$(pool_sock); sess="/var/lib/php/sessions-$PANEL_USER"
+  command -v "php-fpm$PHP_VER" >/dev/null || { warn "brak php-fpm$PHP_VER w PATH"; return 1; }
+  if ! id -u "$PANEL_USER" >/dev/null 2>&1; then
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$PANEL_USER" \
+      || { warn "useradd $PANEL_USER nie powiódł się"; return 1; }
+    ok "użytkownik systemowy $PANEL_USER (bez powłoki, bez katalogu domowego)"
+  fi
+  install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 700 "$sess" || return 1
+  tmp=$(mktemp)
+  render_template "$SRC/system/php-fpm/roundcontrol-pool.conf" @POOL@ "$PANEL_USER" | render_template - @PANEL_USER@ "$PANEL_USER" \
+    | render_template - @APACHE_USER@ "$APACHE_USER" | render_template - @SOCKET@ "$sock" | render_template - @SESSION_DIR@ "$sess" > "$tmp"
+  if [ -f "$conf" ] && cmp -s "$tmp" "$conf"; then
+    ok "pula $conf bez zmian"
+  else
+    bdir="$RC_BACKUP_ROOT/roundcontrol-pool-backup-$(date +%Y%m%d%H%M%S)"
+    mkdir -p "$bdir"; [ -f "$conf" ] && cp -p "$conf" "$bdir/"
+    install -o root -g root -m 644 "$tmp" "$conf"
+    if ! "php-fpm$PHP_VER" -t >/dev/null 2>&1 || ! systemctl reload "$svc"; then
+      if [ -f "$bdir/$(basename "$conf")" ]; then cp -p "$bdir/$(basename "$conf")" "$conf"; else rm -f "$conf"; fi
+      systemctl reload "$svc" >/dev/null 2>&1
+      rm -f "$tmp"
+      warn "php-fpm$PHP_VER -t / reload odrzuca nową pulę — przywrócono poprzedni stan ($("php-fpm$PHP_VER" -t 2>&1 | tail -1))"
+      return 1
+    fi
+    ok "pula [$PANEL_USER]: $conf (gniazdo $sock, sesje $sess)"
+  fi
+  rm -f "$tmp"
+  for i in $(seq 1 20); do [ -S "$sock" ] && break; sleep 0.5; done
+  [ -S "$sock" ] || { warn "gniazdo $sock nie powstało po przeładowaniu $svc"; return 1; }
+  runtime_ownership "$PANEL_USER"
+  if ! switch_vhosts "$sock"; then
+    runtime_ownership "$APACHE_USER"
+    warn "własność plików wróciła do $APACHE_USER (Roundcube działa dalej we wspólnej puli)"
+    return 1
+  fi
+  return 0
+}
+# --- pool helpers end ------------------------------------------------------------------------------------------------
+
 # Instaluje plik reguł jako /etc/sudoers.d/mailpanel tak, żeby sudo NIGDY nie zostało zepsute: plik sprawdzany sam
 # (visudo -cf), kładziony pod nazwą z kropką (sudo takie pliki pomija), przenoszony na miejsce i dopiero wtedy sprawdzana
 # jest CAŁA konfiguracja (visudo -c widzi np. zduplikowany alias w dwóch plikach — tego visudo -cf PLIK nie zobaczy, a to
@@ -142,7 +341,12 @@ install_sudoers_file() {
 }
 
 [ "$(id -u)" -eq 0 ] || die "Uruchom jako root (sudo bash install.sh)."
-[[ "$WEB_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "WEB_USER='$WEB_USER' to nie jest zwykła nazwa użytkownika."
+[[ "$PANEL_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "PANEL_USER='$PANEL_USER' to nie jest zwykła nazwa użytkownika."
+[[ "$APACHE_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "APACHE_USER='$APACHE_USER' to nie jest zwykła nazwa użytkownika."
+id -u "$APACHE_USER" >/dev/null 2>&1 || die "Użytkownik Apache '$APACHE_USER' nie istnieje (ustaw APACHE_USER=...)."
+case "$PANEL_USER" in root|daemon|nobody|bin|sys|vmail|dovecot|postfix|mysql) die "PANEL_USER=$PANEL_USER — wybierz osobnego użytkownika (np. mailweb).";; esac
+[ -n "$PHP_VER" ] || PHP_VER=$(detect_php_ver || true)
+[ -z "$PHP_VER" ] || [[ "$PHP_VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "PHP_VER='$PHP_VER' — oczekiwane np. 8.5"
 [[ "$RC_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "RC_DIR='$RC_DIR' musi być ścieżką bezwzględną bez spacji i znaków specjalnych."
 [ -d "$RC_DIR" ] || die "Nie znaleziono $RC_DIR (ustaw RC_DIR=... jeśli inna ścieżka)."
 command -v mysql >/dev/null || warn "Brak klienta mysql w PATH — sekcje 0/4/5/6 wymagają MariaDB/MySQL."
@@ -159,7 +363,9 @@ fi
 
 echo -e "${c_b}  Panel Roundcube — integracje systemowe${c_rst}"
 hr
-echo "Roundcube: $RC_DIR   |   web user: $WEB_USER"
+set_run_user
+echo "Roundcube: $RC_DIR   |   pula PHP panelu: $PANEL_USER   |   Apache: $APACHE_USER   |   PHP-FPM: ${PHP_VER:-nie wykryto}"
+echo "PHP Roundcube działa teraz jako: $RUN_USER"
 hr
 
 declare -A NEWPW=()   # hasła kont DB utworzonych w tym uruchomieniu (nigdzie indziej nie są zapisane)
@@ -234,38 +440,65 @@ if ask "1) Zainstalować skrypty do /usr/local/bin"; then
   fi
 fi
 
+# --- 1b. Osobna pula PHP-FPM dla Roundcube i panelu ---
+# Domyślnie jedna pula [www] (www-data) obsługuje WSZYSTKIE strony serwera: luka w dowolnej z nich czyta wtedy hasło
+# bazy panelu, des_key Roundcube i używa reguł sudo panelu. Osobna pula = osobny użytkownik ($PANEL_USER): sekrety
+# root:$PANEL_USER 640, reguły sudo dla $PANEL_USER, sesje w /var/lib/php/sessions-$PANEL_USER. Inne strony bez zmian.
+hr
+if pool_ready; then
+  ok "1b) osobna pula [$PANEL_USER] już działa ($(pool_conf), vhost -> $(pool_sock))"
+  if ask "   Odświeżyć ją (plik puli z szablonu, własność plików, handler w vhostach)"; then
+    setup_pool || warn "odświeżenie puli nie powiodło się (komunikaty wyżej)"
+  fi
+elif [ "$PANEL_USER" = "$APACHE_USER" ]; then
+  warn "1b) PANEL_USER=$PANEL_USER to użytkownik Apache — Roundcube i panel zostają we wspólnej puli (bez osobnej puli)"
+elif [ -z "$PHP_VER" ]; then
+  warn "1b) nie wykryto wersji PHP-FPM (/etc/php/*/fpm) — ustaw PHP_VER=8.x; Roundcube zostaje we wspólnej puli"
+elif ask "1b) Utworzyć osobną pulę PHP-FPM [$PANEL_USER] dla Roundcube i panelu i przełączyć na nią vhost(y) Apache"; then
+  setup_pool || warn "osobna pula NIE została włączona — Roundcube działa dalej we wspólnej puli (komunikaty wyżej)"
+fi
+set_run_user
+ok "PHP Roundcube i panelu działa jako: $RUN_USER (ten użytkownik dostaje reguły sudo, sekrety i katalogi zapisu)"
+
 # --- 2. sudoers ---
 hr
-if ask "2) Zainstalować helper Fail2Ban i regułę sudoers (/etc/sudoers.d/mailpanel), usunąć stare reguły z wildcardami"; then
+if ask "2) Zainstalować helper Fail2Ban i reguły sudoers dla $RUN_USER (/etc/sudoers.d/mailpanel), usunąć stare reguły z wildcardami"; then
   # Reguły mają DOKŁADNE argumenty (^regex$) — wymagają sudo >= 1.9.10 (Debian 13: 1.9.16).
   # Starsze sudo traktuje ^...$ dosłownie, więc nic by nie pasowało; nie instalujemy wtedy niczego.
   SV=$(sudo -V 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
   if [ -z "$SV" ] || [ "$(printf '%s\n1.9.10\n' "$SV" | sort -V | head -1)" != "1.9.10" ]; then
     warn "sudo ${SV:-nieznane} < 1.9.10 — brak argumentów ^regex\$; sudoers NIE zainstalowany (zaktualizuj sudo)"
   elif install_f2b_helper; then   # helper najpierw — reguła sudoers wskazuje na niego
+    # jedyna zmienna linia pliku: User_Alias z użytkownikiem, który NAPRAWDĘ wykonuje PHP panelu (sekcja 1b)
     tmp=$(mktemp)
-    cp "$SRC/system/sudoers.d/mailpanel" "$tmp"
+    render_template "$SRC/system/sudoers.d/mailpanel" "User_Alias ROUNDCONTROL_USER = mailweb" "User_Alias ROUNDCONTROL_USER = $RUN_USER" > "$tmp"
     SUDOERS_OK=0
-    if install_sudoers_file "$tmp"; then
+    if ! grep -qx "User_Alias ROUNDCONTROL_USER = $RUN_USER" "$tmp"; then
+      warn "nie znalazłem linii User_Alias w $SRC/system/sudoers.d/mailpanel — sudoers NIE zainstalowany"
+    elif install_sudoers_file "$tmp"; then
       SUDOERS_OK=1
-      ok "sudoers zainstalowany: plik (visudo -cf) i CAŁA konfiguracja (visudo -c) poprawne; dokładne argumenty, bez wildcardów"
+      ok "sudoers dla $RUN_USER zainstalowany: plik (visudo -cf) i CAŁA konfiguracja (visudo -c) poprawne; dokładne argumenty"
     else
       warn "sudoers NIE zainstalowany (patrz komunikat wyżej; sprawdź $SRC/system/sudoers.d/mailpanel i: visudo -c)"
     fi
     rm -f "$tmp"
     # sudo przyznaje polecenie, gdy pasuje KTÓRAKOLWIEK reguła: jedna stara reguła z wildcardem (1.0: fail2ban-client,
     # doveadm, mailpanel-scan.sh; w /etc/sudoers albo w osobnych plikach mailpanel-*) unieważnia wszystkie dokładne.
+    # Sprawdzamy użytkownika Apache (stare reguły www-data; z osobną pulą www-data nie ma mieć ŻADNEJ reguły panelu)
+    # i użytkownika puli (gdyby ktoś dopisał mu coś ręcznie poza /etc/sudoers.d/mailpanel).
     if [ "$SUDOERS_OK" -eq 1 ]; then
-      OLD=$(WEB_USER="$WEB_USER" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" 2>&1); rc=$?
-      if [ "$rc" -ne 0 ]; then
-        echo -e "${c_red}✗ STARE reguły sudo dla $WEB_USER poza /etc/sudoers.d/mailpanel — wildcardy dają drogę do roota:${c_rst}"
-        echo "$OLD" | sed 's/^/     /'
-        if ask "   Zakomentować je teraz (kopie oryginałów w /root/sudoers-backup-*; każdy plik walidowany visudo)"; then
-          WEB_USER="$WEB_USER" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" --apply || warn "część reguł wymaga ręcznej edycji (visudo) — patrz wyżej"
+      for CU in $(printf '%s\n' "$APACHE_USER" "$RUN_USER" | sort -u); do
+        OLD=$(WEB_USER="$CU" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" 2>&1); rc=$?
+        if [ "$rc" -ne 0 ]; then
+          echo -e "${c_red}✗ STARE reguły sudo panelu dla $CU poza /etc/sudoers.d/mailpanel — wildcardy dają drogę do roota:${c_rst}"
+          echo "$OLD" | sed 's/^/     /'
+          if ask "   Zakomentować je teraz (kopie w /root/sudoers-backup-*; każdy plik i cała konfiguracja walidowane visudo)"; then
+            WEB_USER="$CU" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" --apply || warn "część reguł wymaga ręcznej edycji (visudo) — patrz wyżej"
+          fi
+        else
+          ok "brak starych reguł sudo panelu dla $CU poza /etc/sudoers.d/mailpanel"
         fi
-      else
-        ok "brak starych reguł sudo dla $WEB_USER poza /etc/sudoers.d/mailpanel"
-      fi
+      done
     else
       warn "Nowy plik sudoers nie został zainstalowany, więc starych reguł nie ruszam."
     fi
@@ -329,11 +562,11 @@ if ask "3) Skonfigurować Fail2Ban (filtry + jaile panelu)"; then
     # (b) przez sudo jako użytkownik panelu: propozycja identyczna z jail.local => "bez zmian" (nic nie zapisuje).
     #     Sprawdza regułę sudoers, argumenty (""), czytanie ze stdin i uprawnienia.
     if grep -q 'mailpanel-f2b-apply' /etc/sudoers.d/mailpanel 2>/dev/null; then
-      R=$(sudo -u "$WEB_USER" sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local 2>&1)
+      R=$(sudo -u "$RUN_USER" sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local 2>&1)
       if [ "$R" = "bez zmian" ]; then
-        ok "test helpera jako $WEB_USER przez sudo: 'bez zmian' (sudoers + helper + stdin działają)"
+        ok "test helpera jako $RUN_USER przez sudo: 'bez zmian' (sudoers + helper + stdin działają)"
       else
-        warn "test helpera jako $WEB_USER nie przeszedł: ${R:-brak odpowiedzi} (sprawdź krok 2 i: sudo -l -U $WEB_USER)"
+        warn "test helpera jako $RUN_USER nie przeszedł: ${R:-brak odpowiedzi} (sprawdź krok 2 i: sudo -l -U $RUN_USER)"
       fi
     fi
   fi
@@ -424,8 +657,8 @@ FLUSH PRIVILEGES;"; then
         ( umask 077; render_template "$SRC/plugins/password/config.inc.php.example" SILNE_HASLO_POLICY "$PW" > "$PCFG.new" ) \
           && mv "$PCFG.new" "$PCFG"
       fi
-      chown root:"$WEB_USER" "$PCFG" && chmod 640 "$PCFG"
-      ok "$PCFG (640 root:$WEB_USER)"
+      chown root:"$RUN_USER" "$PCFG" && chmod 640 "$PCFG"
+      ok "$PCFG (640 root:$RUN_USER)"
       grep -q "'password'" "$RC_DIR/config/config.inc.php" \
         && ok "'password' już w \$config['plugins']" \
         || warn "'password' nie jest w \$config['plugins'] — doda go sekcja 9"
@@ -479,7 +712,7 @@ fi
 
 # --- 7. Symlinki w webroot + właściciel plików ---
 hr
-if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić właściciela (kod: root, www-data tylko do odczytu)"; then
+if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić właściciela (kod: root, $RUN_USER tylko do odczytu)"; then
   if [ -d "$RC_DIR/public_html" ]; then
     # Roundcube 1.7: DocumentRoot = public_html. Kod nakładki żyje POZA
     # webrootem — publikujemy tylko punkty wejścia (idempotentne ln -sfn).
@@ -493,8 +726,8 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
     warn "Brak public_html (layout inny niż 1.7?) — pomiń, jeśli pliki są już w webroot."
   fi
 
-  # Kod nakładki: root:root, katalogi 755, pliki 644. Proces PHP (www-data) potrzebuje tylko ODCZYTU: gdy kod należy
-  # do www-data, KAŻDA luka w KAŻDEJ stronie z tej samej puli FPM pozwala podmienić panel.php i przechwytywać hasła.
+  # Kod nakładki: root:root, katalogi 755, pliki 644. Proces PHP ($RUN_USER) potrzebuje tylko ODCZYTU: gdy kod należy
+  # do użytkownika PHP, KAŻDA luka w KAŻDEJ stronie z tej samej puli FPM pozwala podmienić panel.php i przechwytywać hasła.
   for p in app assets panel portal.php config/panel_config.php plugins/custom_auth .htaccess; do
     [ -e "$RC_DIR/$p" ] || continue
     chown -R root:root "$RC_DIR/$p"
@@ -507,40 +740,33 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
   done
   ok "kod nakładki (app assets panel portal.php config/panel_config.php plugins/custom_auth .htaccess): root:root, 755/644"
 
-  for ENVF in "$RC_DIR/.env" /etc/mailpanel/panel.env; do
-    [ -f "$ENVF" ] && { chown root:"$WEB_USER" "$ENVF"; chmod 640 "$ENVF"; ok "$ENVF 640 root:$WEB_USER"; }
-  done
-  [ -d /etc/mailpanel ] && { chown root:"$WEB_USER" /etc/mailpanel; chmod 750 /etc/mailpanel; }
+  # sekrety root:$RUN_USER 640, temp/ logs/ (i log_dir Roundcube poza drzewem) dla $RUN_USER
+  runtime_ownership "$RUN_USER"
   secure_secret_copies
 
-  if ask "   Cała reszta Roundcube (program/, vendor/, skins/, plugins/, config/...) też root:root — zapisywalne dla $WEB_USER zostają tylko temp/ i logs/"; then
+  if ask "   Cała reszta Roundcube (program/, vendor/, skins/, plugins/, config/...) też root:root — zapisywalne dla $RUN_USER zostają tylko temp/ i logs/"; then
     chown -R root:root "$RC_DIR"
-    for d in temp logs; do
-      [ -d "$RC_DIR/$d" ] && chown -R "$WEB_USER":"$WEB_USER" "$RC_DIR/$d"
-    done
-    # pliki z sekretami czytelne dla procesu PHP przez grupę
-    for f in "$RC_DIR/config/config.inc.php" "$RC_DIR/plugins/password/config.inc.php" "$RC_DIR/.env"; do
-      [ -f "$f" ] && { chown root:"$WEB_USER" "$f"; chmod 640 "$f"; }
-    done
+    runtime_ownership "$RUN_USER"      # chown -R wyżej zabrał je użytkownikowi PHP — oddajemy
     # żaden plik poza temp/ i logs/ nie może być zapisywalny dla grupy ani innych (np. 664 po ręcznych kopiowaniach)
     find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type f \( -perm -g+w -o -perm -o+w \) -exec chmod go-w {} +
     find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type d \( -perm -g+w -o -perm -o+w \) -exec chmod go-w {} +
-    LEFT=$(find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o ! -type l \( -user "$WEB_USER" -o -perm -o+w \) -print 2>/dev/null | head -5)
+    LEFT=$(find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o ! -type l \
+             \( -user "$RUN_USER" -o -user "$APACHE_USER" -o -perm -o+w \) -print 2>/dev/null | head -5)
     if [ -z "$LEFT" ]; then
-      ok "drzewo $RC_DIR: root:root, zapisywalne dla $WEB_USER tylko temp/ i logs/ (find -user/-perm -o+w: puste)"
+      ok "drzewo $RC_DIR: root:root, zapisywalne dla $RUN_USER tylko temp/ i logs/ (find -user/-perm -o+w: puste)"
     else
-      warn "nadal należą do $WEB_USER albo są zapisywalne dla wszystkich: $(echo "$LEFT" | tr '\n' ' ')"
+      warn "nadal należą do $RUN_USER/$APACHE_USER albo są zapisywalne dla wszystkich: $(echo "$LEFT" | tr '\n' ' ')"
     fi
-    # plik 600/640, który należał do www-data, jest teraz roota — proces PHP przestaje go czytać (np. konfiguracja pluginu)
-    UNREAD=$(sudo -u "$WEB_USER" find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type f ! -readable \
+    # plik 600/640, który należał do użytkownika PHP, jest teraz roota — proces PHP przestaje go czytać
+    UNREAD=$(sudo -u "$RUN_USER" find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type f ! -readable \
                ! \( "${SECRET_COPY_NAMES[@]}" \) -print 2>/dev/null | head -5)
     if [ -z "$UNREAD" ]; then
-      ok "$WEB_USER czyta wszystkie pliki drzewa (poza temp/ i logs/)"
+      ok "$RUN_USER czyta wszystkie pliki drzewa (poza temp/, logs/ i kopiami z sekretami)"
     else
-      warn "$WEB_USER NIE może czytać: $(echo "$UNREAD" | tr '\n' ' ') — nadaj grupę: chown root:$WEB_USER <plik> && chmod 640 <plik>"
+      warn "$RUN_USER NIE może czytać: $(echo "$UNREAD" | tr '\n' ' ') — nadaj grupę: chown root:$RUN_USER <plik> && chmod 640 <plik>"
     fi
   else
-    warn "reszta Roundcube bez zmian — sprawdź: find $RC_DIR -user $WEB_USER ; find $RC_DIR -perm -o+w"
+    warn "reszta Roundcube bez zmian — sprawdź: find $RC_DIR -user $RUN_USER -o -user $APACHE_USER ; find $RC_DIR -perm -o+w"
   fi
 fi
 
@@ -694,5 +920,8 @@ echo "   - panel: Fail2Ban/Bezpieczeństwo bez czerwonych ostrzeżeń; zapis w z
 echo "   - test limitu: nadlimitowa wysyłka SMTP → 554 (limit liczy ODBIORCÓW)"
 echo "   - fail2ban-client status     → jaile panel-permaban / panel-tempban"
 echo "   - stat -c '%A %U:%G' /etc/fail2ban/jail.local  → -rw-r--r-- root:root (panel go nie zapisuje)"
-echo "   - sudo -l -U $WEB_USER  → tylko dokładne reguły ^regex\$, bez znaku *"
-echo "   - find $RC_DIR -user $WEB_USER -o -perm -o+w  → tylko temp/ i logs/"
+echo "   - sudo -l -U $RUN_USER  → tylko dokładne reguły ^regex\$ / \"\", bez znaku *"
+[ "$RUN_USER" != "$APACHE_USER" ] && echo "   - sudo -l -U $APACHE_USER  → ŻADNEJ reguły panelu (fail2ban-client, doveadm, mailpanel-*, update-postfix-limits)"
+[ "$RUN_USER" != "$APACHE_USER" ] && echo "   - ps -o user= -C php-fpm${PHP_VER} | sort | uniq -c  → procesy puli $RUN_USER pojawiają się po wejściu na webmail"
+echo "   - find $RC_DIR -user $RUN_USER -o -user $APACHE_USER -o -perm -o+w  → tylko temp/ i logs/"
+echo "   - systemctl list-timers mailpanel-purge-deleted.timer  → codzienne czyszczenie kwarantanny"

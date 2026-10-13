@@ -5,8 +5,8 @@
 # (/var/mail/deleted, mode 700; install.sh section 11 adds the systemd timer mailpanel-purge-deleted that purges
 # entries older than 30 days). The quarantine name carries the DELETION time (<domain>__<user>__<YYYYmmddHHMMSS>):
 # the purge reads it from there, because `mv` keeps the maildir's old mtime.
-# A quarantine instead of `rm -rf`: this script is reachable by any code running as www-data (sudoers cannot say
-# WHICH mailbox), so a wrong or hostile call must be recoverable.
+# A quarantine instead of `rm -rf`: this script is reachable by any code running as the panel's PHP user (sudoers
+# cannot say WHICH mailbox), so a wrong or hostile call must be recoverable.
 #
 # It refuses unless ALL of these hold:
 #   * the argument is exactly one well-formed lower-case address (no '/', no '..', no '.', nothing empty);

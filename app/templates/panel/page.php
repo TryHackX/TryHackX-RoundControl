@@ -223,7 +223,7 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
         <?php if (!$f2bAvail): ?>
             <div class="ds-msg ds-msg--err error-container">
                 <strong><i class="ri-alert-line"></i> Brak dostępu do Fail2Ban</strong><br>
-                Panel nie może pobrać listy banów z systemu (usługa nieuruchomiona lub brak uprawnień sudo dla <code>www-data</code>).
+                Panel nie może pobrać listy banów z systemu (usługa nieuruchomiona lub brak uprawnień sudo dla użytkownika PHP panelu — domyślnie <code>mailweb</code>, osobna pula; sprawdź: <code>sudo -l -U mailweb</code>).
             </div>
         <?php endif; ?>
 

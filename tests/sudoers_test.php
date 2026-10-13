@@ -114,6 +114,13 @@ ok(!in_array('/usr/local/bin/mailpanel-scan.sh *', $entries, true), 'mailpanel-s
 // dwa pliki definiujące ten sam alias = błąd składni sudoers (cały sudo przestaje działać); 1.0.x miało MAILPANEL_F2B
 ok(preg_match('/^Cmnd_Alias\s+MAILPANEL_F2B\b/m', $joined) !== 1 && preg_match('/^Cmnd_Alias\s+ROUNDCONTROL_F2B\b/m', $joined) === 1,
     'alias Fail2Ban ma unikalną nazwę ROUNDCONTROL_F2B (nie koliduje z MAILPANEL_F2B ze starszych instalacji)');
+// osobna pula: reguły dla użytkownika puli (User_Alias, install.sh podmienia tę JEDNĄ linię), nigdy dla www-data
+ok(preg_match('/^User_Alias ROUNDCONTROL_USER = mailweb$/m', $joined) === 1, 'User_Alias ROUNDCONTROL_USER = mailweb (domyślny użytkownik osobnej puli; install.sh wstawia właściwego)');
+$ruleUsers = [];
+foreach (explode("\n", $joined) as $line) {
+    if (preg_match('/^(\S+)\s+ALL=/', trim($line), $mu)) { $ruleUsers[$mu[1]] = true; }
+}
+ok(array_keys($ruleUsers) === ['ROUNDCONTROL_USER'], 'każda reguła nazywa ROUNDCONTROL_USER (żadnej dla www-data): ' . implode(',', array_keys($ruleUsers)));
 
 group('sudoers: polecenia panelu są dozwolone');
 foreach ([

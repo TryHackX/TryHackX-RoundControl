@@ -144,14 +144,21 @@ if (file_exists($envPath) && !askYes('.env już istnieje — nadpisać?', false)
     @chmod($envPath, 0640);
     file_put_contents($envPath, implode("\n", $lines) . "\n");
     umask($old);
-    // uruchomione przez root (sudo php install.php) plik byłby root:root 640 i panel (www-data) nie mógłby go czytać
-    // aż do install.sh sekcja 7 — ustawiamy grupę od razu, jeśli się da
+    // uruchomione przez root (sudo php install.php) plik byłby root:root 640 i panel nie mógłby go czytać aż do
+    // install.sh — ustawiamy grupę od razu: użytkownik puli PHP panelu (PANEL_USER, domyślnie mailweb z install.sh
+    // sekcja 1b), a gdy go jeszcze nie ma — www-data (install.sh sekcja 1b/7 i tak poprawi grupę)
+    $envGroup = (string) (getenv('PANEL_USER') ?: 'mailweb');
     $chgrpDone = false;
-    if (function_exists('posix_getuid') && posix_getuid() === 0 && function_exists('posix_getgrnam') && posix_getgrnam('www-data') !== false) {
-        $chgrpDone = @chgrp($envPath, 'www-data');
+    if (function_exists('posix_getuid') && posix_getuid() === 0 && function_exists('posix_getgrnam')) {
+        if (posix_getgrnam($envGroup) === false) {
+            $envGroup = 'www-data';
+        }
+        if (posix_getgrnam($envGroup) !== false) {
+            $chgrpDone = @chgrp($envPath, $envGroup);
+        }
     }
-    ok('.env zapisany (0640' . ($chgrpDone ? ', grupa www-data' : '; pamiętaj: chown root:www-data .env') . ')');
-    out('   Najlepiej przenieś go poza katalog aplikacji:  install -d -o root -g www-data -m 750 /etc/mailpanel && mv .env /etc/mailpanel/panel.env');
+    ok('.env zapisany (0640' . ($chgrpDone ? ", grupa $envGroup" : '; pamiętaj: chown root:<użytkownik puli PHP panelu> .env') . ')');
+    out("   Najlepiej przenieś go poza katalog aplikacji:  install -d -o root -g $envGroup -m 750 /etc/mailpanel && mv .env /etc/mailpanel/panel.env");
 }
 
 /* --- 3. Połączenie z bazą --- */
@@ -231,9 +238,10 @@ ok('Warstwa aplikacji gotowa.');
 out('');
 out('Następne kroki:');
 out('  1) Integracje systemowe (jako root):   sudo bash install.sh');
-out('     (sekcja 0: baza + uprawnienia per tabela z sql/panel_grants.sql; sekcje 2-3: helper Fail2Ban + sudoers z dokładnymi');
-out('      argumentami, jail.local = root:root 644; sekcja 7: kod root:root, tylko temp/ i logs/ zapisywalne dla www-data,');
-out('      .env 640 root:www-data; sekcja 9: wpięcie panelu w config.inc.php; sekcja 10: drop-in php-fpm ReadWritePaths)');
+out('     (sekcja 0: baza + uprawnienia per tabela z sql/panel_grants.sql; sekcja 1b: OSOBNA pula PHP-FPM [mailweb] dla');
+out('      Roundcube i panelu; sekcje 2-3: helper Fail2Ban + sudoers z dokładnymi argumentami dla mailweb, jail.local =');
+out('      root:root 644; sekcja 7: kod root:root, tylko temp/ i logs/ zapisywalne dla mailweb, .env 640 root:mailweb;');
+out('      sekcja 9: wpięcie panelu w config.inc.php; sekcja 10: drop-in php-fpm ReadWritePaths)');
 out('     F2B_JAIL_LOCAL w .env zostaw /etc/fail2ban/jail.local — tylko ten plik obsługuje helper.');
 out('  2) Zaloguj się do panelu przez portal (admin → Panel Admina).');
 out('');

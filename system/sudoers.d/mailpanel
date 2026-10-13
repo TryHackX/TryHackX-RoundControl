@@ -1,4 +1,10 @@
-# /etc/sudoers.d/mailpanel  -  rights of the mail panel (www-data) for system operations.
+# /etc/sudoers.d/mailpanel  -  rights of the mail panel's PHP user for system operations.
+#
+# That user is the one php-fpm runs Roundcube + the panel as: `mailweb` with the panel's own pool (install.sh section
+# 1b, the default), or `www-data` if Roundcube still shares the [www] pool with other sites. It is named ONCE, in the
+# User_Alias line below - install.sh section 2 writes the right name there; by hand, edit that line. Never grant these
+# rules to www-data when the panel has its own pool: then every other PHP site on the server could use them.
+#
 # Install (install.sh section 2 does exactly this):
 #   visudo -cf mailpanel                                                       # the file alone
 #   install -o root -g root -m 440 mailpanel /etc/sudoers.d/mailpanel.rc-new   # a name with a dot: sudo ignores it
@@ -18,10 +24,12 @@
 # In a `^regex$` argument the sudoers special characters `,` `:` `=` `\` must be escaped with a backslash (hence `\:`
 # below). The regexes avoid `{m,n}` quantifiers on purpose, so no comma has to be escaped at all.
 
+User_Alias ROUNDCONTROL_USER = mailweb
+
 # Fail2Ban - EXACT arguments only.
 #   status                  - jail list / ban list in the "IP blocks" tab
 #   set J banip|unbanip IP  - manual ban / unban, bans from the scanner
-#   set panel-tempban bantime N - timed bans (jail panel-tempban ONLY: a rule for "any jail" would let www-data set
+#   set panel-tempban bantime N - timed bans (jail panel-tempban ONLY: a rule for "any jail" would let the panel user set
 #                             the bantime of sshd or recidive to one second and disable brute-force protection)
 #   get J banip --with-time - the "Expires" column
 #   mailpanel-f2b-apply     - root helper that installs the panel's PROPOSED jail.local (read from stdin) after
@@ -34,16 +42,16 @@ Cmnd_Alias ROUNDCONTROL_F2B = /usr/bin/fail2ban-client ping, \
     /usr/bin/fail2ban-client ^set panel-tempban bantime [0-9]{2}[0-9]?[0-9]?[0-9]?[0-9]?[0-9]?$, \
     /usr/bin/fail2ban-client ^get [A-Za-z0-9_-]+ banip --with-time$, \
     /usr/local/sbin/mailpanel-f2b-apply ""
-www-data ALL=(root) NOPASSWD: ROUNDCONTROL_F2B
+ROUNDCONTROL_USER ALL=(root) NOPASSWD: ROUNDCONTROL_F2B
 
 # Postfix anti-spam limits ("Security" tab): exactly three integers; "" = the panel's availability probe (the script
 # answers "Inputs must be integers" and changes nothing). The script validates again and checks what it wrote.
-www-data ALL=(root) NOPASSWD: /usr/local/bin/update-postfix-limits.sh "", /usr/local/bin/update-postfix-limits.sh ^[0-9]+ [0-9]+ [0-9]+$
+ROUNDCONTROL_USER ALL=(root) NOPASSWD: /usr/local/bin/update-postfix-limits.sh "", /usr/local/bin/update-postfix-limits.sh ^[0-9]+ [0-9]+ [0-9]+$
 # Deleting mailbox files when an account is removed: one lower-case address; "" = the availability probe. The script
 # validates the address again, asks Dovecot whether the account still exists, checks the real path and MOVES the
 # maildir to a quarantine (it never rm -rf's)
-www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-delete-user.sh "", /usr/local/bin/mailpanel-delete-user.sh ^[a-z0-9]([a-z0-9._+-]+)?@[a-z0-9]([a-z0-9.-]+)?[a-z0-9]$
+ROUNDCONTROL_USER ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-delete-user.sh "", /usr/local/bin/mailpanel-delete-user.sh ^[a-z0-9]([a-z0-9._+-]+)?@[a-z0-9]([a-z0-9.-]+)?[a-z0-9]$
 # Quota usage on the account list (doveadm) - exact arguments, one user name
-www-data ALL=(root) NOPASSWD: /usr/bin/doveadm ^-f flow quota get -u [A-Za-z0-9][A-Za-z0-9._@+-]+$
+ROUNDCONTROL_USER ALL=(root) NOPASSWD: /usr/bin/doveadm ^-f flow quota get -u [A-Za-z0-9][A-Za-z0-9._@+-]+$
 # Suspicious-IP scanner: SINCE UNTIL [ssh|dovecot|postfix] - exact arguments (two ISO dates, optional source)
-www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh ^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4}-[0-9]{2}-[0-9]{2}( (ssh|dovecot|postfix))?$
+ROUNDCONTROL_USER ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh ^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4}-[0-9]{2}-[0-9]{2}( (ssh|dovecot|postfix))?$

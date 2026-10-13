@@ -31,7 +31,9 @@ sudo tee "$PCFG" >/dev/null <<CFGEOF
 \$config['password_db_dsn'] = 'mysql://roundcubepw:$PW@localhost/mailserver';
 \$config['password_query'] = 'UPDATE virtual_users SET password=%P WHERE email=%u';
 CFGEOF
-sudo chown root:www-data "$PCFG" && sudo chmod 640 "$PCFG"
+# grupa = użytkownik puli PHP-FPM Roundcube (install.sh sekcja 1b: mailweb; bez osobnej puli: www-data)
+GRP="${PANEL_USER:-mailweb}"; getent group "$GRP" >/dev/null || GRP=www-data
+sudo chown root:"$GRP" "$PCFG" && sudo chmod 640 "$PCFG"
 sudo php -l "$PCFG"
 
 # 3) Dopisz 'password' do listy pluginów w config.inc.php (ręcznie, jeśli brak):

@@ -9,7 +9,7 @@
  * SELECT/UPDATE na virtual_users (least privilege).
  *
  * Ten plik trafia do /var/www/roundcube/plugins/password/config.inc.php
- * (poza webrootem public_html). chmod 640 root:www-data. Podmień
+ * (poza webrootem public_html). chmod 640, root:<użytkownik puli PHP panelu> (mailweb). Podmień
  * SILNE_HASLO_POLICY na wygenerowane (openssl rand -hex 24).
  */
 $config['password_driver'] = 'sql';
