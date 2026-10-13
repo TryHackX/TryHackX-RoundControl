@@ -5,6 +5,7 @@ namespace App\Panel;
 
 use App\Admin\AdminRepository;
 use App\Admin\AuditLog;
+use App\Admin\LogRetention;
 use App\I18n\Lang;
 use App\Security\Captcha;
 use App\Security\Csrf;
@@ -177,6 +178,8 @@ final class PanelController
                 isset($_POST['delete_user_confirm']) => $this->deleteUser(),
                 isset($_POST['delete_alias'])        => $this->deleteAlias(),
                 isset($_POST['lang_op'])             => $this->languageOp(),
+                isset($_POST['log_retention_save'])  => $this->saveRetention(),
+                isset($_POST['log_cleanup_now'])     => $this->cleanupLogsNow(),
                 default => $this->error = t('msg.common.unknown_op'),
             };
         } catch (Throwable $e) {
@@ -328,9 +331,40 @@ final class PanelController
         }
     }
 
-    private function saveSecurity(): void
+    /** Przechowywanie logów (1.3.2): zapis okna (90 / 180 / 365 / 730 dni / 0 = bez limitu). */
+    private function saveRetention(): void
     {
-        $maxLog = (string) max(1, (int) ($_POST['max_login_attempts'] ?? 5));
+        $raw  = (string) ($_POST['log_retention_days'] ?? '');
+        $days = ctype_digit($raw) ? (int) $raw : -1;
+        if (!in_array($days, LogRetention::OPTIONS, true)) {
+            $this->error = t('msg.retention.bad_value');
+            return;
+        }
+        Settings::set('log_retention_days', (string) $days);
+        $this->audit->log('LOG_RETENTION_SET', Lang::site('audit.retention_set', ['what' => Lang::site('panel.retention.opt_' . $days)]));
+        $this->success = t('msg.retention.saved', ['what' => t('panel.retention.opt_' . $days)]);
+        $this->values  = ['log_retention_days' => (string) $days];
+        $this->data['retention_note'] = LogRetention::note();
+    }
+
+    /** "Wyczyść teraz": jeden przebieg sprzątania od razu (CSRF i sesję administratora sprawdza handle()). */
+    private function cleanupLogsNow(): void
+    {
+        if (LogRetention::days() === 0) {
+            $this->success = t('msg.retention.never');
+            return;
+        }
+        $n = LogRetention::run($this->pdo, true);
+        $this->success = t('msg.retention.cleaned', [
+            'total' => array_sum($n), 'audit' => $n['audit'], 'admin' => $n['admin_logins'], 'reg' => $n['registrations'],
+            'user' => $n['user_logins'], 'send' => $n['send_counters'], 'del' => $n['deleted_accounts'],
+        ]);
+        $this->refresh[] = 'audit';
+        $this->data['retention_last'] = LogRetention::lastText();
+    }
+
+    private function saveSecurity(): void
+    {        $maxLog = (string) max(1, (int) ($_POST['max_login_attempts'] ?? 5));
         $banMin = (string) max(1, (int) ($_POST['ban_duration_minutes'] ?? 15));
 
         Settings::set('admin_lock_threshold', $maxLog);
@@ -1379,6 +1413,7 @@ final class PanelController
 
         $data = [
             'success'  => $flashSuccess,
+            'retentionNote' => LogRetention::note(),
             'error'    => $flashError,
             'csrf'     => Csrf::token(),
             'admin'    => (string) ($_SESSION['admin_username'] ?? ''),
@@ -1411,6 +1446,7 @@ final class PanelController
                 'registration_enabled'      => Settings::get('registration_enabled', Settings::get('allow_registration', '1')),
                 'captcha'                   => Captcha::panelState(),   // sekrety nie trafiają do HTML (tylko "zapisany")
                 'languages'                 => LanguageAdmin::listing(),
+                'retention'                 => ['days' => LogRetention::days(), 'last' => LogRetention::lastText()],
                 'reserved_local_parts'      => (string) Settings::get('reserved_local_parts', Accounts::DEFAULT_EXTRA),
                 'reserved_base'             => Accounts::BASE_RESERVED,
                 'deleted_name_hold_days'    => Settings::int('deleted_name_hold_days', 365),

@@ -121,6 +121,17 @@ body > .container { width: 100%; flex: 1 0 auto; }
 .lang-tool-row input[type="file"] { flex: 1 1 180px; min-width: 0; font-size: 13px; }
 .lang-tool .help-text { margin-top: 8px; }
 
+/* ---------------- Ustawienia → Przechowywanie logów ---------------- */
+.retention-card { margin-top: 20px; }
+.retention-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.retention-row label { margin: 0; font-weight: 600; }
+.retention-row select { flex: 0 1 260px; width: auto; min-width: 0; }
+.retention-rules { margin: 12px 0 0; padding-left: 18px; }
+.retention-rules li { margin: 3px 0; }
+.retention-now { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 14px; }
+.retention-now .help-text { margin: 0; }
+.log-retention-note { display: flex; align-items: center; gap: 6px; margin: 8px 2px 0; }
+
 /* Natywne kontrolki (checkboxy, selecty, date-picker, scrollbary) w kolorach
    motywu — bez tego przeglądarka rysuje je jasne w trybie ciemnym. */
 body.dark-mode { color-scheme: dark; }

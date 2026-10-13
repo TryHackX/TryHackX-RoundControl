@@ -213,6 +213,92 @@ END$$
 DELIMITER ;
 
 -- ---------------------------------------------------------------
+-- 1.3.2: przechowywanie logów. Konto panelu NIE ma prawa DELETE na dziennikach (audyt, logowania administratorów,
+-- rejestracje) — może tylko poprosić tę procedurę (SQL SECURITY DEFINER) o usunięcie wpisów STARSZYCH niż okno
+-- przechowywania, a okno ma co najmniej 90 dni: nawet przejęte konto panelu nie wymaże świeżych śladów.
+-- Partie po 1000 wierszy (krótkie blokady), najwyżej p_rounds partii na tabelę w jednym wywołaniu.
+--   admin_audit_logs, admin_login_attempts   wpisy starsze niż okno
+--   registration_events   starsze niż okno, ale udana rejestracja ISTNIEJĄCEGO konta zostaje (data utworzenia
+--                         i IP rejestracji w liście kont)
+--   user_login_events     starsze niż okno, ale ostatnie logowanie każdego konta zostaje (kolumna "ostatnie logowanie")
+--   send_counters         dni starsze niż okno (limit dzienny potrzebuje tylko dnia dzisiejszego)
+--   deleted_accounts      starsze niż MAX(okno, deleted_name_hold_days, 30 dni kwarantanny) — blokada nazw działa dalej
+-- p_days <= 0 ("bez limitu") nic nie usuwa. Wynik: jeden wiersz z liczbą usuniętych wierszy per tabela.
+-- ---------------------------------------------------------------
+
+DELIMITER $$
+CREATE OR REPLACE PROCEDURE sp_prune_logs (IN p_days INT, IN p_rounds INT)
+BEGIN
+    DECLARE v_days INT;
+    DECLARE v_keep_del INT;
+    DECLARE v_rounds INT;
+    DECLARE v_cut DATETIME;
+    DECLARE v_n INT DEFAULT 0;
+    DECLARE v_i INT DEFAULT 0;
+    DECLARE c_audit INT DEFAULT 0;
+    DECLARE c_admin INT DEFAULT 0;
+    DECLARE c_reg INT DEFAULT 0;
+    DECLARE c_user INT DEFAULT 0;
+    DECLARE c_send INT DEFAULT 0;
+    DECLARE c_del INT DEFAULT 0;
+
+    IF p_days IS NOT NULL AND p_days > 0 THEN
+        SET v_days   = GREATEST(p_days, 90);
+        SET v_rounds = LEAST(GREATEST(COALESCE(p_rounds, 20), 1), 200);
+        SET v_cut    = NOW() - INTERVAL v_days DAY;
+        SET v_keep_del = GREATEST(v_days, 30,
+            COALESCE((SELECT CAST(v AS SIGNED) FROM app_settings WHERE k = 'deleted_name_hold_days'), 365));
+
+        SET v_i = 0;
+        REPEAT
+            DELETE FROM admin_audit_logs WHERE created_at < v_cut LIMIT 1000;
+            SET v_n = ROW_COUNT(); SET c_audit = c_audit + v_n; SET v_i = v_i + 1;
+        UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
+
+        SET v_i = 0;
+        REPEAT
+            DELETE FROM admin_login_attempts WHERE created_at < v_cut LIMIT 1000;
+            SET v_n = ROW_COUNT(); SET c_admin = c_admin + v_n; SET v_i = v_i + 1;
+        UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
+
+        SET v_i = 0;
+        REPEAT
+            DELETE FROM registration_events
+            WHERE created_at < v_cut
+              AND (status <> 'success' OR email NOT IN (SELECT email FROM virtual_users))
+            LIMIT 1000;
+            SET v_n = ROW_COUNT(); SET c_reg = c_reg + v_n; SET v_i = v_i + 1;
+        UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
+
+        SET v_i = 0;
+        REPEAT
+            DELETE FROM user_login_events
+            WHERE created_at < v_cut
+              AND (email NOT IN (SELECT email FROM virtual_users)
+                   OR id NOT IN (SELECT id FROM (SELECT MAX(id) AS id FROM user_login_events GROUP BY email) AS keep_last))
+            LIMIT 1000;
+            SET v_n = ROW_COUNT(); SET c_user = c_user + v_n; SET v_i = v_i + 1;
+        UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
+
+        SET v_i = 0;
+        REPEAT
+            DELETE FROM send_counters WHERE day < CURDATE() - INTERVAL v_days DAY LIMIT 1000;
+            SET v_n = ROW_COUNT(); SET c_send = c_send + v_n; SET v_i = v_i + 1;
+        UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
+
+        SET v_i = 0;
+        REPEAT
+            DELETE FROM deleted_accounts WHERE deleted_at < NOW() - INTERVAL v_keep_del DAY LIMIT 1000;
+            SET v_n = ROW_COUNT(); SET c_del = c_del + v_n; SET v_i = v_i + 1;
+        UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
+    END IF;
+
+    SELECT c_audit AS audit, c_admin AS admin_logins, c_reg AS registrations, c_user AS user_logins,
+           c_send AS send_counters, c_del AS deleted_accounts;
+END$$
+DELIMITER ;
+
+-- ---------------------------------------------------------------
 -- Domyślne ustawienia (INSERT IGNORE — istniejące wartości zostają).
 -- Wszystko edytowalne później z poziomu panelu.
 -- ---------------------------------------------------------------
@@ -249,7 +335,8 @@ INSERT IGNORE INTO app_settings (k, v) VALUES
 ('smtp_max_per_hour', '200'),
 ('smtp_max_rcpt_per_msg', '50'),
 ('reserved_local_parts', 'info,support,contact,sales,marketing,billing,privacy,legal,press,jobs,help,office,mail,team,service,services,staff,owner,moderator'),
-('deleted_name_hold_days', '365');
+('deleted_name_hold_days', '365'),
+('log_retention_days', '365');
 
 -- ---------------------------------------------------------------
 -- PO IMPORCIE zrób ręcznie (patrz README.md):

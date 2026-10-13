@@ -1383,6 +1383,16 @@
     }
 
     /* Języki: po każdej operacji serwer odsyła świeże wiersze tabeli; formularze kopii / wgrania czyszczą się po sukcesie. */
+    /* Przechowywanie logów: notki pod tabelami logów i "ostatnie sprzątanie" od razu po zapisie / czyszczeniu. */
+    function afterRetention(d) {
+        if (!d || !d.data) return;
+        if (typeof d.data.retention_note === 'string') {
+            document.querySelectorAll('.log-retention-note span').forEach(function (el) { el.textContent = d.data.retention_note; });
+        }
+        var last = $('retentionLast');
+        if (last && typeof d.data.retention_last === 'string') last.textContent = d.data.retention_last;
+    }
+
     function afterLangOp(form, d) {
         if (!d || !d.data || typeof d.data.languages_html !== 'string') return;
         var rows = $('lang-rows');
@@ -1441,6 +1451,7 @@
                 if (d.ok) flashSaved(btn);
                 report(d, form);
                 afterLangOp(form, d);
+                afterRetention(d);
             }
             refreshAfter(d, { flash: d.data && d.data.id });
         });

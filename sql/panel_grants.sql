@@ -45,5 +45,7 @@ GRANT SELECT, DELETE                 ON mailserver.send_counters        TO 'mail
 GRANT SELECT, INSERT, DELETE         ON mailserver.throttle_events      TO 'mailpanel'@'localhost';
 GRANT SELECT, INSERT, UPDATE         ON mailserver.deleted_accounts     TO 'mailpanel'@'localhost';
 GRANT EXECUTE ON PROCEDURE mailserver.sp_register_login                 TO 'mailpanel'@'localhost';
+-- 1.3.2: przechowywanie logów — usuwanie wyłącznie przez procedurę (wpisy starsze niż okno, min. 90 dni), nigdy DELETE
+GRANT EXECUTE ON PROCEDURE mailserver.sp_prune_logs                     TO 'mailpanel'@'localhost';
 
 FLUSH PRIVILEGES;

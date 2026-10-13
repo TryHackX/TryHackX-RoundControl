@@ -253,6 +253,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
             <div class="form-actions mt-4"><button type="submit" name="update_settings" class="btn"><i class="ri-save-line" aria-hidden="true"></i> <?= h('panel.settings.save') ?></button></div>
         </form>
         <?php include __DIR__ . '/partials/lang_card.php'; ?>
+        <?php include __DIR__ . '/partials/retention_card.php'; ?>
     </section>
 
     <!-- UŻYTKOWNICY -->
@@ -384,6 +385,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                 <tbody id="reg-logs-tbody"><?= $lists['reg']['rows'] ?></tbody></table>
         </div>
         <div id="reg-logs-pagination" class="pagination-container"><?= $lists['reg']['pages'] ?></div>
+        <p class="help-text log-retention-note"><i class="ri-time-line" aria-hidden="true"></i> <span><?= Html::e($retentionNote) ?></span></p>
 
         <hr class="safe-hr">
         <h2><i class="ri-shield-user-line" aria-hidden="true"></i> <?= h('panel.logs.admin.title') ?></h2>
@@ -402,6 +404,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                 <tbody id="admin-logs-tbody"><?= $lists['admin']['rows'] ?></tbody></table>
         </div>
         <div id="admin-logs-pagination" class="pagination-container"><?= $lists['admin']['pages'] ?></div>
+        <p class="help-text log-retention-note"><i class="ri-time-line" aria-hidden="true"></i> <span><?= Html::e($retentionNote) ?></span></p>
 
         <hr class="safe-hr">
         <h2><i class="ri-file-shield-2-line" aria-hidden="true"></i> <?= h('panel.logs.audit.title') ?></h2>
@@ -423,6 +426,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                 <tbody id="audit-logs-tbody"><?= $lists['audit']['rows'] ?></tbody></table>
         </div>
         <div id="audit-logs-pagination" class="pagination-container"><?= $lists['audit']['pages'] ?></div>
+        <p class="help-text log-retention-note"><i class="ri-time-line" aria-hidden="true"></i> <span><?= Html::e($retentionNote) ?></span></p>
     </section>
 
     <!-- FAIL2BAN -->
