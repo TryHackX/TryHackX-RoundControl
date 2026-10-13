@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.3.2 — 2026-10-13 — log retention
+
+**Code plus `sql/upgrade_1.3.2.sql`** (one stored procedure, one EXECUTE grant, the setting stored explicitly). No sudo /
+php-fpm / Apache / Fail2Ban change. Steps: [README → Upgrading from 1.3.1 to 1.3.2](README.md#upgrading-from-131-to-132).
+
+Added — the panel's logs no longer grow forever:
+
+- **Settings → Log retention:** 90 / 180 / 365 / 730 days or no limit (`log_retention_days`, **365 by default** —
+  stored by the schema for fresh installs and by the upgrade file for existing ones). Under every table of the *Logs* tab
+  the active period is shown; saving updates the notes in place.
+- **What is removed** (entries older than the period, in batches of 1000 rows — short locks, at most 20 batches per
+  table and run, the rest the next day):
+  - `admin_audit_logs`, `admin_login_attempts`: entries older than the period;
+  - `registration_events`: failed / blocked attempts and the rows of accounts that no longer exist — the successful
+    registration of an existing account stays (the account list shows its creation date and registration IP);
+  - `user_login_events` (already capped per account by `sp_register_login`): older rows, but every existing account
+    keeps its latest login (the "last login" column); rows of accounts that no longer exist go;
+  - `send_counters`: days older than the period (the daily limit only reads today's row);
+  - `deleted_accounts`: only after the longest of the period, *deleted_name_hold_days* and the 30-day quarantine, so the
+    re-registration protection keeps working;
+  - `throttle_events`: unchanged (the limiter already keeps one day).
+- **When:** at most once a day without cron — after a portal or panel request has been answered
+  (`fastcgi_finish_request`), guarded by a timestamp in `app_settings` that exactly one request can claim (a conditional
+  `UPDATE`), plus **Clean up now** in the panel (administrator session + CSRF), which reports how many rows went. Every
+  run that removed something — and every manual run — writes **one** audit entry (`LOG_RETENTION`) with the numbers per
+  table; automatic runs are logged as `system`. "No limit" removes nothing and schedules nothing.
+- **Least privilege kept:** the panel's database account still has **no DELETE** on the audit, admin-login and
+  registration logs (nor on `deleted_accounts`). It may only call `sp_prune_logs` (SQL SECURITY DEFINER), which clamps
+  the period to **at least 90 days** — even a hijacked panel account cannot erase recent traces.
+
+Tests: `tests/db_test.php` (per-table rules with backdated rows, existing accounts keep registration / last login, name
+hold longer than the period, "no limit" removes nothing, the procedure clamps 10 days to 90, the once-a-day claim, one
+aggregated audit entry, the panel account still cannot DELETE logs, schema and upgrade file carry the same procedure),
+`tests/http_test.php` (automatic run on the first requests, *Clean up now* needs a session and the CSRF token, invalid
+period refused, notes under the three tables), `tests/i18n_test.php` (option labels in both languages).
+
 ## 1.3.1 — 2026-10-13 — English by default, phones, language switcher
 
 **Code plus the two root helpers whose messages changed** (same paths, arguments and exit codes). No schema change, no

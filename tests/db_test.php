@@ -594,6 +594,107 @@ try {
     ok(!isset($cfg['sendmail_delay']), 'wartość nienumeryczna odrzucona');
     eq($cfg['login_rate_limit'] ?? null, 1000, 'wartość poza zakresem przycięta');
     eq($cfg['force_https'] ?? null, true, 'stałe ustawienia panelu zachowane');
+
+    /* -------------------------------------------------------------- 1.3.2: przechowywanie logów */
+    group('1.3.2: przechowywanie logów — sp_prune_logs przez konto panelu, reguły per tabela, "bez limitu", raz na dobę');
+    $schemaProc = static function (string $file) use ($root): string {
+        preg_match('/CREATE OR REPLACE PROCEDURE sp_prune_logs.*?END\$\$/s', (string) file_get_contents($root . '/sql/' . $file), $m);
+        return (string) preg_replace('/\s+/', ' ', $m[0] ?? '');
+    };
+    ok($schemaProc('panel_schema.sql') !== '' && $schemaProc('panel_schema.sql') === $schemaProc('upgrade_1.3.2.sql'), 'procedura w panel_schema.sql = ta z upgrade_1.3.2.sql');
+    $ago = static fn(int $d): string => date('Y-m-d H:i:s', time() - $d * 86400);
+    $admin->exec('DELETE FROM admin_audit_logs'); $admin->exec('DELETE FROM admin_login_attempts'); $admin->exec('DELETE FROM registration_events');
+    $admin->exec('DELETE FROM user_login_events'); $admin->exec('DELETE FROM send_counters'); $admin->exec('DELETE FROM deleted_accounts');
+    $ip = inet_pton('203.0.113.9');
+    $ia = $admin->prepare("INSERT INTO admin_audit_logs (admin_email, ip, action_type, details, created_at) VALUES ('boss@example.test', ?, ?, '', ?)");
+    $ia->execute([$ip, 'OLD', $ago(400)]); $ia->execute([$ip, 'RECENT', $ago(10)]);
+    $il = $admin->prepare("INSERT INTO admin_login_attempts (username, success, details, ip, created_at) VALUES ('boss@example.test', 0, '', ?, ?)");
+    $il->execute([$ip, $ago(400)]); $il->execute([$ip, $ago(10)]);
+    $ir = $admin->prepare('INSERT INTO registration_events (ip, email, status, reason, created_at) VALUES (?, ?, ?, \'\', ?)');
+    $ir->execute([$ip, 'jan@example.test', 'success', $ago(400)]);        // istniejące konto: zostaje (data / IP rejestracji)
+    $ir->execute([$ip, 'gone@example.test', 'success', $ago(400)]);       // konta już nie ma: usuwane
+    $ir->execute([$ip, 'x@example.test', 'failed', $ago(400)]);           // nieudana, stara: usuwana
+    $ir->execute([$ip, 'y@example.test', 'failed', $ago(10)]);            // świeża: zostaje
+    $iu = $admin->prepare('INSERT INTO user_login_events (email, ip, created_at) VALUES (?, ?, ?)');
+    $iu->execute(['jan@example.test', $ip, $ago(500)]); $iu->execute(['jan@example.test', $ip, $ago(400)]); $iu->execute(['jan@example.test', $ip, $ago(5)]);
+    $admin->prepare('INSERT INTO virtual_users (domain_id, password, email, quota_mb) VALUES (?, ?, ?, 10)')->execute([$domId, 'x', 'quiet@example.test']);
+    $iu->execute(['quiet@example.test', $ip, $ago(400)]);                 // jedyne (ostatnie) logowanie istniejącego konta: zostaje
+    $iu->execute(['ghost2@example.test', $ip, $ago(400)]);                // konta nie ma: usuwane
+    $is = $admin->prepare('INSERT INTO send_counters (email, day, cnt) VALUES (?, ?, 1)');
+    $is->execute(['jan@example.test', date('Y-m-d', time() - 400 * 86400)]); $is->execute(['jan@example.test', date('Y-m-d')]);
+    $id = $admin->prepare('INSERT INTO deleted_accounts (email, deleted_at) VALUES (?, ?)');
+    $id->execute(['del1@example.test', $ago(400)]); $id->execute(['del2@example.test', $ago(200)]);
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('log_retention_days', '365'), ('deleted_name_hold_days', '365'), ('log_retention_last_run', '0')");
+    App\Settings\Settings::flush();
+    eq(App\Admin\LogRetention::days(), 365, 'okno z ustawień: 365 dni');
+    $_SESSION['admin_username'] = 'boss@example.test';
+    $n = App\Admin\LogRetention::run($pdo, false);
+    eq($n, ['audit' => 1, 'admin_logins' => 1, 'registrations' => 2, 'user_logins' => 3, 'send_counters' => 1, 'deleted_accounts' => 1],
+        '365 dni: usunięte dokładnie stare wpisy (audyt 1, logowania admina 1, rejestracje 2, logowania kont 3, liczniki 1, blokady 1)');
+    eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'RECENT'"), 1, 'świeży wpis audytu zostaje');
+    eq($count("SELECT COUNT(*) FROM registration_events WHERE email = 'jan@example.test' AND status = 'success'"), 1, 'udana rejestracja istniejącego konta zostaje (mimo wieku)');
+    eq($count("SELECT COUNT(*) FROM user_login_events WHERE email = 'jan@example.test'"), 1, 'jan: zostaje tylko ostatnie (świeże) logowanie');
+    eq($count("SELECT COUNT(*) FROM user_login_events WHERE email = 'quiet@example.test'"), 1, 'konto logujące się dawno: ostatnie logowanie zostaje (kolumna "ostatnie logowanie")');
+    eq($count("SELECT COUNT(*) FROM send_counters WHERE day = CURDATE()"), 1, 'licznik dzisiejszy zostaje');
+    eq($count("SELECT COUNT(*) FROM deleted_accounts WHERE email = 'del2@example.test'"), 1, 'blokada nazwy młodsza niż okno zostaje');
+    eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LOG_RETENTION' AND admin_email = 'system'"), 1, 'jeden zbiorczy wpis audytu na przebieg (automatyczny: "system")');
+    $n = App\Admin\LogRetention::run($pdo, false);
+    ok(array_sum($n) === 0 && $count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LOG_RETENTION'") === 1, 'przebieg bez niczego do usunięcia: zero i bez nowego wpisu audytu');
+    // blokada nazw dłuższa niż okno chroni wpis
+    $id->execute(['del3@example.test', $ago(400)]);
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('deleted_name_hold_days', '3650')");
+    App\Admin\LogRetention::run($pdo, false);
+    eq($count("SELECT COUNT(*) FROM deleted_accounts WHERE email = 'del3@example.test'"), 1, 'blokada nazw 3650 dni: wpis z 400 dni temu zostaje (ochrona przed ponowną rejestracją)');
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('deleted_name_hold_days', '365')");
+    // "bez limitu"
+    $ia->execute([$ip, 'OLD2', $ago(800)]);
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('log_retention_days', '0')");
+    App\Settings\Settings::flush();
+    $n = App\Admin\LogRetention::run($pdo, false);
+    ok(array_sum($n) === 0 && $count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'OLD2'") === 1, '"bez limitu": nic nie jest usuwane (wpis sprzed 800 dni zostaje)');
+    ok(!App\Admin\LogRetention::due(time()), '"bez limitu": automatyczne sprzątanie nie jest nawet planowane');
+    // dolna granica 90 dni pilnowana przez procedurę (także przy bezpośrednim wywołaniu przez konto panelu)
+    $ia->execute([$ip, 'D50', $ago(50)]); $ia->execute([$ip, 'D100', $ago(100)]);
+    $callProc = static function (PDO $p, int $days): array {
+        $st = $p->query('CALL sp_prune_logs(' . $days . ', 5)');
+        $row = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+        while ($st->nextRowset()) { /* status CALL */ }
+        $st->closeCursor();
+        return $row;
+    };
+    $callProc($panelPdo, 10);
+    ok($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'D50'") === 1 && $count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'D100'") === 0,
+        'procedura z oknem 10 dni: działa jak 90 (wpis sprzed 50 dni zostaje, sprzed 100 usunięty)');
+    $row = $callProc($panelPdo, 0);
+    ok($row !== [] && array_sum(array_map('intval', $row)) === 0 && $count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'D50'") === 1, 'procedura z 0 dni: nic');
+    // aktualizacja 1.3.1 -> 1.3.2 na istniejącej bazie: procedury i uprawnienia nie ma, ustawienie ustawione wcześniej zostaje
+    $admin->exec('DROP PROCEDURE IF EXISTS sp_prune_logs');
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('log_retention_days', '180')");
+    runSql($admin, $mk('upgrade_1.3.2.sql', $names));
+    App\Settings\Settings::flush();
+    ok($callProc($panelPdo, 365) !== [], 'upgrade_1.3.2.sql: procedura odtworzona, konto panelu ma EXECUTE');
+    eq($count("SELECT COUNT(*) FROM app_settings WHERE k = 'log_retention_days' AND v = '180'"), 1, 'upgrade_1.3.2.sql: wcześniej wybrany okres zostaje (INSERT IGNORE)');
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('log_retention_days', '365')");
+    runSql($admin, $mk('upgrade_1.3.2.sql', $names));
+    ok($callProc($panelPdo, 365) !== [], 'upgrade_1.3.2.sql: drugie uruchomienie bez błędów (idempotentny)');
+    $denied($panelPdo, 'DELETE FROM admin_audit_logs', 'mailpanel nadal bez DELETE na admin_audit_logs (tylko procedura)');
+    $denied($panelPdo, 'DELETE FROM deleted_accounts', 'mailpanel bez DELETE na deleted_accounts');
+    // raz na dobę
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('log_retention_days', '365'), ('log_retention_last_run', '0')");
+    App\Settings\Settings::flush();
+    $now = time();
+    ok(App\Admin\LogRetention::due($now), 'po dobie (znacznik 0): sprzątanie należne');
+    ok(App\Admin\LogRetention::claim($pdo, $now), 'pierwsze żądanie zajmuje przebieg');
+    ok(!App\Admin\LogRetention::claim($pdo, $now), 'drugie (równoległe) żądanie tej samej doby: odpuszcza');
+    ok(!App\Admin\LogRetention::claim($pdo, $now + 3600), '... i godzinę później też');
+    ok(!App\Admin\LogRetention::due($now + 3600), 'due(): nie przed upływem doby');
+    ok(App\Admin\LogRetention::due($now + 86400), 'due(): znowu po dobie');
+    ok(App\Admin\LogRetention::claim($pdo, $now + 86400), 'po dobie przebieg można zająć ponownie');
+    $n = App\Admin\LogRetention::run($pdo, true, $now + 86400);
+    ok($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LOG_RETENTION' AND admin_email = 'boss@example.test'") === 1, 'ręczny przebieg: wpis audytu z administratorem (także gdy nic nie usunął)');
+    App\Settings\Settings::flush();
+    eq(App\Admin\LogRetention::lastRun(), $now + 86400, 'ręczny przebieg przesuwa znacznik ostatniego sprzątania');
+    unset($_SESSION['admin_username']);
 } catch (Throwable $e) {
     ok(false, 'WYJĄTEK: ' . $e::class . ': ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
 }

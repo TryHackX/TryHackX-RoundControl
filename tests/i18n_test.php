@@ -106,7 +106,8 @@ foreach ($phpFiles as $f) {
     foreach (token_get_all((string) file_get_contents($f)) as $tok) {   // bez komentarzy (przykłady w opisach)
         $src .= is_array($tok) ? (in_array($tok[0], [T_COMMENT, T_DOC_COMMENT], true) ? ' ' : $tok[1]) : $tok;
     }
-    preg_match_all('/(?<![A-Za-z0-9_>$])(?:t|h|html|Lang::t|Lang::h|Lang::html|Lang::site)\(\s*\'([a-z0-9_.]+)\'/', $src, $m);
+    // tylko klucze w całości (bez kluczy składanych: 'prefix.' . $x)
+    preg_match_all('/(?<![A-Za-z0-9_>$])(?:t|h|html|Lang::t|Lang::h|Lang::html|Lang::site)\(\s*\'([a-z0-9_.]+)\'\s*[,)]/', $src, $m);
     foreach ($m[1] as $k) {
         $used++;
         ok(isset($plAll[$k]), 'klucz ' . $k . ' (' . basename(dirname($f)) . '/' . basename($f) . ') istnieje w pl');
@@ -115,6 +116,9 @@ foreach ($phpFiles as $f) {
 ok($used > 100, "kod używa tłumaczeń ($used wywołań)");
 foreach (\App\Security\Captcha::PROVIDERS as $pid => $key) {
     ok(isset($plAll[$key]), "etykieta dostawcy $pid ($key)");
+}
+foreach (\App\Admin\LogRetention::OPTIONS as $opt) {   // klucze składane w szablonie i kontrolerze
+    ok(isset($plAll['panel.retention.opt_' . $opt]), "przechowywanie logów: etykieta opcji $opt");
 }
 foreach (['portal' => 'portal.js', 'panel' => 'panel.js'] as $area => $js) {
     $src = (string) file_get_contents($root . '/assets/' . $js);

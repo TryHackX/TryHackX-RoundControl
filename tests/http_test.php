@@ -583,6 +583,38 @@ try {
     ok(($r['ok'] ?? false) === true && !is_file($tmp . '/lang/xx.json') && !in_array('xx', explode(',', $setting('enabled_languages')), true), 'usunięcie języka dodanego: plik i wpis znikają');
     $p3->panel(['lang_op' => 'delete', 'code' => 'de']);
     eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LANGUAGE'") >= 8, true, 'operacje na językach w dzienniku audytowym');
+    group('1.3.2: przechowywanie logów — ustawienie, "Wyczyść teraz" (sesja + CSRF), notki pod tabelami, przebieg raz na dobę');
+    $lastRun = (int) $admin->query("SELECT v FROM app_settings WHERE k = 'log_retention_last_run'")->fetchColumn();
+    ok($lastRun > time() - 3600, 'automatyczny przebieg po pierwszych żądaniach (znacznik ostatniego sprzątania ustawiony)');
+    $runs = $count("SELECT COUNT(*) FROM app_settings WHERE k = 'log_retention_last_result'");
+    eq($runs, 1, '... i wynik zapisany (bez crona, przy okazji żądania)');
+    $r = (new Client($base))->panel(['log_cleanup_now' => '1'], false);
+    ok($r['code'] === 403 && ($r['json']['auth'] ?? false) === true, '"Wyczyść teraz" bez sesji: 403 {auth}');
+    [$pr, ] = $login('solo@example.test', $adminPw);
+    $pr->page('/panel/index.php');
+    $r = $pr->panel(['log_cleanup_now' => '1'], false);
+    ok($r['code'] === 403 && ($r['json']['csrf'] ?? false) === true, '"Wyczyść teraz" bez tokenu CSRF: 403 {csrf}');
+    $ia = $admin->prepare("INSERT INTO admin_audit_logs (admin_email, ip, action_type, details, created_at) VALUES ('x@example.test', ?, 'ANCIENT', '', NOW() - INTERVAL 500 DAY)");
+    $ia->execute([inet_pton('203.0.113.1')]);
+    $r = $pr->panel(['log_cleanup_now' => '1'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && str_contains((string) ($r['msg'] ?? ''), 'Usunięto 1 wpis') && in_array('audit', $r['refresh'] ?? [], true)
+        && str_contains((string) ($r['data']['retention_last'] ?? ''), 'Ostatnie sprzątanie'), '"Wyczyść teraz": usuwa stary wpis, podaje liczby, odświeża dziennik (' . ($r['msg'] ?? '') . ')');
+    eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'ANCIENT'"), 0, '... wpis sprzed 500 dni usunięty');
+    eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LOG_RETENTION' AND admin_email = 'solo@example.test'"), 1, '... jeden wpis audytu z liczbami');
+    $r = $pr->panel(['log_retention_save' => '1', 'log_retention_days' => '12'])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false && $count("SELECT COUNT(*) FROM app_settings WHERE k = 'log_retention_days' AND v = '12'") === 0, 'okres spoza listy (12 dni): odmowa');
+    $r = $pr->panel(['log_retention_save' => '1', 'log_retention_days' => '180'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && ($r['values']['log_retention_days'] ?? '') === '180' && str_contains((string) ($r['data']['retention_note'] ?? ''), '180'),
+        'zapis 180 dni: wartość i nowa notka pod tabelami w odpowiedzi');
+    $pg = $pr->page('/panel/index.php?tab=logs')['body'];
+    ok(substr_count($pg, 'log-retention-note') === 3 && str_contains($pg, 'Wpisy starsze niż 180 dni') && str_contains($pg, '<option value="180" selected'),
+        'zakładka Logi: notka o okresie pod każdą z trzech tabel; Ustawienia: wybrane 180');
+    $r = $pr->panel(['log_retention_save' => '1', 'log_retention_days' => '0'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && str_contains((string) ($r['data']['retention_note'] ?? ''), 'bez limitu'), '"bez limitu": notka mówi o braku limitu');
+    $ia->execute([inet_pton('203.0.113.1')]);
+    $r = $pr->panel(['log_cleanup_now' => '1'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && $count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'ANCIENT'") === 1, '"bez limitu": "Wyczyść teraz" niczego nie usuwa');
+    $pr->panel(['log_retention_save' => '1', 'log_retention_days' => '365']);
     group('1.3.1: bez zapisanego języka domyślnego — angielski (świeża instalacja); zapisany pl zostaje polski');
     $admin->exec("DELETE FROM app_settings WHERE k = 'default_language'");
     $fresh = (new Client($base))->page('/portal.php');

@@ -4,14 +4,16 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.3.1** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — **English by default** for new installations (installer
-in English with `--lang=pl` available, default interface language asked during installation, English output of
-`install.sh` and the root helpers); 1.3.0 brought **Polish and English** (switcher on every page, language management
+**Version 1.3.2** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — **log retention** (90 / 180 / 365 / 730 days or no limit,
+applied once a day without cron and on demand; the database never lets the panel remove entries younger than 90 days).
+1.3.1 made new installations **English by default** (installer in English with `--lang=pl`, default interface language
+asked during installation, English output of `install.sh` and the root helpers); 1.3.0 brought **Polish and English** (switcher on every page, language management
 and JSON language packs in the panel), **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile, hCaptcha)
 and a **footer** with the version shown only to administrators.
-If you run 1.3.0: [Upgrading from 1.3.0](#upgrading-from-130-to-131) (**keeps your language**). If you run 1.2.0:
-[Upgrading from 1.2.0](#upgrading-from-120-to-130), then the 1.3.1 steps. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120),
-then the 1.3.0 and 1.3.1 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package
+If you run 1.3.1: [Upgrading from 1.3.1](#upgrading-from-131-to-132). If you run 1.3.0: [Upgrading from 1.3.0](#upgrading-from-130-to-131)
+(**keeps your language**), then the 1.3.2 steps. If you run 1.2.0: [Upgrading from 1.2.0](#upgrading-from-120-to-130), then the 1.3.1
+and 1.3.2 steps. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120),
+then the 1.3.0, 1.3.1 and 1.3.2 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package
 (it installs the current version directly) plus `install.sh` section 12. If you run 1.0: run `install.sh` from this
 package (it covers every older version).
 **Any existing installation that should stay Polish — first, before the new code:**
@@ -53,6 +55,30 @@ sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban
 
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
+
+## Upgrading from 1.3.1 to 1.3.2
+
+**Code plus one SQL file.** 1.3.2 adds **log retention**: *Settings → Log retention* (90 / 180 / 365 / 730 days or no
+limit; 365 by default), applied automatically at most once a day without cron (after a portal / panel request has been
+answered) and on demand with *Clean up now*. The deletion is done by the stored procedure `sp_prune_logs`: the panel
+account still has **no DELETE** on the audit, admin-login and registration logs — it may only ask the procedure, which
+never removes entries younger than 90 days. Existing accounts keep their registration date / IP and their last login;
+name holds of deleted accounts stay at least as long as *deleted_name_hold_days* and the 30-day quarantine. No sudo /
+php-fpm / Apache / Fail2Ban change. Details: [CHANGELOG](CHANGELOG.md).
+
+```bash
+PKG=/root/rc-1.3.2 ; RC=/var/www/roundcube ; TS=$(date +%F-%H%M%S)
+tar czf /root/roundcube-pre-1.3.2-$TS.tgz -C "$(dirname $RC)" "$(basename $RC)"        # backup (owners and modes kept)
+mysqldump --single-transaction --routines mailserver | gzip > /root/mailserver-pre-1.3.2-$TS.sql.gz
+mysql mailserver < $PKG/sql/upgrade_1.3.2.sql        # procedure sp_prune_logs + EXECUTE for mailpanel + retention 365
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/app $PKG/assets $PKG/panel $PKG/portal.php $PKG/.htaccess $RC/
+find $RC/app $RC/panel $RC/portal.php -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors'   # prints nothing
+mysql -N -e "SHOW GRANTS FOR 'mailpanel'@'localhost'" | grep -c sp_prune_logs        # 1
+```
+
+The first request after the upgrade runs the first cleanup (with 365 days nothing younger than a year is touched);
+*Settings → Log retention* shows the time and the number of removed rows, the *Logs* tab shows the active period under
+every table. Going back: unpack the tarball; the procedure and the setting can stay (1.3.1 does not use them).
 
 ## Upgrading from 1.3.0 to 1.3.1
 
