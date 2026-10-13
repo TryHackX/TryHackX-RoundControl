@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Testy HTTP 1.2.0 — prawdziwe punkty wejścia (portal.php, panel/index.php, panel/user_ips.php) przez wbudowany serwer
+ * Testy HTTP (1.2.0 / 1.3.0) — prawdziwe punkty wejścia (portal.php, panel/index.php, panel/user_ips.php) przez wbudowany serwer
  * PHP (`php -S`) na CAŁKOWICIE osobnej, tymczasowej bazie (tworzona i kasowana jak w db_test.php):
  *
  *     MP_TEST_DB_DSN="mysql:host=127.0.0.1;port=3307" MP_TEST_DB_USER=root MP_TEST_DB_PASS= php tests/http_test.php
@@ -11,6 +11,9 @@ declare(strict_types=1);
  * z i bez skrzynki aż do poprawnego hasła), kafelki po haśle administratora, endpointy JSON panelu (CSRF, brak sesji,
  * błędy, wartości po normalizacji, wskazówki odświeżania), zapis nieudanych potwierdzeń hasłem w dzienniku audytowym
  * i koniec sesji po limicie, usuwanie aliasu, rezerwacje nazw, render zakładki z ?tab=.
+ * 1.3.0: CAPTCHA (dostawca, sekret nigdy nie wraca, odmowa włączenia bez kluczy, CSP tylko dostawcy), stopka (wersja
+ * tylko w panelu), języki (?lang / ciasteczko / Accept-Language, angielski bez polskiego, zarządzanie językami: CSRF,
+ * sesja, złośliwe pakiety).
  *
  *     php tests/http_test.php --serve[=SEKUNDY]   zamiast testów: zostaw serwer z danymi testowymi do ręcznego
  *                                                 sprawdzania w przeglądarce (domyślnie 1800 s; plik STOP kończy wcześniej)
@@ -117,6 +120,21 @@ final class Client
         if ($csrf) { $post += ['_csrf' => $this->csrf]; }
         return $this->req('POST', '/panel/index.php', $post + ['_ajax' => '1'], ['X-Requested-With: fetch']);
     }
+    /** Formularz multipart z plikiem (wgrywanie pakietu języka). */
+    public function upload(array $post, string $field, string $filename, string $content): array
+    {
+        curl_setopt($this->h, CURLOPT_URL, $this->base . '/panel/index.php');
+        curl_setopt($this->h, CURLOPT_CUSTOMREQUEST, 'POST');
+        curl_setopt($this->h, CURLOPT_POSTFIELDS, $post + ['_csrf' => $this->csrf, '_ajax' => '1',
+            $field => new CURLStringFile($content, $filename, 'application/json')]);
+        curl_setopt($this->h, CURLOPT_HTTPHEADER, ['X-Requested-With: fetch']);
+        $raw  = (string) curl_exec($this->h);
+        $code = (int) curl_getinfo($this->h, CURLINFO_RESPONSE_CODE);
+        $hs   = (int) curl_getinfo($this->h, CURLINFO_HEADER_SIZE);
+        $body = substr($raw, $hs);
+        $json = json_decode($body, true);
+        return ['code' => $code, 'headers' => substr($raw, 0, $hs), 'body' => $body, 'json' => is_array($json) ? $json : null];
+    }
 }
 
 $suffix  = bin2hex(random_bytes(3));
@@ -124,7 +142,7 @@ $db      = 'mp_http_' . $suffix;
 $uPanel  = 'mp_h_panel_' . $suffix;
 $pw      = bin2hex(random_bytes(12));
 $tmp     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mp_http_' . $suffix;
-mkdir($tmp, 0777, true);
+mkdir($tmp . DIRECTORY_SEPARATOR . 'lang', 0777, true);
 $server  = null;
 
 $cleanup = static function () use ($admin, $db, $uPanel, $tmp, &$server): void {
@@ -141,6 +159,8 @@ $cleanup = static function () use ($admin, $db, $uPanel, $tmp, &$server): void {
     } catch (Throwable $e) {
         fwrite(STDERR, 'cleanup: ' . $e->getMessage() . "\n");
     }
+    foreach (glob($tmp . '/lang/*') ?: [] as $f) { @unlink($f); }
+    @rmdir($tmp . '/lang');
     foreach (glob($tmp . '/*') ?: [] as $f) { @unlink($f); }
     @rmdir($tmp);
 };
@@ -177,7 +197,7 @@ try {
                   ('allow_registration', '1'), ('registration_enabled', '1')");
 
     file_put_contents($tmp . '/app.env', "APP_ENV=dev\nAPP_TIMEZONE=UTC\nPANEL_DB_DSN=\"$dsnBase;dbname=$db;charset=utf8mb4\"\n"
-        . "PANEL_DB_USER=$uPanel\nPANEL_DB_PASS=$pw\n");
+        . "PANEL_DB_USER=$uPanel\nPANEL_DB_PASS=$pw\nLANG_DATA_DIR=" . str_replace('\\', '/', $tmp) . "/lang\n");
 
     /* ------------------------------------------------------------------ serwer */
     $sock = stream_socket_server('tcp://127.0.0.1:0');
@@ -398,6 +418,164 @@ try {
     ok(($r['ok'] ?? false) === true && ($r['data']['id'] ?? 0) === $uid && $count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'USER_QUOTA'") === 1,
         'zmiana quoty: ok, id wiersza do podświetlenia, wpis USER_QUOTA w dzienniku');
 
+    /* ------------------------------------------------------------------ 1.3.0: CAPTCHA */
+    group('1.3.0: CAPTCHA w ustawieniach — sekret nigdy nie wraca, włączenie bez kluczy odrzucone, CSP tylko dostawcy');
+    [$p3, ] = $login('solo@example.test', $adminPw);
+    $p3->page('/panel/index.php');
+    $base13 = ['update_settings' => '1', 'mailbox_quota_value' => '2', 'mailbox_quota_unit' => 'GiB', 'accounts_per_ip' => '1',
+               'ip_window_hours' => '24', 'ip_total_limit' => '5', 'daily_send_limit' => '77', 'deleted_name_hold_days' => '365',
+               'registration_enabled' => '1'];
+    $setting = static function (string $k) use ($admin): string {
+        $v = $admin->query('SELECT v FROM app_settings WHERE k = ' . $admin->quote($k))->fetchColumn();
+        return $v === false || $v === null ? '' : (string) $v;
+    };
+    $r = $p3->panel($base13 + ['recaptcha_enabled' => '1', 'captcha_provider' => 'turnstile', 'turnstile_site_key' => ''])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false && str_contains((string) ($r['error'] ?? ''), 'NIE została włączona') && ($r['values']['recaptcha_enabled'] ?? true) === false,
+        'włączenie Turnstile bez kluczy: odmowa z wyjaśnieniem, pole odznaczone');
+    ok($setting('recaptcha_enabled') === '0' && $setting('captcha_provider') === 'turnstile', '... w bazie CAPTCHA wyłączona, dostawca zapamiętany');
+    $secret = '0x4AAAAAAA-SECRET-' . bin2hex(random_bytes(4));
+    $r = $p3->panel($base13 + ['recaptcha_enabled' => '1', 'captcha_provider' => 'turnstile', 'turnstile_site_key' => '0x4AAAAAAA-site',
+                                'turnstile_secret_key' => $secret]);
+    $j = $r['json'] ?? [];
+    ok(($j['ok'] ?? false) === true && ($j['values']['recaptcha_enabled'] ?? false) === true && ($j['values']['turnstile_secret_key'] ?? null) === ''
+        && ($j['data']['captcha_secret_set']['turnstile'] ?? false) === true, 'Turnstile z kluczami: włączona; sekret w odpowiedzi pusty, tylko "zapisany"');
+    ok(!str_contains($r['body'], $secret) && $setting('turnstile_secret') === $secret, '... sekret zapisany w bazie, nie ma go w odpowiedzi');
+    $pg = $p3->page('/panel/index.php');
+    ok(!str_contains($pg['body'], $secret) && str_contains($pg['body'], 'value="0x4AAAAAAA-site"'), 'strona panelu: klucz witryny widoczny, sekretu brak');
+    $r = $p3->panel($base13 + ['recaptcha_enabled' => '1', 'captcha_provider' => 'turnstile', 'turnstile_site_key' => '0x4AAAAAAA-site', 'turnstile_secret_key' => ''])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && $setting('turnstile_secret') === $secret, 'puste pole sekretu = zostaw zapisany');
+    $r = $p3->panel($base13 + ['recaptcha_enabled' => '1', 'captcha_provider' => 'turnstile', 'turnstile_site_key' => 'x"><script>', 'turnstile_secret_key' => ''])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false && $setting('turnstile_site_key') === '0x4AAAAAAA-site', 'klucz witryny z HTML: odrzucony, stary zostaje');
+    $an = new Client($base);
+    $pp = $an->page('/portal.php');
+    preg_match('/^Content-Security-Policy:\s*(.+)$/mi', $pp['headers'], $cspm);
+    $csp = $cspm[1] ?? '';
+    ok(str_contains($csp, 'https://challenges.cloudflare.com') && !str_contains($csp, 'google.com') && !str_contains($csp, 'hcaptcha'),
+        'portal z Turnstile: CSP dopuszcza tylko Cloudflare (' . trim($csp) . ')');
+    ok(str_contains($pp['body'], 'class="cf-turnstile" data-sitekey="0x4AAAAAAA-site"') && !str_contains($pp['body'], 'g-recaptcha')
+        && str_contains($pp['body'], 'data-captcha="turnstile"') && str_contains($pp['body'], 'challenges.cloudflare.com/turnstile/v0/api.js'),
+        'portal: widżet i skrypt Turnstile, bez reCAPTCHA');
+    $r = $an->portal('check_identity', ['email' => 'jan@example.test']);
+    ok(empty($r['ok']) && str_contains((string) ($r['msg'] ?? ''), 'CAPTCHA'), 'portal: bez tokenu CAPTCHA odmowa (fail-closed, bez pytania dostawcy)');
+    $r = $p3->panel($base13 + ['captcha_provider' => 'recaptcha'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && $setting('recaptcha_enabled') === '0' && $setting('captcha_provider') === 'recaptcha', 'wyłączenie i powrót do reCAPTCHA v2');
+    preg_match('/^Content-Security-Policy:\s*(.+)$/mi', (new Client($base))->page('/portal.php')['headers'], $cspm);
+    ok(!str_contains($cspm[1] ?? 'x', 'cloudflare') && !str_contains($cspm[1] ?? 'x', 'google'), 'bez CAPTCHA: CSP bez obcych hostów');
+
+    /* ------------------------------------------------------------------ 1.3.0: stopka i wersja */
+    group('1.3.0: stopka — numer wersji tylko w panelu, nigdy na stronie publicznej');
+    $pub = (new Client($base))->page('/portal.php');
+    ok(str_contains($pub['body'], 'TryHackX RoundControl') && str_contains($pub['body'], 'https://github.com/TryHackX/TryHackX-RoundControl'), 'portal: stopka z nazwą i repozytorium');
+    $verRe = '/\b1\.[0-9]\.[0-9]\b/';
+    ok(!str_contains($pub['body'], '1.3.0') && !preg_match('/\bv(?:ersion|ersja)?\s*1\.\d/i', $pub['body']) && !preg_match($verRe, $pub['headers']), 'portal: żadnego numeru wersji w HTML ani nagłówkach');
+    ok(!preg_match('/\?v=\d+\.\d+/', $pub['body']), 'adresy assetów bez numeru wersji (skrót pliku)');
+    foreach (['assets/portal.js', 'assets/portal.css', 'assets/panel.js', 'assets/panel.css', 'assets/design-system.css'] as $asset) {
+        ok(!preg_match($verRe, (string) file_get_contents($root . '/' . $asset)), "$asset (publiczny): bez numerów wydań w komentarzach");
+    }
+    $pg = $p3->page('/panel/index.php');
+    ok(preg_match('/app-footer-version[^>]*>[^<]*1\.3\.0/', $pg['body']) === 1, 'panel administratora: wersja w stopce');
+
+    /* ------------------------------------------------------------------ 1.3.0: języki */
+    group('1.3.0: wybór języka — ?lang, ciasteczko, Accept-Language; angielska wersja bez polskiego');
+    $pl = '/[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]/u';
+    $ce = new Client($base);
+    $r = $ce->page('/portal.php?lang=en');
+    ok(str_contains($r['body'], '<html lang="en">') && preg_match('/^Set-Cookie:\s*lang=en;[^\n]*SameSite=Lax/mi', $r['headers']) === 1
+        && preg_match('/^Set-Cookie:\s*lang=en;[^\n]*HttpOnly/mi', $r['headers']) === 1, '?lang=en: strona po angielsku + ciasteczko lang (Lax, HttpOnly)');
+    ok(!preg_match($pl, $r['body']), 'portal po angielsku: ani jednego polskiego znaku (także w tekstach dla JS)');
+    ok(str_contains($ce->page('/portal.php')['body'], '<html lang="en">'), 'ciasteczko: kolejne wejście po angielsku (już od pierwszego bajtu)');
+    $r = $ce->portal('check_identity', ['email' => '']);
+    eq($r['msg'] ?? '', 'Enter your e-mail address', 'komunikat JSON portalu po angielsku');
+    $r = (new Client($base))->req('GET', '/portal.php', [], ['Accept-Language: en-GB,en;q=0.9,pl;q=0.5']);
+    ok(str_contains($r['body'], '<html lang="en">'), 'Accept-Language en: po angielsku');
+    $r = (new Client($base))->req('GET', '/portal.php', [], ['Accept-Language: de-DE,de;q=0.9']);
+    ok(str_contains($r['body'], '<html lang="pl">'), 'Accept-Language bez włączonego języka: domyślny polski');
+    $r = (new Client($base))->req('GET', '/portal.php', [], ['Cookie: lang=../../etc', 'Accept-Language: en']);
+    ok(str_contains($r['body'], '<html lang="en">'), 'śmieci w ciasteczku: pominięte (dalej Accept-Language)');
+    $r = (new Client($base))->req('GET', '/portal.php?lang=en', [], ['Cookie: lang=pl']);
+    ok(str_contains($r['body'], '<html lang="en">'), '?lang= wygrywa z ciasteczkiem');
+    $pe = $p3->page('/panel/index.php?lang=en&tab=settings');
+    $ui = (string) preg_replace(['~(<tbody id="(?:audit|admin|reg)-logs-tbody">).*?(</tbody>)~s', '~ value="[^"]*"~', '~<!--.*?-->~s'], ['$1$2', '', ''], $pe['body']);   // dane z dziennika (pl) pomijamy
+    preg_match_all('/.{0,40}[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ].{0,20}/u', $ui, $plm);
+    $plm[0] = array_map(static fn($s) => ' «' . trim((string) preg_replace('/\s+/', ' ', $s)) . '»', $plm[0]);
+    ok(str_contains($pe['body'], '<html lang="en">') && !preg_match($pl, $ui), 'panel po angielsku: bez polskich znaków poza wpisami dziennika' . ($plm[0] ? ' —' . implode('', array_slice($plm[0], 0, 8)) : ''));
+    $words = [];
+    foreach (['Zapisz', 'Anuluj', 'Wyloguj', 'Ustawienia', 'Brak', 'Zamknij', 'Dodaj', 'Szukaj', 'Odblokuj', 'Zbanuj', 'Konta', 'Hasło', 'Wolne'] as $w) {
+        if (preg_match('/>[^<]*\b' . $w . '\b[^<]*</u', $ui)) { $words[] = $w; }
+    }
+    eq($words, [], 'panel po angielsku: bez polskich słów w tekście (także bez ogonków)');
+    $r = $p3->panel(['update_security' => '1', 'max_login_attempts' => '6', 'ban_duration_minutes' => '15'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && ($r['msg'] ?? '') !== '' && !preg_match($pl, (string) $r['msg']), 'komunikat zapisu po angielsku (' . ($r['msg'] ?? '') . ')');
+    $p3->page('/panel/index.php?lang=pl');
+
+    group('1.3.0: zarządzanie językami — tylko administrator z tokenem; złośliwe pakiety odrzucane');
+    $r = (new Client($base))->panel(['lang_op' => 'duplicate', 'from' => 'en', 'code' => 'de'], false);
+    ok($r['code'] === 403 && ($r['json']['auth'] ?? false) === true, 'bez sesji: 403 {auth}');
+    $r = $p3->panel(['lang_op' => 'duplicate', 'from' => 'en', 'code' => 'de'], false);
+    ok($r['code'] === 403 && ($r['json']['csrf'] ?? false) === true && !is_file($tmp . '/lang/de.json'), 'bez tokenu CSRF: 403 {csrf}, nic nie zapisano');
+    $r = $p3->panel(['lang_op' => 'duplicate', 'from' => 'en', 'code' => '../x'])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false && glob($tmp . '/lang/*') === [], 'kod z "../": odrzucony');
+    $r = $p3->panel(['lang_op' => 'duplicate', 'from' => 'en', 'code' => 'de'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && is_file($tmp . '/lang/de.json') && str_contains((string) ($r['data']['languages_html'] ?? ''), '>DE<'), 'kopia en -> de: plik JSON w katalogu danych, tabela odświeżona');
+    ok(!in_array('de', explode(',', $setting('enabled_languages')), true), '... kopia startuje wyłączona');
+    $d = json_decode((string) file_get_contents($tmp . '/lang/de.json'), true);
+    ok(is_array($d) && ($d['portal.login.next'] ?? '') === 'Next', '... z tekstami języka źródłowego');
+    $r = $p3->panel(['lang_op' => 'duplicate', 'from' => 'en', 'code' => 'de'])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false, 'drugi raz ten sam kod: odmowa');
+    $r = $p3->panel(['lang_op' => 'toggle', 'code' => 'de'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && str_contains((new Client($base))->page('/portal.php?lang=de')['body'], '<html lang="de">'), 'włączony de: portal ?lang=de działa');
+    $r = $p3->panel(['lang_op' => 'default', 'code' => 'de'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && $setting('default_language') === 'de', 'de jako domyślny');
+    $r = $p3->panel(['lang_op' => 'toggle', 'code' => 'de'])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false, 'domyślnego nie da się wyłączyć');
+    $r = $p3->panel(['lang_op' => 'delete', 'code' => 'de'])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false && is_file($tmp . '/lang/de.json'), 'domyślnego nie da się usunąć');
+    $p3->panel(['lang_op' => 'default', 'code' => 'pl']);
+    $r = $p3->panel(['lang_op' => 'delete', 'code' => 'en'])['json'] ?? [];
+    ok(($r['ok'] ?? true) === false, 'wbudowanego (en) nie da się usunąć');
+    $ex = $p3->req('GET', '/panel/index.php?lang_export=de');
+    ok($ex['code'] === 200 && str_contains($ex['headers'], 'attachment') && (json_decode($ex['body'], true)['portal.login.next'] ?? '') === 'Next', 'pobranie pakietu: JSON jako załącznik');
+    $ex = (new Client($base))->req('GET', '/panel/index.php?lang_export=de');
+    ok($ex['code'] === 302 && !str_contains($ex['body'], 'portal.login.next'), '... bez sesji: nic (przekierowanie do portalu)');
+
+    $evil = json_encode([
+        'portal.title'       => '<script>alert(1)</script>',
+        'portal.login.title' => '<img src=x onerror=alert(1)>',
+        'portal.login.next'  => '<a href="javascript:alert(1)">x</a>',
+        'portal.login.lead'  => '<?php system("id"); ?>',
+        'portal.email'       => '<b onclick="x()">E-mail</b>',
+        'portal.reg.title'   => 'Rejestracja OK',
+        'portal.reg.lead'    => 'Link <a href="https://example.org/">ok</a>',
+        'portal.password'    => 5,
+        'no.such.key'        => 'x',
+    ]);
+    $r = $p3->upload(['lang_op' => 'upload', 'code' => 'xx'], 'pack', 'xx.json', (string) $evil)['json'] ?? [];
+    $stored = json_decode((string) @file_get_contents($tmp . '/lang/xx.json'), true) ?: [];
+    ok(($r['ok'] ?? false) === true && array_keys($stored) === ['portal.reg.title', 'portal.reg.lead'], 'złośliwy pakiet: zapisane tylko 2 bezpieczne teksty (' . implode(',', array_keys($stored)) . ')');
+    eq(array_keys($r['data']['dropped'] ?? []), ['portal.title', 'portal.login.title', 'portal.login.next', 'portal.login.lead', 'portal.email', 'portal.password', 'no.such.key'],
+        '... odrzucone klucze wymienione w odpowiedzi');
+    $p3->panel(['lang_op' => 'toggle', 'code' => 'xx']);
+    $xx = (new Client($base))->page('/portal.php?lang=xx')['body'];
+    ok(!str_contains($xx, 'alert(1)') && !str_contains($xx, 'onerror') && !str_contains($xx, 'system(') && str_contains($xx, 'Rejestracja OK'), 'portal w języku z pakietu: żadnej z wstrzykniętych treści');
+    foreach ([
+        'lista zamiast obiektu'  => '["a","b"]',
+        'zagnieżdżony obiekt'    => '{"portal.title":{"x":"y"}}',
+        'nie JSON'               => 'portal.title=x',
+        'kod PHP'                => '<?php echo 1; ?>',
+        'pusty obiekt'           => '{}',
+        'same nieznane klucze'   => '{"a.b":"c"}',
+    ] as $label => $body) {
+        $r = $p3->upload(['lang_op' => 'upload', 'code' => 'yy'], 'pack', 'yy.json', $body)['json'] ?? [];
+        ok(($r['ok'] ?? true) === false && !is_file($tmp . '/lang/yy.json'), "pakiet: $label — odrzucony w całości");
+    }
+    $r = $p3->upload(['lang_op' => 'upload', 'code' => 'yy'], 'pack', 'yy.json', '{"portal.title":"' . str_repeat('a', 600 * 1024) . '"}')['json'] ?? [];
+    ok(($r['ok'] ?? true) === false && str_contains((string) ($r['error'] ?? ''), 'KB') && !is_file($tmp . '/lang/yy.json'), 'pakiet ponad limit: odrzucony');
+    $r = $p3->upload(['lang_op' => 'upload', 'code' => 'en'], 'pack', 'en.json', '{"portal.title":"x"}')['json'] ?? [];
+    ok(($r['ok'] ?? true) === false, 'wgranie na język wbudowany (en): odmowa');
+    $r = $p3->panel(['lang_op' => 'delete', 'code' => 'xx'])['json'] ?? [];
+    ok(($r['ok'] ?? false) === true && !is_file($tmp . '/lang/xx.json') && !in_array('xx', explode(',', $setting('enabled_languages')), true), 'usunięcie języka dodanego: plik i wpis znikają');
+    $p3->panel(['lang_op' => 'delete', 'code' => 'de']);
+    eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LANGUAGE'") >= 8, true, 'operacje na językach w dzienniku audytowym');
     $log = (string) @file_get_contents($tmp . '/server.log');
     ok(!preg_match('/PHP (Warning|Notice|Deprecated|Fatal)/', $log), 'serwer: brak ostrzeżeń PHP' . (preg_match('/PHP (Warning|Notice|Deprecated|Fatal)[^\n]*/', $log, $mm) ? ' — ' . $mm[0] : ''));
 } catch (Throwable $e) {

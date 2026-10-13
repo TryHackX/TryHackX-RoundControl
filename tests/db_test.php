@@ -525,6 +525,12 @@ try {
     ok(str_starts_with($act[3] ?? '', 'DUNNO') && str_starts_with($act[4] ?? '', 'REJECT'), 'limit globalny 4: cztery przechodzą, piąty odrzucony');
     [$act, ] = $policy([['request' => 'smtpd_access_policy', 'sasl_username' => 'sender@example.test']]);
     ok(str_starts_with($act[0] ?? '', 'REJECT'), 'brak recipient_count = 1 odbiorca (limit wyczerpany)');
+    ok(str_contains($act[0] ?? '', 'Dzienny limit wysylki wyczerpany (5 odbiorcow/dzien)'), 'odmowa po polsku (bez ustawienia języka), tylko ASCII');
+    $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('default_language', 'en')");
+    [$act, ] = $policy([$rq('sender@example.test', 1), $rq('sender@example.test', 10)]);
+    ok(($act[0] ?? '') === 'REJECT Daily sending limit reached (5 recipients/day)', '1.3.0: język domyślny en — odmowa po angielsku');
+    ok(str_starts_with($act[1] ?? '', 'REJECT Too many recipients'), '1.3.0: ... także odmowa zbyt wielu odbiorców');
+    $admin->exec("DELETE FROM app_settings WHERE k = 'default_language'");
     // dwa procesy naraz nie przekraczają limitu
     $admin->exec("DELETE FROM send_counters WHERE email = 'sender@example.test'");
     $procs = [];

@@ -33,7 +33,7 @@ use App\Panel\LogRepository;
 use App\Panel\Stats;
 use App\Portal\PortalController;
 use App\Security\Password;
-use App\Security\Recaptcha;
+use App\Security\Captcha;
 use App\Settings\Settings;
 use App\Support\Database;
 use App\Users\UserRepository;
@@ -169,7 +169,7 @@ try {
 
     // reCAPTCHA fail-closed: włączona, pusty token
     Settings::set('recaptcha_enabled', '1');
-    ok(Recaptcha::verify('') === false, 'reCAPTCHA fail-closed (pusty token)');
+    ok(Captcha::verifyIn(['recaptcha_enabled' => '1', 'recaptcha_site_key' => 'k', 'recaptcha_secret' => 's'], '') === false, 'CAPTCHA fail-closed (pusty token)');
 } finally {
     $pdo->prepare('DELETE FROM virtual_users WHERE email=?')->execute([$email]);
     $pdo->prepare('DELETE FROM user_login_events WHERE email=?')->execute([$email]);

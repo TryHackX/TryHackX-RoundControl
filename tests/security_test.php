@@ -19,6 +19,7 @@ require __DIR__ . '/../app/bootstrap.php';
 
 use App\Panel\Quota;
 use App\Portal\Screens;
+use App\Security\Captcha;
 use App\Support\Env;
 use App\Support\Ip;
 use App\Users\Accounts;
@@ -190,6 +191,86 @@ eq(Accounts::reservedBy('postmaster', ''), ['base', 'postmaster'], 'postmaster: 
 eq(Accounts::reservedBy('list-request', ''), ['base', '*-request'], 'wzorzec z listy wbudowanej');
 eq(Accounts::reservedBy('info', null), ['list', 'info'], 'info: lista z ustawień (domyślna)');
 eq(Accounts::reservedBy('jan', null), null, 'zwykła nazwa: brak rezerwacji');
+
+group('Captcha (1.3.0): wybór dostawcy, weryfikacja FAIL-CLOSED, CSP tylko aktywnego dostawcy');
+$calls = [];
+$reply = null;   // odpowiedź "dostawcy" dla bieżącego wywołania (null = błąd sieci)
+Captcha::$transport = static function (string $url, array $fields) use (&$calls, &$reply): ?array {
+    $calls[] = ['url' => $url, 'fields' => $fields];
+    return $reply;
+};
+$cfgFor = static fn(string $p, array $extra = []): array => $extra + [
+    'recaptcha_enabled' => '1', 'captcha_provider' => $p, $p . '_site_key' => 'SITE-' . $p, $p . '_secret' => 'SECRET-' . $p,
+];
+eq(Captcha::providerOf([]), 'recaptcha', 'brak ustawienia = reCAPTCHA v2 (instalacje sprzed 1.3.0 bez migracji)');
+eq(Captcha::providerOf(['captcha_provider' => 'evil']), 'recaptcha', 'nieznany dostawca = reCAPTCHA v2');
+ok(Captcha::activeIn(['recaptcha_enabled' => '1', 'recaptcha_site_key' => 'k', 'recaptcha_secret' => 's']), 'stare klucze reCAPTCHA działają bez zmian');
+ok(!Captcha::activeIn(['recaptcha_enabled' => '1', 'captcha_provider' => 'turnstile', 'recaptcha_site_key' => 'k', 'recaptcha_secret' => 's']), 'Turnstile bez własnych kluczy = nieaktywna (klucze reCAPTCHA się nie liczą)');
+ok(!Captcha::activeIn($cfgFor('hcaptcha', ['recaptcha_enabled' => '0'])), 'wyłączona = nieaktywna');
+
+$expectUrl = [
+    'recaptcha'    => 'https://www.google.com/recaptcha/api/siteverify',
+    'recaptcha_v3' => 'https://www.google.com/recaptcha/api/siteverify',
+    'turnstile'    => 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+    'hcaptcha'     => 'https://api.hcaptcha.com/siteverify',
+];
+foreach ($expectUrl as $p => $url) {
+    $calls = [];
+    $reply = ['success' => true] + ($p === 'recaptcha_v3' ? ['score' => 0.9, 'action' => 'login'] : []);
+    ok(Captcha::verifyIn($cfgFor($p), 'tok', 'login', '203.0.113.5'), "$p: poprawny token przechodzi");
+    eq($calls[0]['url'] ?? '', $url, "$p: weryfikacja u właściwego dostawcy");
+    eq($calls[0]['fields']['secret'] ?? '', 'SECRET-' . $p, "$p: sekret tego dostawcy");
+    eq($calls[0]['fields']['remoteip'] ?? '', '203.0.113.5', "$p: adres klienta przekazany");
+    eq(isset($calls[0]['fields']['sitekey']), $p === 'hcaptcha', "$p: sitekey wysyłany tylko do hCaptcha");
+    $reply = null;
+    ok(!Captcha::verifyIn($cfgFor($p), 'tok', 'login'), "$p: błąd sieci = odmowa (fail-closed)");
+    $reply = ['success' => false, 'error-codes' => ['invalid-input-response']];
+    ok(!Captcha::verifyIn($cfgFor($p), 'tok', 'login'), "$p: success=false = odmowa");
+    $reply = ['success' => 'true'];
+    ok(!Captcha::verifyIn($cfgFor($p), 'tok', 'login'), "$p: success jako napis (nie true) = odmowa");
+    $calls = [];
+    $reply = ['success' => true, 'score' => 1, 'action' => 'login'];
+    ok(!Captcha::verifyIn($cfgFor($p, [$p . '_secret' => '']), 'tok', 'login'), "$p: brak sekretu = odmowa bez zapytania");
+    ok(!Captcha::verifyIn($cfgFor($p), '', 'login'), "$p: pusty token = odmowa");
+    ok(!Captcha::verifyIn($cfgFor($p), str_repeat('a', 5000), 'login'), "$p: absurdalnie długi token = odmowa");
+    eq($calls, [], "$p: odmowy bez sekretu / tokenu nie pytają dostawcy");
+}
+$v3 = $cfgFor('recaptcha_v3', ['recaptcha_v3_min_score' => '0.5']);
+$reply = ['success' => true, 'score' => 0.3, 'action' => 'login'];
+ok(!Captcha::verifyIn($v3, 'tok', 'login'), 'v3: wynik poniżej progu = odmowa');
+$reply = ['success' => true, 'score' => 0.5, 'action' => 'login'];
+ok(Captcha::verifyIn($v3, 'tok', 'login'), 'v3: wynik równy progowi przechodzi');
+$reply = ['success' => true, 'score' => 0.9, 'action' => 'register'];
+ok(!Captcha::verifyIn($v3, 'tok', 'login'), 'v3: token z innej akcji = odmowa');
+$reply = ['success' => true, 'action' => 'login'];
+ok(!Captcha::verifyIn($v3, 'tok', 'login'), 'v3: brak wyniku (klucz v2 wklejony jako v3) = odmowa');
+$reply = ['success' => true, 'score' => 0.9];
+ok(!Captcha::verifyIn($v3, 'tok', 'login'), 'v3: brak akcji w odpowiedzi = odmowa');
+eq(Captcha::minScoreOf(['recaptcha_v3_min_score' => '7']), 1.0, 'v3: próg przycięty do 1.0');
+eq(Captcha::minScoreOf(['recaptcha_v3_min_score' => 'abc']), 0.5, 'v3: śmieci w progu = 0.5');
+
+eq(Captcha::tokenFrom(['g-recaptcha-response' => 'g']), 'g', 'token z pola reCAPTCHA');
+eq(Captcha::tokenFrom(['cf-turnstile-response' => 'c']), 'c', 'token z pola Turnstile');
+eq(Captcha::tokenFrom(['h-captcha-response' => 'h']), 'h', 'token z pola hCaptcha');
+eq(Captcha::tokenFrom(['captcha_token' => 'v', 'g-recaptcha-response' => 'g']), 'v', 'token v3 (captcha_token) ma pierwszeństwo');
+eq(Captcha::tokenFrom(['g-recaptcha-response' => ['x']]), '', 'tablica zamiast tokenu = brak');
+
+$csp = Captcha::cspHostsIn($cfgFor('turnstile'));
+eq($csp['script'], ['https://challenges.cloudflare.com'], 'CSP Turnstile: tylko Cloudflare');
+$all = implode(' ', array_merge(...array_values(Captcha::cspHostsIn($cfgFor('hcaptcha')))));
+ok(str_contains($all, 'hcaptcha.com') && !str_contains($all, 'google') && !str_contains($all, 'cloudflare'), 'CSP hCaptcha: bez Google i Cloudflare');
+$all = implode(' ', array_merge(...array_values(Captcha::cspHostsIn($cfgFor('recaptcha')))));
+ok(str_contains($all, 'google.com') && !str_contains($all, 'hcaptcha') && !str_contains($all, 'cloudflare'), 'CSP reCAPTCHA: tylko Google');
+eq(Captcha::cspHostsIn($cfgFor('recaptcha', ['recaptcha_enabled' => '0'])), ['script' => [], 'frame' => [], 'connect' => [], 'style' => []], 'CSP bez CAPTCHA: żadnych obcych hostów');
+eq(Captcha::widgetClassIn($cfgFor('recaptcha_v3')), '', 'v3 bez widżetu');
+ok(str_contains(Captcha::scriptUrlIn($cfgFor('recaptcha_v3')), 'render=SITE-recaptcha_v3'), 'v3: skrypt z kluczem witryny (render=)');
+ok(str_ends_with(Captcha::scriptUrlIn($cfgFor('hcaptcha'), 'en'), '?hl=en'), 'język widżetu hCaptcha (?hl=)');
+ok(!str_contains(Captcha::scriptUrlIn($cfgFor('recaptcha'), 'x"><script>'), 'script'), 'język widżetu: śmieci odrzucone');
+ok(Captcha::validKey('6LcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA') && Captcha::validKey('0x4AAAAAAAB_c-1') && Captcha::validKey('10000000-ffff-ffff-ffff-000000000001'), 'klucze wszystkich dostawców przechodzą');
+ok(!Captcha::validKey('a b') && !Captcha::validKey('x"><') && !Captcha::validKey(''), 'klucz ze spacją / HTML / pusty odrzucony');
+$st = Captcha::panelState($cfgFor('turnstile'));
+ok($st['keys']['turnstile']['secret_set'] === true && !str_contains(json_encode($st), 'SECRET-'), 'stan panelu: "sekret zapisany", ale nie sam sekret');
+Captcha::$transport = null;
 
 echo "\n";
 echo ($T['fail'] === 0 ? 'OK' : 'BŁĘDY') . ": {$T['pass']} przeszło, {$T['fail']} nie\n";

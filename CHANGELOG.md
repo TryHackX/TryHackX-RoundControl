@@ -1,5 +1,86 @@
 # Changelog
 
+## 1.3.0 — 2026-10-13 — languages, CAPTCHA providers, footer, polish
+
+**Code** plus one new data directory (`/var/lib/roundcontrol/lang`, owned by the pool user) and a reinstalled policy
+script (`/usr/local/bin/mailpanel-policy-daily.php`, now bilingual). No schema change, no new grant, no sudo / php-fpm /
+Apache / Fail2Ban change; new settings are created on first save and default to the 1.2.0 behaviour (Polish,
+reCAPTCHA v2 with the existing keys). Steps: [README → Upgrading from 1.2.0 to 1.3.0](README.md#upgrading-from-120-to-130).
+
+Added — interface languages (like the tracker panel):
+
+- **Polish (default) and English ship with the code** (`app/lang/<code>/<area>.php`, flat `key => text` arrays,
+  identical key sets — a test enforces it). Every user-visible text moved there: portal and panel templates, the screens
+  injected by AJAX, controller / JSON messages, exception messages that reach the admin, the row templates, pagination,
+  both scripts (`js.portal.*` / `js.panel.*`, handed to the page as a `<script type="application/json">` data block —
+  CSP unchanged), the footer, and the daily-limit notification e-mail / SMTP rejections of the policy service (Polish or
+  English after the site default).
+- **Choice of language:** `?lang=xx` (the switcher on the portal and in the panel header — plain links, no JavaScript
+  needed) → the `lang` cookie (1 year, `HttpOnly`, `SameSite=Lax`, `Secure`, same parameters as the other preference
+  cookie; validated against the enabled languages) → `Accept-Language` (among enabled languages, q-weights honoured) →
+  the site default. PHP renders the chosen language from the first byte (no flash). The audit log is always written in
+  the site's default language. Webmail: the portal hands its language to Roundcube before login
+  (`rcmail::load_language`) — used for the session and for accounts logging in for the first time; a language a user
+  saved in Roundcube's own settings still wins.
+- **Settings → Interface languages:** installed languages with % translated, enable / disable, set the default,
+  duplicate a language as a starting point (the copy starts disabled), download a pack (JSON), upload a pack, delete an
+  added language. Built-in languages cannot be overwritten or deleted, the default cannot be disabled or deleted.
+- **Security model:** the code tree stays `root:root` and the pool user cannot write to it, so added languages are JSON
+  files in a data directory (`LANG_DATA_DIR`, default `/var/lib/roundcontrol/lang`, `mailweb` 0750; `install.sh`
+  section 12). They are read with `json_decode()` only — nothing is ever included from a writable place — and every value
+  is filtered again when loaded. Uploads: admin session + CSRF, 512 KB, strictly a flat JSON object `string → string`
+  (lists, nesting, non-text values rejected), at most 10 000 keys, only keys the reference language (pl) knows; values
+  go through an allow-list sanitizer (tags b, strong, em, i, code, kbd, br, span, small, sup and `<a href>` with
+  http(s)/relative links only; no `<script>`, `on…=` attributes, `javascript:` links, PHP tags or control characters).
+  Rejected keys are named in the reply. All operations are in the audit log (`LANGUAGE`).
+
+Added — CAPTCHA providers (like the tracker):
+
+- `captcha_provider` = **Google reCAPTCHA v2** (default — the existing keys keep working, no migration), **reCAPTCHA v3**
+  (invisible, minimum score, the action — `login` / `register` — must match), **Cloudflare Turnstile** or **hCaptcha**,
+  each with its own site key and secret, chosen in Settings. Secrets are never sent back to the browser (an empty field
+  keeps the saved one); enabling a provider without both keys is refused (CAPTCHA stays off, the message says why) —
+  otherwise nobody, the administrator included, could get past the e-mail step.
+- One helper (`App\Security\Captcha`) for every use; verification is **fail-closed** (missing secret or token,
+  transport error, non-JSON answer, `success` not `true`, v3 score below the threshold or another action = refusal).
+- The portal's CSP allows only the active provider's hosts; no CAPTCHA = no third-party host at all.
+- The widget is clipped to its exact size in a box of its colour (no white edges from the iframe in the dark theme),
+  centred, scaled down on narrow phones, reset after a failed attempt for each provider, and follows the page language.
+  With v3 a wrong password is retried silently with a fresh token (widgets need the e-mail step again).
+
+Added — footer: "TryHackX RoundControl", author TryHackX, links to the GitHub repository and the licence, at the bottom
+of the portal and the panel. **The version number is shown only in the admin panel's footer**; public pages carry no
+version anywhere (the header badge is gone, asset URLs use an 8-character file hash instead of a version, release
+numbers were removed from the comments of the public CSS / JS, `X-Powered-By` is removed).
+
+Changed — polish:
+
+- **reCAPTCHA in the dark theme** — no white strips at the right / bottom edge (the iframe is 2 px larger than the
+  widget), centred, correct size on desktop and phones.
+- **Messages after saving** use the alert look of 1.1.0 again, placed at the top of the saved card / form (or a sticky
+  slot under the tabs for lists and dialogs) as an overlay — nothing below moves; success hides itself after 6 s,
+  an error after 12 s (paused while hovered / focused; a close button), `aria-live`. The corner toasts are gone.
+- **Tiles:** the chosen tile turns into a spinner with a progress bar, the other one fades; the page then goes straight to
+  the panel / webmail (the same smooth hand-off for an account that goes directly to webmail). No "Otwieram panel…"
+  line under the tiles (screen readers still get it).
+- **No server-side delay after a password — on purpose.** 1.1.0 removed `secureSleep()` (0.3–0.6 s `usleep` after every
+  error) because each sleeping request holds one of the shared php-fpm workers: a handful of parallel wrong passwords
+  could occupy the whole pool and slow every site on the server. Guessing is limited by the per-account / per-client
+  limits (instant refusal), Fail2Ban on the journal lines and the CAPTCHA, so a delay would buy nothing. The page shows
+  the same short "checking" state (≈0.45 s) for right and wrong passwords so the answer does not flash — in the browser
+  only.
+- **Table headers**: one line everywhere (users, bans, registrations, admin logins, audit, Fail2Ban), shorter labels with
+  the full name in a tooltip (*Ost. logowanie*, *IP rej.*), sort arrows in a fixed slot next to the label, the multi-sort
+  number as a small badge, the "sort by messages" icon in the *Usage* header on the same line.
+
+Tests: `tests/i18n_test.php` (new: pl/en key parity and parameters, every key used in PHP / JS exists, no hard-coded
+Polish left in templates / JS / PHP, language resolution order, sanitizer against malicious values),
+`tests/security_test.php` (CAPTCHA dispatch per provider, fail-closed cases, v3 score / action, CSP per provider),
+`tests/http_test.php` (CAPTCHA settings: secret never echoed, enabling without keys refused, CSP and widget on the portal;
+no version on public pages, version in the panel; `?lang` / cookie / Accept-Language, English pages without Polish;
+language management: session + CSRF, path traversal, malicious and malformed packs, size limit, built-ins protected),
+`tests/db_test.php` (policy service answers in the site language).
+
 ## 1.2.0 — 2026-10-13 — usability
 
 **Code only** (no database change, no new grants or sudo rules, no php-fpm / Apache change) plus a corrected Fail2Ban

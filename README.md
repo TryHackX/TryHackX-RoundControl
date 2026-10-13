@@ -4,18 +4,20 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.2.0** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — the **panel and portal without page reloads** (every
-form saves in place with the server's message, lists refresh without jumping), **login tiles again** (e-mail →
-password → *Webmail / Admin panel*, shown only after a correct administrator password), failed password confirmations
-in the audit log, clear rules for reserved names and aliases, a Fail2Ban portal filter that actually matches.
-Code only — no database change. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120). If you run 1.0.1:
-[Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package (it installs 1.2.0 directly). If you run 1.0: run
-`install.sh` from this package (it covers every older version).
+**Version 1.3.0** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — **Polish and English** (switcher on every page, language
+management and JSON language packs in the panel), **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile,
+hCaptcha), a **footer** with the version shown only to administrators, calmer save messages, one-line table headers.
+If you run 1.2.0: [Upgrading from 1.2.0](#upgrading-from-120-to-130). If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120),
+then the 1.3.0 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package (it
+installs the current version directly) plus `install.sh` section 12. If you run 1.0: run `install.sh` from this package
+(it covers every older version).
 
 - **Login portal** (`portal.php`) — a shared entry screen for webmail and the panel
   (flow: e-mail → password → in; an administrator who also has a mailbox then picks a tile: Webmail or Admin panel)
   + **public account registration** with per-IP (IPv4) / per-/64 (IPv6) limits, reserved names, a password policy and
-  optional reCAPTCHA,
+  an optional CAPTCHA (reCAPTCHA v2 / v3, Turnstile or hCaptcha),
+- **Languages** — Polish and English built in, the visitor's choice remembered, more languages as JSON packs managed in
+  the panel (stored outside the code tree, parsed as JSON only),
 - **Admin panel** (`panel/`) — accounts (search by e-mail/IP/date/quota/%usage,
   quota in binary units, per-account daily send limit, password reset,
   bans, deletion — the mailbox goes to a 30-day quarantine), IP blocks (local + Fail2Ban) with a
@@ -25,7 +27,7 @@ Code only — no database change. If you run 1.1.0: [Upgrading from 1.1.0](#upgr
 - **Password self-service** — the Roundcube `password` plugin (SQL → `$6$` into virtual_users),
 - **Daily send limit** — a Postfix policy service (per account / global), counted in **recipients**,
 - **Security**: CSRF, rate-limiting (per account+client and per client, never per account alone), fail-closed
-  reCAPTCHA, no account / role enumeration at login (not even after a wrong password), a CSP with no inline JS,
+  CAPTCHA, no account / role enumeration at login (not even after a wrong password), a CSP with no inline JS,
   hardened sessions, JSON saves with CSRF (PRG without JavaScript), action auditing (including failed confirmation
   passwords), least-privilege database accounts, code owned by root, Roundcube + panel in their own PHP-FPM
   pool and user (`mailweb`) — other PHP sites on the server can neither read its secrets nor use its sudo rules.
@@ -44,6 +46,48 @@ sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban
 
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
+
+## Upgrading from 1.2.0 to 1.3.0
+
+**Code** plus one data directory and the reinstalled policy script. No database change (new settings are created when
+first saved), no new grant, no sudo / php-fpm / Apache / Fail2Ban change; the code stays `root:root`. Details:
+[CHANGELOG](CHANGELOG.md). A ready, checked script for the production server does the same (with backups, `--check`
+and a restore script).
+
+What you will notice:
+
+- **Languages:** Polish (default) and English. A switcher at the top of the portal and in the panel header; the choice
+  is remembered in a `lang` cookie, otherwise the browser's language is used when it is enabled, otherwise the default.
+  *Settings → Interface languages*: enable / disable, default, copy a language as a starting point, download / upload a
+  JSON pack, delete an added language. Added languages live in `/var/lib/roundcontrol/lang` (owner `mailweb`, 0750) —
+  never in the code tree; without that directory only copies / uploads fail, Polish and English work.
+- **CAPTCHA:** reCAPTCHA v2 (as before, the existing keys keep working), reCAPTCHA v3, Cloudflare Turnstile or hCaptcha —
+  *Settings → CAPTCHA*. Secrets are not shown after saving (an empty field keeps them); a provider cannot be enabled
+  without its site key and secret.
+- **Footer** with the project name, author and repository; the **version is shown only in the panel's footer** (no
+  version on public pages, no `?v=1.x` in asset URLs).
+- Messages after saving appear at the top of the saved card (no corner toasts, nothing moves), smoother tiles, one-line
+  table headers, a clean dark reCAPTCHA.
+
+```bash
+PKG=/root/rc-1.3.0 ; RC=/var/www/roundcube ; PU=mailweb ; TS=$(date +%F-%H%M%S)
+tar czf /root/roundcube-pre-1.3.0-$TS.tgz -C "$(dirname $RC)" "$(basename $RC)"        # backup (owners and modes kept)
+cp -a /usr/local/bin/mailpanel-policy-daily.php /root/mailpanel-policy-daily.php.pre-1.3.0-$TS
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/app $PKG/assets $PKG/panel $PKG/portal.php $PKG/.htaccess $RC/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/config/panel_config.php $RC/config/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/plugins/custom_auth $RC/plugins/
+find $RC/app $RC/panel $RC/portal.php -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors'   # prints nothing
+install -d -o root -g root -m 755 /var/lib/roundcontrol
+install -d -o $PU -g $PU -m 750 /var/lib/roundcontrol/lang                 # languages added in the panel (JSON only)
+install -o root -g root -m 755 $PKG/scripts/mailpanel-policy-daily.php /usr/local/bin/   # bilingual notice / rejections
+curl -s -o /dev/null -w '%{http_code}\n' https://<mail-host>/portal.php    # 200
+curl -s https://<mail-host>/portal.php | grep -c '1\.3\.0'                 # 0 - no version on the public page
+```
+
+PHP's OPcache revalidates changed files on its own (`opcache.validate_timestamps`, default on); with it off, add
+`systemctl reload php8.5-fpm`. `rsync` only touches the files it copies, so the owners of `temp/`, `logs/` (`mailweb`)
+and of the secrets (`root:mailweb 640`) stay as they are. Going back: unpack the tarball over the same paths and copy the
+saved policy script back.
 
 ## Upgrading from 1.1.0 to 1.2.0
 
@@ -427,7 +471,8 @@ roundcube/                        ← your Roundcube root directory
 │   ├── .htaccess                 ←   deny all
 │   ├── bootstrap.php             ←   autoloader + .env
 │   ├── web.php                   ←   web kernel (session, error mode)
-│   ├── src/                      ←   classes (Auth, Panel, Portal, Security…)
+│   ├── src/                      ←   classes (Auth, I18n, Panel, Portal, Security…)
+│   ├── lang/pl/  lang/en/        ←   built-in languages (added ones: /var/lib/roundcontrol/lang, JSON)
 │   └── templates/                ←   HTML templates (portal + panel)
 ├── assets/                       ← NEW: CSS/JS/icons (the only public directory)
 │   ├── design-system.css  portal.css  portal.js  panel.css  panel.js
@@ -464,6 +509,11 @@ files 644), secrets (`.env`, `config/config.inc.php`, `plugins/password/config.i
 tree) writable by `mailweb`. Copies with secrets (`config.inc.php.bak*`, `config.old.php`, `.env.*`) become
 `root:root 600`. `install.sh` sections 1b and 7 do this (they also fix stray 664 files and the logrotate `create` line);
 to check: `find /var/www/roundcube -user mailweb -o -user www-data -o -perm -o+w` should list only `temp/` and `logs/`.
+
+**Languages added in the panel (1.3.0)** are data, not code, so they live outside the tree in a directory only the PHP
+user writes: `install -d -o root -g root -m 755 /var/lib/roundcontrol && install -d -o mailweb -g mailweb -m 750
+/var/lib/roundcontrol/lang` (`install.sh` section 12; another path: `LANG_DATA_DIR` in `.env`). Polish and English are in
+`app/lang/` and work without it.
 
 Remove leftovers of old panel versions if present (replaced by `app/`):
 `bootstrap.php` (in the root), `panel/config.php`, `panel/_csrf.php`,
@@ -885,12 +935,26 @@ file (`.env.bak`, `.env.save`, `panel.env` …), backups / dumps / keys / logs b
 | log in with a regular account → "Webmail" | Roundcube mailbox |
 | visit `https://domain/` without a session | redirect to the portal (custom_auth plugin) |
 
-## 9. reCAPTCHA (optional)
+## 9. CAPTCHA (optional)
 
-Panel → Settings → Google reCAPTCHA: paste the Site Key + Secret Key (type v2
-"I'm not a robot") and check "Active". Verification is **fail-closed** —
-an error/timeout on Google's side rejects the attempt instead of letting it through.
+Panel → Settings → CAPTCHA: choose the provider — **Google reCAPTCHA v2** ("I'm not a robot" checkbox), **reCAPTCHA v3**
+(invisible; set the minimum score, 0.5 is a good start), **Cloudflare Turnstile** or **hCaptcha** — paste its site key
+and secret (each provider has its own pair; the provider's console must list your mail domain) and check "Active".
+The panel refuses to enable a provider without both keys. Secrets are never shown again (an empty field keeps the saved
+one). Verification is **fail-closed** — an error / timeout on the provider's side rejects the attempt instead of letting
+it through — and the portal's CSP allows only the active provider's hosts.
 Emergency disable from SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_enabled';`
+
+### Languages
+
+Polish (default) and English are part of the code (`app/lang/pl/`, `app/lang/en/`). The visitor picks a language with
+the switcher (portal: top right; panel: header) — remembered in the `lang` cookie; without a choice the browser's
+language is used when enabled, otherwise the default from *Settings → Interface languages*. There you can also enable /
+disable languages, set the default (also used for the audit log and the policy service's notice), copy a language as a
+starting point, download it, translate it and upload it back (flat JSON `"key": "text"`, 512 KB; unknown keys and unsafe
+values are rejected and listed), or delete an added language. Added languages are stored as JSON in
+`/var/lib/roundcontrol/lang` (`LANG_DATA_DIR` in `.env` to move it; owner = the PHP pool user, 0750 — `install.sh`
+section 12 creates it). They are only ever parsed as JSON, never executed.
 
 ## 10. Developer mode (locally, without a mail server)
 
