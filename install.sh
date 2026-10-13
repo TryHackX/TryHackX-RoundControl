@@ -912,6 +912,20 @@ if ask "11) Utworzyć /var/mail/deleted (kwarantanna 700) i timer systemd czyszc
   [ -e /etc/cron.daily/mailpanel-purge-deleted ] && rm -f /etc/cron.daily/mailpanel-purge-deleted && ok "usunięto /etc/cron.daily/mailpanel-purge-deleted"
 fi
 
+# --- 12. Katalog języków dodanych w panelu (1.3.0) ---
+hr
+# Polski i angielski są w kodzie (root:root, pula nie może do niego pisać). Języki dodane w panelu (kopia, wgrany pakiet)
+# to pliki JSON w katalogu DANYCH, do którego pisze wyłącznie użytkownik puli; panel czyta je json_decode — nigdy include.
+# Inne miejsce: LANG_DATA_DIR w .env (wtedy utwórz ten katalog z tymi samymi prawami).
+LANG_DIR=/var/lib/roundcontrol/lang
+if ask "12) Utworzyć $LANG_DIR (języki dodane w panelu; właściciel $RUN_USER, 0750)"; then
+  if install -d -o root -g root -m 755 /var/lib/roundcontrol && install -d -o "$RUN_USER" -g "$RUN_USER" -m 750 "$LANG_DIR"; then
+    ok "$LANG_DIR ($RUN_USER:$RUN_USER 750)"
+  else
+    warn "nie udało się utworzyć $LANG_DIR — kopie i wgrywanie języków w panelu zgłoszą błąd (pl i en działają bez niego)"
+  fi
+fi
+
 hr
 ok "Gotowe. Weryfikacja:"
 echo "   - https://<host>/portal.php  → ekran logowania"
@@ -925,3 +939,4 @@ echo "   - sudo -l -U $RUN_USER  → tylko dokładne reguły ^regex\$ / \"\", be
 [ "$RUN_USER" != "$APACHE_USER" ] && echo "   - ps -o user= -C php-fpm${PHP_VER} | sort | uniq -c  → procesy puli $RUN_USER pojawiają się po wejściu na webmail"
 echo "   - find $RC_DIR -user $RUN_USER -o -user $APACHE_USER -o -perm -o+w  → tylko temp/ i logs/"
 echo "   - systemctl list-timers mailpanel-purge-deleted.timer  → codzienne czyszczenie kwarantanny"
+echo "   - stat -c '%A %U:%G' /var/lib/roundcontrol/lang  → drwxr-x--- $RUN_USER:$RUN_USER (języki dodane w panelu)"

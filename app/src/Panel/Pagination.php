@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace App\Panel;
 
+use function App\I18n\h;
+use function App\I18n\t;
+
 /**
  * Jeden generator paginacji dla wszystkich list panelu (zastępuje 4x
  * powielony kod). Przyciski używają data-atrybutów (obsługa w panel.js),
@@ -29,8 +32,9 @@ final class Pagination
     /**
      * @param string $nav klucz nawigacji odczytywany przez panel.js (np. "users")
      */
-    public static function render(int $page, int $per, int $total, string $nav, string $label = 'Wyświetlanie'): string
+    public static function render(int $page, int $per, int $total, string $nav, ?string $label = null): string
     {
+        $label ??= t('pager.showing');
         $totalPages = self::totalPages($total, $per);
         $page       = min($page, $totalPages);
         $off        = ($page - 1) * $per;
@@ -43,18 +47,20 @@ final class Pagination
             '<button type="button" class="pagination-btn' . ($active ? ' active' : '') . '" data-nav="' . $nav . '" data-page="' . $p . '"'
             . ($active ? ' aria-current="page"' : '') . ($off ? ' disabled' : '') . ($aria !== '' ? ' aria-label="' . $aria . '"' : '') . '>' . $text . '</button>';
 
-        $html  = '<div class="pagination-info" aria-live="polite">' . $label . ' ' . $from . ' - ' . $to . ' z ' . $total . '</div>';
-        $html .= '<nav class="pagination-controls" aria-label="Strony listy">';
+        // Teksty z plików językowych idą do HTML-a przez h() (całość escapowana — także z pakietów językowych z zewnątrz).
+        $html  = '<div class="pagination-info" aria-live="polite">'
+            . h('pager.range', ['label' => $label, 'from' => $from, 'to' => $to, 'total' => $total]) . '</div>';
+        $html .= '<nav class="pagination-controls" aria-label="' . h('pager.nav_label') . '">';
 
-        $html .= $btn(1, '« Pierwsza', false, $page <= 1, 'Pierwsza strona');
-        $html .= $btn(max(1, $page - 1), '‹ Poprzednia', false, $page <= 1, 'Poprzednia strona');
+        $html .= $btn(1, h('pager.first'), false, $page <= 1, h('pager.first_page'));
+        $html .= $btn(max(1, $page - 1), h('pager.prev'), false, $page <= 1, h('pager.prev_page'));
         $width = min(5, $totalPages);
         $start = max(1, min($page - 2, $totalPages - $width + 1));
         for ($i = $start; $i < $start + $width; $i++) {
-            $html .= $btn($i, (string) $i, $i === $page, false, 'Strona ' . $i);
+            $html .= $btn($i, (string) $i, $i === $page, false, h('pager.page', ['n' => $i]));
         }
-        $html .= $btn(min($totalPages, $page + 1), 'Następna ›', false, $page >= $totalPages, 'Następna strona');
-        $html .= $btn($totalPages, 'Ostatnia »', false, $page >= $totalPages, 'Ostatnia strona (' . $totalPages . ')');
+        $html .= $btn(min($totalPages, $page + 1), h('pager.next'), false, $page >= $totalPages, h('pager.next_page'));
+        $html .= $btn($totalPages, h('pager.last'), false, $page >= $totalPages, h('pager.last_page', ['n' => $totalPages]));
 
         return $html . '</nav>';
     }

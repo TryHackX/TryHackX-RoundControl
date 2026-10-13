@@ -21,6 +21,9 @@ declare(strict_types=1);
  * własnym błędem. Dzień liczony wg strefy z configu (domyślnie Europe/Warsaw),
  * spójnie z panelem administracyjnym.
  *
+ * Język odmów i powiadomienia: app_settings 'default_language' (pl = polski, każdy inny = angielski; brak = pl) —
+ * ten sam język domyślny, który ustawia panel. Skrypt działa jako "nobody" poza kodem aplikacji, więc teksty ma u siebie.
+ *
  * Konfiguracja: /etc/mailpanel-policy.cf (INI: dsn, user, password, timezone),
  * czytelna dla grupy nogroup (640 root:nogroup).
  *
@@ -64,6 +67,54 @@ function db(array $cfg, ?PDO &$db): ?PDO
     return $db;
 }
 
+/**
+ * Teksty dla użytkownika (odmowy SMTP — tylko ASCII — i powiadomienie e-mail): polski albo angielski.
+ *
+ * @return array<string,string>
+ */
+function texts(string $lang): array
+{
+    if ($lang === 'pl') {
+        return [
+            'reject_daily' => 'Dzienny limit wysylki wyczerpany (:limit odbiorcow/dzien)',
+            'reject_big'   => 'Za wiele odbiorcow w jednej wiadomosci wzgledem dziennego limitu (:limit odbiorcow/dzien)',
+            'from_name'    => 'Serwer pocztowy',
+            'subject'      => 'Wiadomość nie została wysłana — dzienny limit wyczerpany',
+            'body'         => "Twoja ostatnia wiadomość NIE została wysłana.\n\n"
+                . "Wykorzystano dzienny limit wysyłki: :sent z :limit odbiorców (każdy adresat wiadomości liczy się osobno).\n"
+                . "Licznik wyzeruje się o północy — wtedy wysyłka znów będzie możliwa.\n"
+                . "Kolejne próby wysyłki dzisiaj również zostaną odrzucone (ta informacja\n"
+                . "wysyłana jest tylko raz dziennie).\n\n"
+                . "Jeśli potrzebujesz wyższego limitu, skontaktuj się z administratorem.\n\n"
+                . "-- \nSerwer pocztowy :domain (wiadomość automatyczna, nie odpowiadaj)",
+        ];
+    }
+    return [
+        'reject_daily' => 'Daily sending limit reached (:limit recipients/day)',
+        'reject_big'   => 'Too many recipients in one message for the daily limit (:limit recipients/day)',
+        'from_name'    => 'Mail server',
+        'subject'      => 'Your message was not sent — daily limit reached',
+        'body'         => "Your last message was NOT sent.\n\n"
+            . "The daily sending limit has been used up: :sent of :limit recipients (every recipient of a message counts separately).\n"
+            . "The counter resets at midnight — you will be able to send again then.\n"
+            . "Further attempts to send today will also be rejected (this notice\n"
+            . "is sent only once a day).\n\n"
+            . "If you need a higher limit, contact the administrator.\n\n"
+            . "-- \nMail server :domain (automatic message, do not reply)",
+    ];
+}
+
+/** Język z ustawień panelu (pl | en); błąd bazy = pl. */
+function siteLanguage(PDO $dbh): string
+{
+    try {
+        $v = $dbh->query("SELECT v FROM app_settings WHERE k = 'default_language'")->fetchColumn();
+    } catch (Throwable) {
+        $v = false;
+    }
+    return $v === false || $v === null || $v === '' || $v === 'pl' ? 'pl' : 'en';
+}
+
 function respond(string $action): void
 {
     fwrite(STDOUT, 'action=' . $action . "\n\n");
@@ -75,18 +126,13 @@ function respond(string $action): void
  * (kolejne odbicia już bez powiadomienia — flaga send_counters.notified).
  * Kopertowy nadawca pusty (<>) = brak ryzyka pętli zwrotek.
  */
-function sendLimitNotice(string $user, int $limit, int $sent): void
+function sendLimitNotice(string $user, int $limit, int $sent, string $lang = 'pl'): void
 {
     $domain  = substr((string) strrchr($user, '@'), 1) ?: 'localhost';
-    $subject = '=?UTF-8?B?' . base64_encode('Wiadomość nie została wysłana — dzienny limit wyczerpany') . '?=';
-    $body    = "Twoja ostatnia wiadomość NIE została wysłana.\n\n"
-        . "Wykorzystano dzienny limit wysyłki: $sent z $limit odbiorców (każdy adresat wiadomości liczy się osobno).\n"
-        . "Licznik wyzeruje się o północy — wtedy wysyłka znów będzie możliwa.\n"
-        . "Kolejne próby wysyłki dzisiaj również zostaną odrzucone (ta informacja\n"
-        . "wysyłana jest tylko raz dziennie).\n\n"
-        . "Jeśli potrzebujesz wyższego limitu, skontaktuj się z administratorem.\n\n"
-        . "-- \nSerwer pocztowy $domain (wiadomość automatyczna, nie odpowiadaj)";
-    $msg = "From: Serwer pocztowy <no-reply@$domain>\r\n"
+    $tx      = texts($lang);
+    $subject = '=?UTF-8?B?' . base64_encode($tx['subject']) . '?=';
+    $body    = strtr($tx['body'], [':sent' => (string) $sent, ':limit' => (string) $limit, ':domain' => $domain]);
+    $msg = 'From: ' . $tx['from_name'] . " <no-reply@$domain>\r\n"
         . "To: <$user>\r\n"
         . "Subject: $subject\r\n"
         . "MIME-Version: 1.0\r\n"
@@ -153,7 +199,7 @@ while (($line = fgets(STDIN)) !== false) {
 
         if ($rcpt > $limit) {   // jedna wiadomość większa niż cały dzienny limit — nigdy nie przejdzie
             error_log("mailpanel-policy: REJECT $user ($rcpt odbiorcow w jednej wiadomosci, limit $limit)");
-            respond("REJECT Za wiele odbiorcow w jednej wiadomosci wzgledem dziennego limitu ($limit odbiorcow/dzien)");
+            respond('REJECT ' . strtr(texts(siteLanguage($dbh))['reject_big'], [':limit' => (string) $limit]));
             continue;
         }
 
@@ -175,13 +221,13 @@ while (($line = fgets(STDIN)) !== false) {
                     $up = $dbh->prepare('UPDATE send_counters SET notified = 1 WHERE email = ? AND day = ? AND notified = 0');
                     $up->execute([$user, $day]);
                     if ($up->rowCount() === 1) {
-                        sendLimitNotice($user, $limit, $cnt);
+                        sendLimitNotice($user, $limit, $cnt, siteLanguage($dbh));
                     }
                 } catch (Throwable $e) {
                     error_log('mailpanel-policy: powiadomienie nieudane: ' . $e->getMessage());
                 }
             }
-            respond("REJECT Dzienny limit wysylki wyczerpany ($limit odbiorcow/dzien)");
+            respond('REJECT ' . strtr(texts(siteLanguage($dbh))['reject_daily'], [':limit' => (string) $limit]));
             continue;
         }
         respond('DUNNO');

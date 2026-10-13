@@ -1,0 +1,196 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * Komunikaty klas PHP panelu — polski (wzorzec).
+ *   guard.*  AdminGuard            pager.*  Pagination            cmd.*    Commands
+ *   msg.*    komunikaty dla administratora (PanelController: t() = język administratora)
+ *   audit.*  wpisy dziennika audytowego (Lang::site() = język serwisu, niezależnie od przeglądarki administratora)
+ * Parametry :nazwa podstawia kod. Znaki < > nie mogą stać w tekście (filtr wartości) — składnię poleceń podaje kod.
+ */
+
+return [
+    /* ------------------------------------------------------------------ AdminGuard */
+    'guard.session_expired' => 'Sesja administratora wygasła — zaloguj się ponownie.',
+
+    /* ------------------------------------------------------------------ Pagination */
+    'pager.showing'   => 'Wyświetlanie',
+    'pager.range'     => ':label :from - :to z :total',
+    'pager.nav_label' => 'Strony listy',
+    'pager.first'     => '« Pierwsza',
+    'pager.first_page' => 'Pierwsza strona',
+    'pager.prev'      => '‹ Poprzednia',
+    'pager.prev_page' => 'Poprzednia strona',
+    'pager.page'      => 'Strona :n',
+    'pager.next'      => 'Następna ›',
+    'pager.next_page' => 'Następna strona',
+    'pager.last'      => 'Ostatnia »',
+    'pager.last_page' => 'Ostatnia strona (:n)',
+
+    /* ------------------------------------------------------------------ Commands */
+    'cmd.proc_open_failed'          => 'proc_open nie powiodło się',
+    'cmd.proposal_incomplete'       => 'nie przekazano całej propozycji',
+    'cmd.f2b_failed'                => 'Fail2Ban: :out (kod :code)',
+    'cmd.f2b_failed_nocode'         => 'Fail2Ban: :out',
+    'cmd.mailbox_moved'             => 'Pliki poczty przeniesione do kwarantanny /var/mail/deleted — zostaną skasowane automatycznie po 30 dniach (do tego czasu można je odzyskać).',
+    'cmd.mailbox_no_dir'            => 'Na dysku nie było katalogu poczty tego konta (nic do przeniesienia).',
+    'cmd.mailbox_still_in_dovecot'  => 'Uwaga: konto nadal istnieje w Dovecot — pliki NIE zostały ruszone.',
+    'cmd.mailbox_dovecot_unchecked' => 'Uwaga: nie można potwierdzić w Dovecot, że konto nie istnieje (doveadm) — pliki NIE zostały ruszone.',
+    'cmd.mailbox_not_moved_no_sudo' => 'Pliki poczty nie zostały przeniesione do kwarantanny (brak konfiguracji sudo lub tryb dev) — zostały na dysku.',
+    'cmd.mailbox_not_moved'         => 'Uwaga: pliki poczty NIE zostały przeniesione do kwarantanny (kod :code) — sprawdź /var/mail/vhosts i dziennik; przenieś je ręcznie.',
+
+    /* ------------------------------------------------------------------ msg.common */
+    'msg.common.csrf'          => 'Token bezpieczeństwa nie pasuje do sesji (strona otwarta w innej sesji?). Odśwież stronę (F5) i spróbuj ponownie.',
+    'msg.common.unknown_op'    => 'Nieznana operacja.',
+    'msg.common.op_failed'     => 'Błąd operacji. Szczegóły w dzienniku serwera.',
+    'msg.common.op_failed_detail' => 'Błąd operacji. :detail Szczegóły w dzienniku serwera.',
+    'msg.common.op_failed_dev' => 'Błąd operacji: :detail',
+    'msg.common.bad_ip'        => 'Nieprawidłowy adres IP.',
+    'msg.common.pass_mismatch' => 'Hasła nie są identyczne.',
+    'msg.common.pass_policy'   => 'Hasło nie spełnia wymogów bezpieczeństwa (długość i wymagane klasy znaków).',
+
+    /* ------------------------------------------------------------------ ustawienia */
+    'msg.settings.saved'         => 'Ustawienia ogólne zostały zapisane.',
+    'msg.settings.quota_applied' => 'Zaktualizowano limit dla :count użytkowników.',
+    'msg.security.saved'         => 'Ustawienia bezpieczeństwa zostały zapisane.',
+    'msg.antispam.saved_applied' => 'Ustawienia antyspamowe zostały zapisane. (Postfix: zapisane, sprawdzone i przeładowane)',
+    'msg.antispam.saved_no_sudo' => 'Ustawienia antyspamowe zostały zapisane. (Zapisano w bazie — brak uprawnień sudo dla skryptu)',
+    'msg.antispam.postfix_failed' => 'Ustawienia antyspamowe zapisane w bazie. Zapisano w bazie, ale Postfix NIE został zmieniony: :detail',
+    'msg.antispam.script_error'  => 'błąd skryptu',
+
+    /* ------------------------------------------------------------------ hasło administratora */
+    'msg.password.mismatch'      => 'Nowe hasła nie są identyczne.',
+    'msg.password.admin_policy'  => 'Hasło administratora: minimum :min znaków oraz wymagane klasy znaków (jak dla skrzynek).',
+    'msg.password.wrong_current' => 'Obecne hasło jest nieprawidłowe (próba zapisana w dzienniku audytowym).',
+    'msg.password.changed'       => 'Hasło administratora zostało zmienione. Inne sesje zostały wylogowane.',
+    'msg.reauth.too_many'        => 'Za dużo błędnych haseł administratora — sesja została zakończona. Zaloguj się ponownie.',
+
+    /* ------------------------------------------------------------------ Fail2Ban */
+    'msg.f2b.unchanged'      => 'Konfiguracja Fail2Ban bez zmian — nic nie zapisano.',
+    'msg.f2b.saved'          => 'Konfiguracja Fail2Ban została zapisana, sprawdzona (fail2ban-client -t) i przeładowana.',
+    'msg.f2b.bad_jail'       => 'Nieprawidłowy jail.',
+    'msg.f2b.bad_jail_to'    => 'Nieprawidłowy jail docelowy.',
+    'msg.f2b.bad_jail_from'  => 'Nieprawidłowy jail źródłowy.',
+    'msg.f2b.banned'         => 'IP :ip zostało zbanowane w Fail2Ban (jail: :jail).',
+    'msg.f2b.ban_failed'     => 'Błąd komendy Fail2Ban — sprawdź regułę sudoers: :cmd (plik system/sudoers.d/mailpanel).',
+    'msg.f2b.bantime_failed' => 'Błąd ustawiania czasu bana (sudoers: :cmd).',
+    'msg.f2b.move_failed'    => 'Błąd komendy Fail2Ban przy przenoszeniu.',
+    'msg.f2b.cmd_failed'     => 'Błąd komendy Fail2Ban.',
+    'msg.f2b.seconds'        => 'sekundy',
+
+    /* ------------------------------------------------------------------ konta */
+    'msg.users.gone_refreshed'  => 'Tego konta już nie ma (usunięte w innej karcie?) — lista została odświeżona.',
+    'msg.users.gone_mismatch'   => 'Tego konta już nie ma albo dane się nie zgadzają — lista została odświeżona.',
+    'msg.users.limit_global'    => 'globalny',
+    'msg.users.limit_none'      => 'bez limitu',
+    'msg.users.limit_per_day'   => ':n/dzień',
+    'msg.users.quota_updated'   => 'Konto :email: quota :quota, limit wysyłki: :limit.',
+    'msg.users.bad_data'        => 'Nieprawidłowe dane użytkownika.',
+    'msg.users.pass_reset'      => 'Hasło skrzynki :email zostało zmienione.',
+    'msg.users.delete_bad_pass'      => 'Błędne hasło administratora — konto NIE zostało usunięte. Próba zapisana w dzienniku audytowym.',
+    'msg.users.delete_bad_pass_left' => 'Błędne hasło administratora — konto NIE zostało usunięte. Próba zapisana w dzienniku audytowym (po :left kolejnych błędach sesja się zakończy).',
+    'msg.users.deleted'         => 'Konto :email zostało usunięte z bazy.',
+    'msg.users.deleted_aliases' => 'Usunięto aliasów kierujących na to konto: :count.',
+    'msg.users.deleted_lists'   => 'UWAGA: aliasy z listą celów nadal wymieniają to konto: :ids — popraw je ręcznie.',
+    'msg.users.delete_files_no_sudo' => 'Uwaga: pliki poczty NIE zostały przeniesione do kwarantanny — zostały na dysku (brak konfiguracji sudo dla mailpanel-delete-user.sh).',
+    'msg.users.bad_local'       => 'Niedozwolone znaki w nazwie konta (litery, cyfry, . _ -; bez kropki/myślnika na brzegach).',
+    'msg.users.bad_domain'      => 'Nieprawidłowa domena.',
+    'msg.users.bad_email'       => 'Nieprawidłowy adres e-mail.',
+    'msg.users.exists'          => 'Konto :email już istnieje.',
+    'msg.users.is_alias'        => ':email to adres aliasu (→ :dest): skrzynka o tej nazwie nie dostawałaby poczty, więc zgoda tego nie zmienia. Zostaw alias albo usuń go (przycisk pod polem adresu) i wtedy załóż skrzynkę.',
+    'msg.users.need_consent'    => ':email: :why — żeby założyć tę skrzynkę świadomie, zaznacz zgodę pod polem adresu.',
+    'msg.users.domain_config'   => 'Błąd konfiguracji domeny.',
+    'msg.users.exists_race'     => 'Konto :email już istnieje (założone przed chwilą w innej karcie?).',
+    'msg.users.created'         => 'Konto :email zostało utworzone (quota :quota, limit wysyłki: :limit).',
+
+    /* ------------------------------------------------------------------ aliasy */
+    'msg.alias.gone'    => 'Tego aliasu już nie ma albo dane się nie zgadzają.',
+    'msg.alias.deleted' => 'Alias :source → :dest został usunięty. Poczta na :source nie jest już przekierowywana — załóż teraz skrzynkę albo ten adres będzie odrzucał pocztę.',
+
+    /* ------------------------------------------------------------------ blokady */
+    'msg.bans.trusted'        => 'To IP jest na liście zaufanych (SCAN_TRUSTED_IPS) — nie można go zbanować.',
+    'msg.bans.duration_range' => 'Czas bana: od 1 do 129600 minut (90 dni).',
+    'msg.bans.banned_f2b'     => 'Adres IP :ip został zbanowany na :min min — w portalu i panelu oraz w Fail2Ban (jail panel-tempban: webmail, IMAP, SMTP).',
+    'msg.bans.banned_local'   => 'Adres IP :ip został zbanowany na :min min — TYLKO w portalu i panelu (logowanie, rejestracja). Fail2Ban jest niedostępny, więc IMAP/SMTP/webmail nie są blokowane na firewallu.',
+    'msg.bans.dur_days'       => ':n dni',
+    'msg.bans.dur_hours'      => ':n godz.',
+    'msg.bans.for_dur'        => 'na :dur',
+    'msg.bans.moved'          => 'IP :ip przeniesione: :from → :to.',
+    'msg.bans.moved_for'      => 'IP :ip przeniesione: :from → :to :dur.',
+    'msg.bans.unbanned'       => 'IP :ip zostało odblokowane.',
+    'msg.bans.unbanned_also'  => 'IP :ip zostało odblokowane (oraz w Fail2Ban: panel-tempban).',
+    'msg.bans.unbanned_warn'  => 'IP :ip zostało odblokowane (UWAGA: wpisu w Fail2Ban panel-tempban nie udało się zdjąć — zdejmij go w liście blokad).',
+    'msg.bans.unbanned_f2b'   => 'IP :ip zostało odblokowane w Fail2Ban.',
+    'msg.bans.reason_perma'   => 'Blokada stała (panel)',
+    'msg.bans.reason_temp'    => 'Blokada czasowa (panel)',
+    'msg.bans.reason_auto'    => 'Auto-Ban: :jail',
+    'msg.bans.service_perma'  => 'PERMANENTNY',
+    'msg.bans.until_perma'    => 'Na stałe',
+    'msg.bans.until_dynamic'  => 'Dynamicznie',
+
+    /* ------------------------------------------------------------------ ocena nazwy konta */
+    'msg.name.free'           => 'Wolne',
+    'msg.name.taken'          => 'Konto o tym adresie już istnieje',
+    'msg.name.taken_detail'   => 'Skrzynka :email jest już na liście kont.',
+    'msg.name.alias'          => 'To adres aliasu — tu nie da się założyć skrzynki',
+    'msg.name.alias_detail'   => ':email jest aliasem: poczta na ten adres trafia do :dest. Postfix rozwiązuje aliasy, zanim poczta dotrze do skrzynek, więc skrzynka o tej nazwie nie dostałaby ani jednej wiadomości — dlatego tej blokady nie zdejmuje żadna zgoda. Wyjście: zostaw alias (poczta już dochodzi do :dest) albo usuń go poniżej i dopiero wtedy załóż skrzynkę.',
+    'msg.name.reserved_base'  => 'Nazwa zarezerwowana na stałe',
+    'msg.name.reserved_list'  => 'Nazwa z listy zarezerwowanych',
+    'msg.name.why_list'       => '„:pattern” jest na liście zarezerwowanych nazw (Ustawienia → Rejestracja). Rejestracja publiczna jej nie odda.',
+    'msg.name.why_ca'         => '„:local” to adres roli: urzędy certyfikacji wysyłają na admin@, administrator@, hostmaster@, postmaster@ i webmaster@ linki potwierdzające domenę — kto czyta taką skrzynkę, może dostać certyfikat TLS dla domeny. Rejestracja publiczna nigdy jej nie odda.',
+    'msg.name.why_system'     => '„:pattern” to nazwa systemowa / roli (RFC 2142: abuse, noreply, mailer-daemon…), zaufana przez innych. Rejestracja publiczna nigdy jej nie odda.',
+    'msg.name.held_deleted'   => 'Konto o tej nazwie niedawno usunięto',
+    'msg.name.why_deleted'    => 'Konto :email usunięto :when; przez :days dni nazwa nie wraca do puli (Ustawienia → Rejestracja), żeby nowy właściciel nie dostawał poczty adresowanej do poprzedniego.',
+    'msg.name.held_alias'     => 'Alias kieruje pocztę na ten adres',
+    'msg.name.why_alias_to'   => 'Alias :list → :email: po założeniu skrzynki poczta z tego aliasu zacznie do niej trafiać.',
+    'msg.name.list_item'      => ':source (lista)',
+    'msg.name.override_hint'  => 'Możesz założyć tę skrzynkę świadomie — zaznacz zgodę (trafi do dziennika audytowego).',
+    'msg.name.bad_chars'      => 'Niedozwolone znaki (litery, cyfry, . _ -; bez kropki ani myślnika na brzegach)',
+    'msg.name.bad_domain'     => 'Nieprawidłowa domena',
+
+    /* ------------------------------------------------------------------ skaner */
+    'msg.scan.bad_source'      => 'Nieznane źródło skanu.',
+    'msg.scan.svc_registration' => 'rejestracja',
+    'msg.scan.session_expired' => 'Sesja wygasła — odśwież stronę panelu.',
+    'msg.scan.trusted'         => 'To IP jest na liście zaufanych.',
+    'msg.scan.no_permaban'     => 'Brak jaila panel-permaban w Fail2Ban.',
+    'msg.scan.cmd_failed'      => 'Błąd fail2ban-client (sudoers: :cmd).',
+    'msg.scan.label_perma'     => 'na stałe',
+    'msg.scan.bad_duration'    => 'Nieprawidłowy czas bana.',
+    'msg.scan.no_tempban'      => 'Brak jaila panel-tempban w Fail2Ban (dodaj sekcję w jail.local).',
+    'msg.scan.bantime_failed'  => 'Błąd ustawiania bantime (sudoers: :cmd).',
+    'msg.scan.ban_failed'      => 'Błąd fail2ban-client przy banowaniu.',
+
+    /* ------------------------------------------------------------------ dziennik audytowy (język serwisu) */
+    'audit.settings_update'        => 'Zaktualizowano ustawienia ogólne',
+    'audit.quota_all'              => 'Domyślny limit :quota ustawiony :count kontom',
+    'audit.security_update'        => 'Zmiana limitów: :max prób, :min min blokady',
+    'audit.antispam_update'        => 'RC=:rc, PF msg=:pf',
+    'audit.antispam_update_failed' => 'RC=:rc, PF msg=:pf (Postfix: błąd)',
+    'audit.admin_pass_change'      => 'Administrator zmienił swoje hasło',
+    'audit.reauth_what_password'   => 'zmiana hasła administratora',
+    'audit.reauth_what_delete'     => 'usuwanie konta :email (ID: :id)',
+    'audit.reauth_failed'          => 'Błędne hasło administratora przy potwierdzaniu: :what (próba :n z :max w tej sesji)',
+    'audit.reauth_lockout'         => 'Sesja zakończona po :max błędnych hasłach w oknach potwierdzenia',
+    'audit.fail2ban_update'        => 'Zapis konfiguracji Fail2Ban + reload (:result)',
+    'audit.user_quota'             => 'Konto :email (ID: :id): quota :quota, limit wysyłki: :limit',
+    'audit.user_pass_reset'        => 'Reset hasła skrzynki: :email (ID: :id)',
+    'audit.ban_reason_default'     => 'Zbanowany przez admina',
+    'audit.ban_ip_f2b'             => 'IP :ip na :min min (portal + Fail2Ban panel-tempban). Powód: :reason',
+    'audit.ban_ip_local'           => 'IP :ip na :min min (tylko portal/panel). Powód: :reason',
+    'audit.delete_user_moved'      => 'Usunięto konto: :email (ID: :id) — skrzynka przeniesiona do kwarantanny /var/mail/deleted',
+    'audit.delete_user_nodir'      => 'Usunięto konto: :email (ID: :id) — na dysku nie było katalogu poczty',
+    'audit.delete_user_kept'       => 'Usunięto konto: :email (ID: :id) — pliki poczty NIE przeniesione do kwarantanny',
+    'audit.create_user'            => 'Utworzono konto: :email (quota :quota, limit wysyłki: :limit)',
+    'audit.create_user_override'   => 'Utworzono konto: :email (quota :quota, limit wysyłki: :limit) — za zgodą administratora mimo: :why',
+    'audit.delete_alias'           => 'Usunięto alias #:id: :source → :dest',
+    'audit.f2b_ban'                => 'Ręczny ban IP: :ip (jail: :jail)',
+    'audit.move_ban'               => 'Przeniesiono IP: :ip (:from -> :to)',
+    'audit.move_ban_for'           => 'Przeniesiono IP: :ip (:from -> :to :dur)',
+    'audit.unban_f2b'              => 'Odblokowano IP: :ip (Fail2Ban: :jail)',
+    'audit.unban_ip'               => 'Odblokowano IP: :ip',
+    'audit.unban_ip_also'          => 'Odblokowano IP: :ip (oraz w Fail2Ban: panel-tempban)',
+    'audit.unban_ip_warn'          => 'Odblokowano IP: :ip (UWAGA: wpisu w Fail2Ban panel-tempban nie udało się zdjąć — zdejmij go w liście blokad)',
+    'audit.scan_ban_perma'         => 'Ban ze skanera: :ip (na stałe, jail: panel-permaban)',
+    'audit.scan_ban_temp'          => 'Ban ze skanera: :ip (czasowy :label, jail: panel-tempban)',
+];

@@ -5,10 +5,12 @@ namespace App\Portal;
 
 use App\Support\Html;
 
+use function App\I18n\h;
+
 /**
  * Dynamiczne ekrany wstrzykiwane przez AJAX. Bez inline-JS — interakcje obsługuje portal.js przez data-action.
  *
- * 1.2.0 — kolejność: adres e-mail -> hasło -> (tylko administrator z poprawnym hasłem do panelu, który ma też skrzynkę)
+ * Kolejność: adres e-mail -> hasło -> (tylko administrator z poprawnym hasłem do panelu, który ma też skrzynkę)
  * dwa kafelki: Webmail / Panel Admina. Ekran hasła jest TAKI SAM dla każdego poprawnego adresu (istniejącego czy nie,
  * administratora czy zwykłego konta): o roli dowiaduje się dopiero ktoś, kto zna hasło.
  */
@@ -37,8 +39,12 @@ final class Screens
     public static function password(string $email): string
     {
         $e       = Html::e($email);
-        $profile = self::profile($email, 'Zmień użytkownika');
+        $profile = self::profile($email, h('portal.change_user'));
         $eye     = self::ICON_EYE;
+        $L = [
+            'pass' => h('portal.password'), 'ph' => h('portal.password_ph'), 'show' => h('portal.show_password'),
+            'submit' => h('portal.login_submit'), 'back' => h('portal.back'),
+        ];
 
         return <<<HTML
         <div class="step-body">
@@ -46,17 +52,17 @@ final class Screens
             <form data-form="login" novalidate>
                 <input type="hidden" name="ajax_action" value="perform_login">
                 <input type="text" name="username" value="{$e}" autocomplete="username" hidden readonly tabindex="-1">
-                <label for="inpPassword">Hasło</label>
+                <label for="inpPassword">{$L['pass']}</label>
                 <div class="pwd-field">
                     <input type="password" id="inpPassword" name="password" required
-                           placeholder="Wpisz hasło" autocomplete="current-password" aria-describedby="loginHint">
+                           placeholder="{$L['ph']}" autocomplete="current-password" aria-describedby="loginHint">
                     <button type="button" class="pwd-toggle" data-action="toggle-pwd" data-for="inpPassword"
-                            aria-label="Pokaż hasło" aria-pressed="false">{$eye}</button>
+                            aria-label="{$L['show']}" aria-pressed="false">{$eye}</button>
                 </div>
                 <div id="loginHint" class="field-hint" aria-live="polite"></div>
-                <button type="submit" class="btn-action">Zaloguj się</button>
+                <button type="submit" class="btn-action">{$L['submit']}</button>
             </form>
-            <button type="button" class="link-btn back-link" data-action="back">← Wróć</button>
+            <button type="button" class="link-btn back-link" data-action="back">{$L['back']}</button>
         </div>
         HTML;
     }
@@ -70,38 +76,43 @@ final class Screens
      */
     public static function choice(string $email, string $preferred, bool $webmail, bool $remembered = false): string
     {
-        $e        = Html::e($email);
-        $profile  = self::profile($email, 'Wyloguj — zmień użytkownika');
+        $profile  = self::profile($email, h('portal.choice.logout_change'));
         $mail     = self::ICON_MAIL;
         $panel    = self::ICON_PANEL;
         $preferred = $webmail && $preferred === 'webmail' ? 'webmail' : 'admin';
-        $badge    = '<span class="service-last">ostatnio</span>';
+        $badge    = '<span class="service-last">' . h('portal.choice.last') . '</span>';
         $lastW    = $remembered && $preferred === 'webmail' ? $badge : '';
         $lastA    = $remembered && $preferred === 'admin' ? $badge : '';
         $disW     = $webmail ? '' : ' disabled aria-describedby="choiceNote"';
-        $note     = $webmail ? '' : '<p class="choice-note" id="choiceNote">To hasło otwiera panel, ale nie skrzynkę '
-            . $e . '. Do webmaila zaloguj się hasłem skrzynki („Wyloguj — zmień użytkownika”).</p>';
+        $note     = $webmail ? '' : '<p class="choice-note" id="choiceNote">'
+            . h('portal.choice.no_mailbox', ['email' => $email, 'link' => \App\I18n\t('portal.choice.logout_change')]) . '</p>';
+        $L = [
+            'lead' => h('portal.choice.lead'),
+            'wName' => h('portal.choice.webmail'), 'wDesc' => h('portal.choice.webmail_desc'),
+            'aName' => h('portal.choice.admin'), 'aDesc' => h('portal.choice.admin_desc'),
+        ];
 
         return <<<HTML
         <div class="step-body">
         {$profile}
-            <p class="muted choice-lead" id="choiceLead">Konto administratora. Dokąd chcesz przejść?</p>
+            <p class="muted choice-lead" id="choiceLead">{$L['lead']}</p>
             <div class="service-choices" role="group" aria-labelledby="choiceLead">
                 <button type="button" class="service-card" id="tileWebmail" data-action="choose" data-target="webmail"{$disW}>
                     <span class="service-icon">{$mail}</span>
-                    <span class="service-name">Webmail</span>
-                    <span class="service-desc">Poczta elektroniczna</span>
+                    <span class="service-name">{$L['wName']}</span>
+                    <span class="service-desc">{$L['wDesc']}</span>
                     {$lastW}
                 </button>
                 <button type="button" class="service-card" id="tileAdmin" data-action="choose" data-target="admin">
                     <span class="service-icon">{$panel}</span>
-                    <span class="service-name">Panel Admina</span>
-                    <span class="service-desc">Zarządzanie systemem</span>
+                    <span class="service-name">{$L['aName']}</span>
+                    <span class="service-desc">{$L['aDesc']}</span>
                     {$lastA}
                 </button>
             </div>
             {$note}
             <div id="choiceHint" class="field-hint" aria-live="polite"></div>
+            <div id="choiceLive" class="sr-only" aria-live="polite"></div>
         </div>
         HTML;
     }

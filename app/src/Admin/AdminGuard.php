@@ -8,6 +8,8 @@ use App\Support\Http;
 use App\Support\Session;
 use Throwable;
 
+use function App\I18n\t;
+
 /**
  * Strażnik dostępu do panelu — wymaga aktywnej sesji administratora.
  *
@@ -58,7 +60,7 @@ final class AdminGuard
         if ($json) {
             // 1.2.0: zapytania fetch() dostają JSON z wyjaśnieniem (panel pokazuje go i link do logowania), nie stronę portalu
             http_response_code(403);
-            Http::json(['ok' => false, 'auth' => true, 'error' => 'Sesja administratora wygasła — zaloguj się ponownie.']);
+            Http::json(['ok' => false, 'auth' => true, 'error' => t('guard.session_expired')]);
         }
         header('Location: ../portal.php');
         exit;

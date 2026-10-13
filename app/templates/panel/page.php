@@ -1,7 +1,9 @@
 <?php
 declare(strict_types=1);
 
+use App\I18n\Lang;
 use App\Support\Html;
+use function App\I18n\h, App\I18n\html, App\I18n\t;
 
 /**
  * @var string $success
@@ -23,41 +25,51 @@ use App\Support\Html;
 $s  = $settings;
 $fv = static fn(string $name): string => Html::e((string) ($f2b['values'][$f2bFields[$name][0]][$f2bFields[$name][1]] ?? $f2bFields[$name][2]));
 $fc = static fn(string $name): bool => (string) ($f2b['values'][$f2bFields[$name][0]][$f2bFields[$name][1]] ?? $f2bFields[$name][2]) === 'true';
-/** URL assetu z wersją (mtime) — wymusza pobranie świeżego pliku po zmianie. */
-$av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(dirname(__DIR__, 3) . '/assets/' . $f) ?: '1');
+/** URL assetu ze skrótem pliku (zmiana pliku = nowy adres) — bez numeru wersji (ten jest tylko w stopce panelu). */
+$av = static fn(string $f): string => '../assets/' . $f . '?v=' . \App\Support\View::assetTag(dirname(__DIR__, 3) . '/assets/' . $f);
+/* Nazwy zakładek: teksty (surowe) w bieżącym języku; escapowane przy wypisaniu. */
 $tabs = [
-    'settings' => ['ri-settings-3-line', 'Ustawienia'],
-    'users'    => ['ri-user-line', 'Użytkownicy'],
-    'bans'     => ['ri-prohibited-line', 'Blokady IP'],
-    'logs'     => ['ri-file-list-line', 'Logi'],
-    'fail2ban' => ['ri-fire-line', 'Fail2Ban'],
-    'security' => ['ri-lock-password-line', 'Bezpieczeństwo'],
+    'settings' => ['ri-settings-3-line', t('panel.tabs.settings')],
+    'users'    => ['ri-user-line', t('panel.tabs.users')],
+    'bans'     => ['ri-prohibited-line', t('panel.tabs.bans')],
+    'logs'     => ['ri-file-list-line', t('panel.tabs.logs')],
+    'fail2ban' => ['ri-fire-line', t('panel.tabs.fail2ban')],
+    'security' => ['ri-lock-password-line', t('panel.tabs.security')],
 ];
 $tab = (string) ($_GET['tab'] ?? 'settings');
 $tab = isset($tabs[$tab]) ? $tab : 'settings';
 $panel = static fn(string $id): string => 'id="' . $id . '" class="tab-content' . ($id === $tab ? ' active' : '') . '" role="tabpanel" aria-labelledby="tab-' . $id . '" tabindex="-1"';
-$close = static fn(string $modal): string => '<button type="button" class="modal-close" data-action="modal-close" data-modal="' . $modal . '" aria-label="Zamknij okno"><i class="ri-close-line" aria-hidden="true"></i></button>';
-$perSel = static fn(string $id, string $nav): string => '<label for="' . $id . '">Na stronę:</label><select id="' . $id . '" data-per="' . $nav . '">'
+$close = static fn(string $modal): string => '<button type="button" class="modal-close" data-action="modal-close" data-modal="' . $modal . '" aria-label="' . h('panel.modal.close') . '"><i class="ri-close-line" aria-hidden="true"></i></button>';
+$perSel = static fn(string $id, string $nav): string => '<label for="' . $id . '">' . h('panel.per_page') . '</label><select id="' . $id . '" data-per="' . $nav . '">'
     . '<option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>';
-/** Nagłówek sortowalnej kolumny: etykieta + wskaźnik o stałej szerokości (zmiana sortowania nie przesuwa kolumn). */
-$th = static function (string $nav, string $col, string $label, string $sorted = '', string $extra = '', string $title = ''): string {
-    $ind  = $sorted === '' ? '<span class="sort-placeholder">⇅</span>' : '<span class="contrast-color">' . ($sorted === 'ASC' ? '▲' : '▼') . '</span><sup class="contrast-color sub-style">1</sup>';
+/**
+ * Nagłówek sortowalnej kolumny: etykieta w jednej linii + wskaźnik o stałej szerokości (ikona; numer priorytetu
+ * tylko przy sortowaniu po kilku kolumnach). $full = pełna nazwa, gdy etykieta jest skrótem (podpowiedź <abbr>).
+ * Etykiety podawać jako teksty SUROWE (t()) — funkcja sama je escapuje.
+ */
+$th = static function (string $nav, string $col, string $label, string $sorted = '', string $extra = '', string $title = '', string $full = ''): string {
+    $ind  = $sorted === '' ? '<i class="ri-arrow-up-down-line sort-placeholder"></i>'
+        : '<i class="' . ($sorted === 'ASC' ? 'ri-arrow-up-line' : 'ri-arrow-down-line') . ' contrast-color"></i>';
     $aria = $sorted === '' ? '' : ' aria-sort="' . ($sorted === 'ASC' ? 'ascending' : 'descending') . '"';
-    return '<th class="sortable" scope="col" data-nav="' . $nav . '" data-col="' . $col . '" data-label="' . Html::e($label) . '" tabindex="0"' . $aria
-        . ($title !== '' ? ' title="' . Html::e($title) . '"' : '') . '><span class="th-label">' . Html::e($label) . '</span> <span class="sort-ind" aria-hidden="true">' . $ind . '</span>' . $extra . '</th>';
+    $text = $full !== '' ? '<abbr title="' . Html::e($full) . '">' . Html::e($label) . '</abbr>' : Html::e($label);
+    return '<th class="sortable" scope="col" data-nav="' . $nav . '" data-col="' . $col . '" data-label="' . Html::e($full ?: $label) . '" tabindex="0"' . $aria
+        . ($title !== '' ? ' title="' . Html::e($title) . '"' : '') . '><span class="th-inner"><span class="th-label">' . $text
+        . '</span><span class="sort-ind" aria-hidden="true">' . $ind . '</span>' . $extra . '</span></th>';
 };
-$qsort = '<span class="qsort-wrap">'
-    . '<button type="button" class="qsort-ico" data-qsort="msgs" title="Sortuj po liczbie wiadomości (bieżąca strona)" aria-label="Sortuj po liczbie wiadomości"><i class="fa-solid fa-message" aria-hidden="true"></i><span class="qsort-n"></span></button>'
-    . '<button type="button" class="qsort-ico" data-qsort="size" title="Sortuj po zajętym rozmiarze (bieżąca strona)" aria-label="Sortuj po zajętym rozmiarze"><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i><span class="qsort-n"></span></button>'
-    . '</span>';
+/* Użycie: klik w nagłówek = sortuj po zajętym miejscu; ikonka koperty = po liczbie wiadomości (obie w obrębie strony —
+   dane z Dovecot). */
+$qsort = '<button type="button" class="qsort-ico" data-qsort="msgs" aria-pressed="false" aria-label="' . h('panel.users.qsort.label') . '"'
+    . ' title="' . h('panel.users.qsort.title') . '"><i class="ri-mail-line" aria-hidden="true"></i><span class="qsort-n"></span></button>';
+/* Podpowiedź o limicie wysyłki (okna Quota i Nowe konto): liczbę podmienia JS (data-bind), dlatego <b> z atrybutem jest składany tutaj. */
+$sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bind="daily_send_limit">' . (int) $s['daily_send_limit'] . '</b>']);
 ?>
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="<?= Html::e(Lang::current()) ?>">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark light">
-<title>Panel Administratora</title>
+<title><?= h('panel.title') ?></title>
 <link href="<?= $av('vendor/remixicon/remixicon.css') ?>" rel="stylesheet">
 <link href="<?= $av('vendor/fontawesome/css/all.min.css') ?>" rel="stylesheet">
 <link rel="stylesheet" href="<?= $av('design-system.css') ?>">
@@ -70,65 +82,67 @@ $qsort = '<span class="qsort-wrap">'
       data-pwd-spec="<?= (int) $pwd['spec'] ?>"
       data-reauth-limit="<?= (int) $reauthLimit ?>">
 
-<a class="skip-link" href="#main">Przejdź do treści</a>
+<a class="skip-link" href="#main"><?= h('panel.skip_link') ?></a>
 
 <header class="header">
     <div class="header-content">
-        <h1><i class="ri-shield-keyhole-line" aria-hidden="true"></i> Panel Administratora <span class="app-version" title="TryHackX RoundControl">v<?= Html::e(defined('APP_VERSION') ? APP_VERSION : '') ?></span></h1>
+        <h1><i class="ri-shield-keyhole-line" aria-hidden="true"></i> <?= h('panel.title') ?></h1>
         <div class="header-actions">
-            <span class="admin-info">Zalogowany: <b><?= Html::e($admin) ?></b></span>
+            <span class="admin-info"><?= html('panel.header.logged_in', ['name' => $admin]) ?></span>
+            <?php include __DIR__ . '/../partials/lang_switch.php'; ?>
             <form method="post" action="logout.php" class="logout-form">
                 <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
-                <button type="submit" class="logout-link">Wyloguj</button>
+                <button type="submit" class="logout-link"><?= h('panel.header.logout') ?></button>
             </form>
-            <button type="button" class="theme-toggle-btn" id="themeToggle" aria-label="Jasny motyw" aria-pressed="<?= $theme === 'light' ? 'true' : 'false' ?>" title="Przełącz motyw (jasny / ciemny)"><i class="<?= $theme === 'light' ? 'ri-sun-line' : 'ri-moon-line' ?>" id="themeIcon" aria-hidden="true"></i></button>
+            <button type="button" class="theme-toggle-btn" id="themeToggle" aria-label="<?= h('panel.header.theme_label') ?>" aria-pressed="<?= $theme === 'light' ? 'true' : 'false' ?>" title="<?= h('panel.header.theme_title') ?>"><i class="<?= $theme === 'light' ? 'ri-sun-line' : 'ri-moon-line' ?>" id="themeIcon" aria-hidden="true"></i></button>
         </div>
     </div>
 </header>
 
-<!-- Powiadomienia: nakładka (nie przesuwa treści). Komunikaty zawsze od serwera. -->
-<div id="toasts" class="toasts" aria-live="polite">
-    <?php if ($success !== ''): ?><div class="toast toast--ok" role="status"><i class="ri-checkbox-circle-line" aria-hidden="true"></i><div class="toast-text"><?= Html::e($success) ?></div><button type="button" class="toast-close" aria-label="Zamknij powiadomienie"><i class="ri-close-line" aria-hidden="true"></i></button></div><?php endif; ?>
-    <?php if ($error !== ''): ?><div class="toast toast--err" role="alert"><i class="ri-error-warning-line" aria-hidden="true"></i><div class="toast-text"><?= Html::e($error) ?></div><button type="button" class="toast-close" aria-label="Zamknij powiadomienie"><i class="ri-close-line" aria-hidden="true"></i></button></div><?php endif; ?>
-</div>
 <div id="session-banner" class="session-banner" role="alert" hidden>
-    <i class="ri-time-line" aria-hidden="true"></i> <span id="session-banner-text">Sesja administratora wygasła.</span>
-    <a href="../portal.php" class="btn btn-small">Zaloguj się ponownie</a>
+    <i class="ri-time-line" aria-hidden="true"></i> <span id="session-banner-text"><?= h('panel.session.expired') ?></span>
+    <a href="../portal.php" class="btn btn-small"><?= h('panel.session.relogin') ?></a>
 </div>
 
 <main class="container" id="main">
-    <noscript><div class="alert alert-error">JavaScript jest wyłączony: formularze działają, ale każda zmiana przeładuje stronę.</div></noscript>
+    <noscript><div class="alert alert-error"><?= h('panel.noscript') ?></div></noscript>
+    <?php /* komunikat po zapisie BEZ JavaScriptu (PRG); z JavaScriptem komunikaty pokazuje panel.js przy zapisanym formularzu */ ?>
+    <?php if ($success !== ''): ?><div class="alert alert-success" role="status"><?= Html::e($success) ?></div><?php endif; ?>
+    <?php if ($error !== ''): ?><div class="alert alert-error" role="alert"><?= Html::e($error) ?></div><?php endif; ?>
 
     <div class="stats">
-        <div class="stat-card"><h3>Użytkownicy</h3><div class="value" id="stat-users"><?= (int) $stats['total_users'] ?></div></div>
-        <div class="stat-card"><h3>Rejestracje dzisiaj</h3><div class="value" id="stat-today"><?= (int) $stats['today_registrations'] ?></div></div>
-        <div class="stat-card"><h3>Bany IP</h3><div class="value" id="stat-banned-ips"><?= (int) $stats['banned_ips'] ?></div></div>
-        <div class="stat-card"><h3>Próby włamań (24h)</h3><div class="value" id="stat-failed"><?= (int) $stats['failed_logins_24h'] ?></div></div>
+        <div class="stat-card"><h3><?= h('panel.stats.users') ?></h3><div class="value" id="stat-users"><?= (int) $stats['total_users'] ?></div></div>
+        <div class="stat-card"><h3><?= h('panel.stats.today') ?></h3><div class="value" id="stat-today"><?= (int) $stats['today_registrations'] ?></div></div>
+        <div class="stat-card"><h3><?= h('panel.stats.banned_ips') ?></h3><div class="value" id="stat-banned-ips"><?= (int) $stats['banned_ips'] ?></div></div>
+        <div class="stat-card"><h3><?= h('panel.stats.failed') ?></h3><div class="value" id="stat-failed"><?= (int) $stats['failed_logins_24h'] ?></div></div>
     </div>
 
-    <div class="tabs" role="tablist" aria-label="Sekcje panelu">
+    <div class="tabs" role="tablist" aria-label="<?= h('panel.tabs.label') ?>">
         <?php foreach ($tabs as $id => [$icon, $label]): ?>
             <button type="button" class="tab<?= $id === $tab ? ' active' : '' ?>" role="tab" id="tab-<?= $id ?>" data-tab="<?= $id ?>"
-                    aria-controls="<?= $id ?>" aria-selected="<?= $id === $tab ? 'true' : 'false' ?>" tabindex="<?= $id === $tab ? '0' : '-1' ?>"><i class="<?= $icon ?>" aria-hidden="true"></i> <?= $label ?></button>
+                    aria-controls="<?= $id ?>" aria-selected="<?= $id === $tab ? 'true' : 'false' ?>" tabindex="<?= $id === $tab ? '0' : '-1' ?>"><i class="<?= $icon ?>" aria-hidden="true"></i> <?= Html::e($label) ?></button>
         <?php endforeach; ?>
     </div>
+    <!-- Komunikaty po akcjach z okien i list: wygląd alertu, nakładka przyklejona pod zakładkami
+         (wysokość 0 — nie przesuwa treści), znika sama. Zapisy formularzy w kartach pokazują komunikat w swojej karcie. -->
+    <div id="flash-dock" class="flash-dock" aria-live="polite"></div>
 
     <!-- USTAWIENIA -->
     <section <?= $panel('settings') ?>>
-        <h2><i class="ri-hard-drive-2-line" aria-hidden="true"></i> Konfiguracja Systemu</h2>
+        <h2><i class="ri-hard-drive-2-line" aria-hidden="true"></i> <?= h('panel.settings.title') ?></h2>
         <form method="POST" data-ajax data-confirm-check="apply_quota_to_all">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="_tab" value="settings">
             <input type="hidden" name="update_settings" value="1">
             <div class="settings-grid">
                 <div class="settings-card">
-                    <div class="settings-card-header"><i class="ri-mail-settings-line" aria-hidden="true"></i> Limity Poczty</div>
+                    <div class="settings-card-header"><i class="ri-mail-settings-line" aria-hidden="true"></i> <?= h('panel.settings.mail.title') ?></div>
                     <div class="settings-card-body">
                         <div class="form-group">
-                            <label for="set_quota_value">Domyślny limit (Quota)</label>
+                            <label for="set_quota_value"><?= h('panel.settings.quota.label') ?></label>
                             <div class="quota-input-group">
                                 <input type="number" id="set_quota_value" name="mailbox_quota_value" step="0.01" min="0" value="<?= Html::e((string) $s['mailbox_quota_value']) ?>">
-                                <select name="mailbox_quota_unit" aria-label="Jednostka limitu">
+                                <select name="mailbox_quota_unit" aria-label="<?= h('panel.settings.quota.unit') ?>">
                                     <option value="KiB" <?= $s['mailbox_quota_unit'] === 'KiB' ? 'selected' : '' ?>>KiB</option>
                                     <option value="MiB" <?= $s['mailbox_quota_unit'] === 'MiB' ? 'selected' : '' ?>>MiB</option>
                                     <option value="GiB" <?= $s['mailbox_quota_unit'] === 'GiB' ? 'selected' : '' ?>>GiB</option>
@@ -136,113 +150,141 @@ $qsort = '<span class="qsort-wrap">'
                             </div>
                             <div class="checkbox-warning-wrapper">
                                 <input type="checkbox" name="apply_quota_to_all" id="apply_quota_check">
-                                <label for="apply_quota_check">Zastosuj teraz dla wszystkich kont (oprócz admin@) — jednorazowo</label>
+                                <label for="apply_quota_check"><?= h('panel.settings.quota.apply_all') ?></label>
                             </div>
                         </div>
                         <div class="form-group">
-                            <label for="set_daily_limit">Limit wysyłki (odbiorców na dzień)</label>
+                            <label for="set_daily_limit"><?= h('panel.settings.send_limit.label') ?></label>
                             <input type="number" id="set_daily_limit" name="daily_send_limit" min="0" value="<?= (int) $s['daily_send_limit'] ?>">
-                            <div class="help-text">Liczy ODBIORCÓW (wiadomość do 20 adresów = 20), egzekwowany przy wysyłce SMTP (587/465, także webmail). <code>0</code> = bez limitu. Limit indywidualny ustawisz w edycji quoty użytkownika.</div>
+                            <div class="help-text"><?= html('panel.settings.send_limit.help') ?></div>
                         </div>
                     </div>
                 </div>
 
                 <div class="settings-card">
-                    <div class="settings-card-header"><i class="ri-user-add-line" aria-hidden="true"></i> Rejestracja</div>
+                    <div class="settings-card-header"><i class="ri-user-add-line" aria-hidden="true"></i> <?= h('panel.settings.reg.title') ?></div>
                     <div class="settings-card-body">
                         <div class="form-group flex-align-center">
                             <input type="checkbox" name="registration_enabled" id="reg_en" <?= $s['registration_enabled'] === '1' ? 'checked' : '' ?>>
-                            <label for="reg_en" class="no-margin">Włącz rejestrację publiczną</label>
+                            <label for="reg_en" class="no-margin"><?= h('panel.settings.reg.enabled') ?></label>
                         </div>
                         <div class="form-group">
-                            <label for="set_acc_ip">Limit kont na IP</label>
+                            <label for="set_acc_ip"><?= h('panel.settings.reg.per_ip') ?></label>
                             <div class="flex-row-center">
                                 <input type="number" id="set_acc_ip" name="accounts_per_ip" min="1" value="<?= (int) $s['accounts_per_ip'] ?>">
                                 <span aria-hidden="true">/</span>
-                                <input type="number" name="ip_window_hours" min="1" value="<?= (int) $s['ip_window_hours'] ?>" aria-label="Okno w godzinach">
-                                <span>h</span>
+                                <input type="number" name="ip_window_hours" min="1" value="<?= (int) $s['ip_window_hours'] ?>" aria-label="<?= h('panel.settings.reg.window_hours') ?>">
+                                <span><?= h('panel.settings.reg.hours_short') ?></span>
                             </div>
                         </div>
                         <div class="form-group">
-                            <label for="set_ip_total">Całkowity limit kont dla IP</label>
+                            <label for="set_ip_total"><?= h('panel.settings.reg.ip_total') ?></label>
                             <input type="number" id="set_ip_total" name="ip_total_limit" min="1" value="<?= (int) $s['ip_total_limit'] ?>">
-                            <div class="help-text">Limity liczone na adres IPv4 albo na prefiks /64 dla IPv6.</div>
+                            <div class="help-text"><?= h('panel.settings.reg.ip_help') ?></div>
                         </div>
                         <div class="form-group">
-                            <label for="set_reserved">Zarezerwowane nazwy kont</label>
+                            <label for="set_reserved"><?= h('panel.settings.reserved.label') ?></label>
                             <textarea id="set_reserved" name="reserved_local_parts" rows="3" spellcheck="false"><?= Html::e((string) $s['reserved_local_parts']) ?></textarea>
-                            <div class="help-text">
-                                Rejestracja publiczna nie odda tych nazw (po przecinku, <code>*</code> = dowolny ciąg). Zawsze zarezerwowane, niezależnie od listy:
-                                <code><?= Html::e(implode(', ', $s['reserved_base'])) ?></code>.
-                                Administrator może założyć taką skrzynkę świadomie (Użytkownicy → Dodaj, z zaznaczoną zgodą). Nazwy, która jest adresem aliasu, nie da się zająć nawet ze zgodą — najpierw trzeba usunąć alias.
-                            </div>
+                            <div class="help-text"><?= html('panel.settings.reserved.help', ['base' => implode(', ', $s['reserved_base'])]) ?></div>
                         </div>
                         <div class="form-group">
-                            <label for="set_hold">Blokada usuniętych nazw (dni)</label>
+                            <label for="set_hold"><?= h('panel.settings.hold.label') ?></label>
                             <input type="number" id="set_hold" name="deleted_name_hold_days" min="0" max="3650" value="<?= (int) $s['deleted_name_hold_days'] ?>">
-                            <div class="help-text">Po usunięciu konta jego nazwa nie wróci do rejestracji publicznej przez tyle dni (nowy właściciel nie odziedziczy cudzej korespondencji). <code>0</code> = bez blokady.</div>
+                            <div class="help-text"><?= html('panel.settings.hold.help') ?></div>
                         </div>
                     </div>
                 </div>
 
+                <?php
+                $cap  = $s['captcha'];
+                $kept = h('panel.captcha.kept');
+                $docs = [
+                    'recaptcha'    => ['https://www.google.com/recaptcha/admin', t('panel.captcha.docs.recaptcha')],
+                    'recaptcha_v3' => ['https://www.google.com/recaptcha/admin', t('panel.captcha.docs.recaptcha_v3')],
+                    'turnstile'    => ['https://dash.cloudflare.com/?to=/:account/turnstile', t('panel.captcha.docs.turnstile')],
+                    'hcaptcha'     => ['https://dashboard.hcaptcha.com/sites', t('panel.captcha.docs.hcaptcha')],
+                ];
+                ?>
                 <div class="settings-card">
-                    <div class="settings-card-header"><i class="ri-shield-check-line" aria-hidden="true"></i> Google reCAPTCHA</div>
+                    <div class="settings-card-header"><i class="ri-shield-check-line" aria-hidden="true"></i> <?= h('panel.captcha.title') ?></div>
                     <div class="settings-card-body">
                         <div class="form-group flex-row-center">
-                            <input type="checkbox" name="recaptcha_enabled" id="rc_en" <?= $s['recaptcha_enabled'] === '1' ? 'checked' : '' ?>>
-                            <label for="rc_en" class="no-margin">Aktywne</label>
+                            <input type="checkbox" name="recaptcha_enabled" id="rc_en" <?= $cap['enabled'] ? 'checked' : '' ?>>
+                            <label for="rc_en" class="no-margin"><?= h('panel.captcha.enabled') ?></label>
                         </div>
                         <div class="form-group">
-                            <label for="set_rc_site">Site Key</label>
-                            <input type="text" id="set_rc_site" name="recaptcha_site_key" value="<?= Html::e((string) $s['recaptcha_site_key']) ?>" autocomplete="off" spellcheck="false">
+                            <label for="set_captcha_provider"><?= h('panel.captcha.provider') ?></label>
+                            <select id="set_captcha_provider" name="captcha_provider" data-captcha-switch>
+                                <?php foreach (\App\Security\Captcha::PROVIDERS as $pid => $plabel): ?>
+                                    <option value="<?= $pid ?>" <?= $cap['provider'] === $pid ? 'selected' : '' ?>><?= h($plabel) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="help-text"><?= h('panel.captcha.provider_help') ?></div>
                         </div>
-                        <div class="form-group">
-                            <label for="set_rc_secret">Secret Key</label>
-                            <input type="password" name="recaptcha_secret_key" value="" id="set_rc_secret" autocomplete="new-password"
-                                   data-placeholder-set="•••••••• zapisany — zostaw puste, aby nie zmieniać"
-                                   placeholder="<?= $s['recaptcha_secret_set'] ? '•••••••• zapisany — zostaw puste, aby nie zmieniać' : 'wklej Secret Key' ?>">
-                            <div class="help-text">Sekret nie jest wyświetlany po zapisaniu. Puste pole zostawia zapisany klucz.</div>
+                        <?php foreach (\App\Security\Captcha::PROVIDERS as $pid => $plabel):
+                            $k = $cap['keys'][$pid]; ?>
+                        <div class="captcha-keys" data-captcha-for="<?= $pid ?>"<?= $cap['provider'] === $pid ? '' : ' data-inactive' ?>>
+                            <div class="form-group">
+                                <label for="set_<?= $pid ?>_site"><?= h('panel.captcha.site_key') ?></label>
+                                <input type="text" id="set_<?= $pid ?>_site" name="<?= $pid ?>_site_key" value="<?= Html::e($k['site']) ?>" autocomplete="off" spellcheck="false">
+                            </div>
+                            <div class="form-group">
+                                <label for="set_<?= $pid ?>_secret"><?= h('panel.captcha.secret_key') ?></label>
+                                <input type="password" name="<?= $pid ?>_secret_key" value="" id="set_<?= $pid ?>_secret" autocomplete="new-password"
+                                       data-placeholder-set="<?= $kept ?>" placeholder="<?= $k['secret_set'] ? $kept : h('panel.captcha.paste_secret') ?>">
+                            </div>
+                            <?php if ($pid === 'recaptcha_v3'): ?>
+                            <div class="form-group">
+                                <label for="set_v3_score"><?= h('panel.captcha.min_score') ?></label>
+                                <input type="number" id="set_v3_score" name="recaptcha_v3_min_score" min="0" max="1" step="0.1" value="<?= Html::e($cap['min_score']) ?>">
+                                <div class="help-text"><?= h('panel.captcha.min_score_help') ?></div>
+                            </div>
+                            <?php endif; ?>
+                            <?php /* :link w tekście = odnośnik do konsoli dostawcy (target/rel składane tutaj — pliki języka dopuszczają w <a> tylko href) */ ?>
+                            <div class="help-text"><?= strtr(h('panel.captcha.keys_help'), [':link' => '<a href="' . Html::e($docs[$pid][0]) . '" target="_blank" rel="noopener noreferrer">' . Html::e($docs[$pid][1]) . '</a>']) ?></div>
                         </div>
+                        <?php endforeach; ?>
                     </div>
                 </div>
             </div>
-            <div class="form-actions mt-4"><button type="submit" name="update_settings" class="btn"><i class="ri-save-line" aria-hidden="true"></i> Zapisz zmiany</button></div>
+            <div class="form-actions mt-4"><button type="submit" name="update_settings" class="btn"><i class="ri-save-line" aria-hidden="true"></i> <?= h('panel.settings.save') ?></button></div>
         </form>
+        <?php include __DIR__ . '/partials/lang_card.php'; ?>
     </section>
 
     <!-- UŻYTKOWNICY -->
     <section <?= $panel('users') ?>>
         <div class="tab-head">
-            <h2><i class="ri-user-line" aria-hidden="true"></i> Lista Kont Pocztowych</h2>
-            <button type="button" class="btn" data-action="add-user"><i class="ri-user-add-line" aria-hidden="true"></i> Dodaj użytkownika</button>
+            <h2><i class="ri-user-line" aria-hidden="true"></i> <?= h('panel.users.title') ?></h2>
+            <button type="button" class="btn" data-action="add-user"><i class="ri-user-add-line" aria-hidden="true"></i> <?= h('panel.users.add') ?></button>
         </div>
         <div class="search-bar">
             <div class="adv-search">
-                <input type="search" id="user-search-input" autocomplete="off" aria-label="Szukaj kont" aria-describedby="user-search-hint"
-                       placeholder="Szukaj: e-mail, IP, data, użycie (np. >50%) — warunki łącz średnikiem ;">
-                <button type="button" class="adv-clear" data-adv-clear="user-search-input" aria-label="Wyczyść wyszukiwanie" hidden><i class="ri-close-line" aria-hidden="true"></i></button>
+                <input type="search" id="user-search-input" autocomplete="off" aria-label="<?= h('panel.users.search.label') ?>" aria-describedby="user-search-hint"
+                       placeholder="<?= h('panel.users.search.placeholder') ?>">
+                <button type="button" class="adv-clear" data-adv-clear="user-search-input" aria-label="<?= h('panel.search.clear') ?>" hidden><i class="ri-close-line" aria-hidden="true"></i></button>
             </div>
         </div>
-        <div class="help-text search-hint" id="user-search-hint">Np. <code>jan; 192.168.; 2026-07; &gt;50%; użycie &gt; 20 KiB; quota &gt;= 1 GiB</code> — wiersz musi spełnić każdy warunek (rozdzielaj średnikiem). Warunki użycia/procentu filtrują bieżącą stronę (dane z Dovecot).</div>
+        <div class="help-text search-hint" id="user-search-hint"><?= html('panel.users.search.hint') ?></div>
         <div class="users-topbar">
             <div>
-                <span id="total-results-text" aria-live="polite">Łącznie kont: <b><?= (int) $lists['users']['total'] ?></b></span>
-                <span class="sort-hint" title="Kliknij nagłówek: sortuj. Przytrzymaj Shift i klikaj: sortowanie wielokolumnowe."><i class="ri-information-line" aria-hidden="true"></i> Shift+klik = sortuj po wielu kolumnach</span>
+                <span id="total-results-text" aria-live="polite"><?= html('panel.users.total', ['n' => (int) $lists['users']['total']]) ?></span>
+                <span class="sort-hint" title="<?= h('panel.users.sort_hint_title') ?>"><i class="ri-information-line" aria-hidden="true"></i> <?= h('panel.users.sort_hint') ?></span>
             </div>
             <div class="users-topbar-right"><?= $perSel('perPage', 'users') ?></div>
         </div>
         <div class="table-responsive" data-list="users">
             <table>
                 <thead><tr>
-                    <?= $th('users', 'id', 'ID', 'DESC') ?>
-                    <?= $th('users', 'email', 'Email') ?>
-                    <?= $th('users', 'created', 'Utworzono') ?>
-                    <?= $th('users', 'last_login', 'Ostatnie logowanie') ?>
-                    <?= $th('users', 'reg_ip', 'IP Rejestracji') ?>
-                    <th scope="col">Ostatnie IP</th>
-                    <?= $th('users', 'quota', 'Quota', '', $qsort) ?>
-                    <?= $th('users', 'usage', 'Użycie', '', '', 'Sortowanie po użyciu działa w obrębie bieżącej strony (dane doczytywane z Dovecot)') ?>
-                    <th scope="col">Akcje</th>
+                    <?= $th('users', 'id', t('panel.users.th.id'), 'DESC') ?>
+                    <?= $th('users', 'email', t('panel.users.th.email')) ?>
+                    <?= $th('users', 'created', t('panel.users.th.created')) ?>
+                    <?= $th('users', 'last_login', t('panel.users.th.last_login'), '', '', '', t('panel.users.th.last_login_full')) ?>
+                    <?= $th('users', 'reg_ip', t('panel.users.th.reg_ip'), '', '', '', t('panel.users.th.reg_ip_full')) ?>
+                    <th scope="col"><span class="th-inner"><?= h('panel.users.th.last_ip') ?></span></th>
+                    <?= $th('users', 'quota', t('panel.users.th.quota')) ?>
+                    <?= $th('users', 'usage', t('panel.users.th.usage'), '', $qsort, t('panel.users.th.usage_title')) ?>
+                    <th scope="col"><span class="th-inner"><?= h('panel.users.th.actions') ?></span></th>
                 </tr></thead>
                 <tbody id="users-tbody"><?= $lists['users']['rows'] ?></tbody>
             </table>
@@ -253,59 +295,59 @@ $qsort = '<span class="qsort-wrap">'
     <!-- BANY -->
     <section <?= $panel('bans') ?>>
         <div class="tab-head">
-            <h2><i class="ri-prohibited-line" aria-hidden="true"></i> Zablokowane Adresy IP</h2>
-            <button type="button" class="btn btn-warning" data-action="open-scanner"><i class="ri-radar-line" aria-hidden="true"></i> Skaner podejrzanych IP</button>
+            <h2><i class="ri-prohibited-line" aria-hidden="true"></i> <?= h('panel.bans.title') ?></h2>
+            <button type="button" class="btn btn-warning" data-action="open-scanner"><i class="ri-radar-line" aria-hidden="true"></i> <?= h('panel.bans.scanner') ?></button>
         </div>
         <?php if (!$f2bAvail): ?>
             <div class="ds-msg ds-msg--err error-container">
-                <strong><i class="ri-alert-line" aria-hidden="true"></i> Brak dostępu do Fail2Ban</strong><br>
-                Panel nie może pobrać listy banów z systemu (usługa nieuruchomiona lub brak uprawnień sudo dla użytkownika PHP panelu — domyślnie <code>mailweb</code>, osobna pula; sprawdź: <code>sudo -l -U mailweb</code>).
+                <strong><i class="ri-alert-line" aria-hidden="true"></i> <?= h('panel.bans.unavailable.title') ?></strong><br>
+                <?= html('panel.bans.unavailable.text') ?>
             </div>
         <?php endif; ?>
 
         <?php if ($f2bAvail && $jails !== []): ?>
         <div class="settings-card manual-ban-card">
-            <div class="settings-card-header"><i class="ri-hammer-line" aria-hidden="true"></i> Ręczna blokada IP (Fail2Ban)</div>
+            <div class="settings-card-header"><i class="ri-hammer-line" aria-hidden="true"></i> <?= h('panel.bans.manual.title') ?></div>
             <div class="settings-card-body">
                 <form method="POST" class="manual-ban-form" data-ajax data-confirm="ban">
                     <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                     <input type="hidden" name="f2b_ban" value="1">
                     <input type="hidden" name="_tab" value="bans">
                     <div class="manual-ban-field grow">
-                        <label for="f2b_ip">Adres IP</label>
-                        <input type="text" id="f2b_ip" name="f2b_ip" required placeholder="np. 203.0.113.7"
+                        <label for="f2b_ip"><?= h('panel.bans.manual.ip') ?></label>
+                        <input type="text" id="f2b_ip" name="f2b_ip" required placeholder="<?= h('panel.bans.manual.ip_placeholder') ?>"
                                pattern="[0-9a-fA-F.:]+" autocomplete="off" spellcheck="false">
                     </div>
                     <div class="manual-ban-field">
-                        <label for="f2b_jail">Jail</label>
+                        <label for="f2b_jail"><?= h('panel.bans.manual.jail') ?></label>
                         <select id="f2b_jail" name="f2b_jail">
                             <?php foreach ($jails as $j): ?>
                                 <option value="<?= Html::e($j) ?>" <?= $j === 'recidive' ? 'selected' : '' ?>><?= Html::e($j) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <button type="submit" class="btn btn-danger"><i class="ri-forbid-line" aria-hidden="true"></i> Zbanuj</button>
+                    <button type="submit" class="btn btn-danger"><i class="ri-forbid-line" aria-hidden="true"></i> <?= h('panel.bans.manual.submit') ?></button>
                 </form>
-                <div class="help-text">Ban trwa zgodnie z <code>bantime</code> danego jaila (recidive = najdłużej). Czas liczy Fail2Ban.</div>
+                <div class="help-text"><?= html('panel.bans.manual.help') ?></div>
             </div>
         </div>
         <?php endif; ?>
 
         <div class="search-bar">
             <div class="adv-search">
-                <input type="search" id="ban-search-input" autocomplete="off" aria-label="Szukaj w blokadach"
-                       placeholder="Szukaj w blokadach: IP, jail, powód, data wygaśnięcia — warunki łącz średnikiem ;">
-                <button type="button" class="adv-clear" data-adv-clear="ban-search-input" aria-label="Wyczyść wyszukiwanie" hidden><i class="ri-close-line" aria-hidden="true"></i></button>
+                <input type="search" id="ban-search-input" autocomplete="off" aria-label="<?= h('panel.bans.search.label') ?>"
+                       placeholder="<?= h('panel.bans.search.placeholder') ?>">
+                <button type="button" class="adv-clear" data-adv-clear="ban-search-input" aria-label="<?= h('panel.search.clear') ?>" hidden><i class="ri-close-line" aria-hidden="true"></i></button>
             </div>
         </div>
         <div class="table-responsive" data-list="bans">
             <table>
                 <thead><tr>
-                    <?= $th('bans', '0', 'Usługa / Jail') ?>
-                    <?= $th('bans', '1', 'IP') ?>
-                    <?= $th('bans', '2', 'Powód') ?>
-                    <?= $th('bans', '3', 'Wygasa') ?>
-                    <th scope="col">Akcja</th>
+                    <?= $th('bans', '0', t('panel.bans.th.jail')) ?>
+                    <?= $th('bans', '1', t('panel.bans.th.ip')) ?>
+                    <?= $th('bans', '2', t('panel.bans.th.reason')) ?>
+                    <?= $th('bans', '3', t('panel.bans.th.expires')) ?>
+                    <th scope="col"><span class="th-inner"><?= h('panel.bans.th.action') ?></span></th>
                 </tr></thead>
                 <tbody id="bans-tbody"><?= $bansRowsHtml ?></tbody>
             </table>
@@ -316,64 +358,64 @@ $qsort = '<span class="qsort-wrap">'
     <section <?= $panel('logs') ?>>
         <div class="search-bar">
             <div class="adv-search">
-                <input type="search" id="log-search-input" autocomplete="off" aria-label="Szukaj we wszystkich logach" aria-describedby="log-search-hint"
-                       placeholder="Szukaj we wszystkich logach: IP, e-mail, status, szczegóły, data — warunki łącz średnikiem ;">
-                <button type="button" class="adv-clear" data-adv-clear="log-search-input" aria-label="Wyczyść wyszukiwanie" hidden><i class="ri-close-line" aria-hidden="true"></i></button>
+                <input type="search" id="log-search-input" autocomplete="off" aria-label="<?= h('panel.logs.search.label') ?>" aria-describedby="log-search-hint"
+                       placeholder="<?= h('panel.logs.search.placeholder') ?>">
+                <button type="button" class="adv-clear" data-adv-clear="log-search-input" aria-label="<?= h('panel.search.clear') ?>" hidden><i class="ri-close-line" aria-hidden="true"></i></button>
             </div>
         </div>
-        <div class="help-text search-hint" id="log-search-hint">Filtruje jednocześnie wszystkie trzy tabele. Np. <code>185.239.; błąd</code> = zdarzenia z tym IP <b>i</b> statusem błędu. Daty: <code>2026-07-10</code>. Nieudane potwierdzenia hasłem: <code>REAUTH</code>.</div>
+        <div class="help-text search-hint" id="log-search-hint"><?= html('panel.logs.search.hint') ?></div>
 
-        <h2><i class="ri-history-line" aria-hidden="true"></i> Ostatnie Zdarzenia Rejestracji</h2>
+        <h2><i class="ri-history-line" aria-hidden="true"></i> <?= h('panel.logs.reg.title') ?></h2>
         <div class="users-topbar">
-            <div id="reg-total-text" aria-live="polite">Łącznie zdarzeń: <b><?= (int) $lists['reg']['total'] ?></b></div>
+            <div id="reg-total-text" aria-live="polite"><?= html('panel.logs.reg.total', ['n' => (int) $lists['reg']['total']]) ?></div>
             <div class="users-topbar-right"><?= $perSel('regPerPage', 'reg') ?></div>
         </div>
         <div class="table-responsive" data-list="reg">
             <table><thead><tr>
-                <?= $th('reg', 'created', 'Czas') ?>
-                <?= $th('reg', 'ip', 'IP') ?>
-                <?= $th('reg', 'email', 'Email') ?>
-                <?= $th('reg', 'status', 'Status') ?>
-                <th scope="col">Info</th>
+                <?= $th('reg', 'created', t('panel.logs.th.time')) ?>
+                <?= $th('reg', 'ip', t('panel.logs.th.ip')) ?>
+                <?= $th('reg', 'email', t('panel.logs.th.email')) ?>
+                <?= $th('reg', 'status', t('panel.logs.th.status')) ?>
+                <th scope="col"><span class="th-inner"><?= h('panel.logs.th.info') ?></span></th>
             </tr></thead>
                 <tbody id="reg-logs-tbody"><?= $lists['reg']['rows'] ?></tbody></table>
         </div>
         <div id="reg-logs-pagination" class="pagination-container"><?= $lists['reg']['pages'] ?></div>
 
         <hr class="safe-hr">
-        <h2><i class="ri-shield-user-line" aria-hidden="true"></i> Logi Logowania Administratorów</h2>
+        <h2><i class="ri-shield-user-line" aria-hidden="true"></i> <?= h('panel.logs.admin.title') ?></h2>
         <div class="users-topbar">
-            <div id="admin-total-text" aria-live="polite">Łącznie logów: <b><?= (int) $lists['admin']['total'] ?></b></div>
+            <div id="admin-total-text" aria-live="polite"><?= html('panel.logs.admin.total', ['n' => (int) $lists['admin']['total']]) ?></div>
             <div class="users-topbar-right"><?= $perSel('adminPerPage', 'admin') ?></div>
         </div>
         <div class="table-responsive" data-list="admin">
             <table><thead><tr>
-                <?= $th('admin', 'created', 'Czas') ?>
-                <?= $th('admin', 'email', 'Email (Admin)') ?>
-                <?= $th('admin', 'ip', 'IP') ?>
-                <?= $th('admin', 'status', 'Status') ?>
-                <th scope="col">Szczegóły</th>
+                <?= $th('admin', 'created', t('panel.logs.th.time')) ?>
+                <?= $th('admin', 'email', t('panel.logs.th.admin_email')) ?>
+                <?= $th('admin', 'ip', t('panel.logs.th.ip')) ?>
+                <?= $th('admin', 'status', t('panel.logs.th.status')) ?>
+                <th scope="col"><span class="th-inner"><?= h('panel.logs.th.details') ?></span></th>
             </tr></thead>
                 <tbody id="admin-logs-tbody"><?= $lists['admin']['rows'] ?></tbody></table>
         </div>
         <div id="admin-logs-pagination" class="pagination-container"><?= $lists['admin']['pages'] ?></div>
 
         <hr class="safe-hr">
-        <h2><i class="ri-file-shield-2-line" aria-hidden="true"></i> Dziennik Audytowy</h2>
+        <h2><i class="ri-file-shield-2-line" aria-hidden="true"></i> <?= h('panel.logs.audit.title') ?></h2>
         <div class="users-topbar">
-            <div id="audit-total-text" aria-live="polite">Łącznie wpisów: <b><?= (int) $lists['audit']['total'] ?></b></div>
+            <div id="audit-total-text" aria-live="polite"><?= html('panel.logs.audit.total', ['n' => (int) $lists['audit']['total']]) ?></div>
             <div class="users-topbar-right">
                 <?= $perSel('auditPerPage', 'audit') ?>
-                <button type="button" class="btn btn-small btn-secondary" data-action="refresh-audit"><i class="ri-refresh-line" aria-hidden="true"></i> Odśwież</button>
+                <button type="button" class="btn btn-small btn-secondary" data-action="refresh-audit"><i class="ri-refresh-line" aria-hidden="true"></i> <?= h('panel.logs.audit.refresh') ?></button>
             </div>
         </div>
         <div class="table-responsive" data-list="audit">
             <table><thead><tr>
-                <?= $th('audit', 'created', 'Data') ?>
-                <?= $th('audit', 'admin', 'Administrator') ?>
-                <?= $th('audit', 'ip', 'IP Admina') ?>
-                <?= $th('audit', 'action', 'Akcja') ?>
-                <th scope="col">Szczegóły</th>
+                <?= $th('audit', 'created', t('panel.logs.th.date')) ?>
+                <?= $th('audit', 'admin', t('panel.logs.th.administrator')) ?>
+                <?= $th('audit', 'ip', t('panel.logs.th.admin_ip')) ?>
+                <?= $th('audit', 'action', t('panel.logs.th.action')) ?>
+                <th scope="col"><span class="th-inner"><?= h('panel.logs.th.details') ?></span></th>
             </tr></thead>
                 <tbody id="audit-logs-tbody"><?= $lists['audit']['rows'] ?></tbody></table>
         </div>
@@ -382,16 +424,16 @@ $qsort = '<span class="qsort-wrap">'
 
     <!-- FAIL2BAN -->
     <section <?= $panel('fail2ban') ?>>
-        <h2><i class="ri-fire-line" aria-hidden="true"></i> Konfiguracja Fail2Ban</h2>
+        <h2><i class="ri-fire-line" aria-hidden="true"></i> <?= h('panel.f2b.title') ?></h2>
         <?php if (!$f2b['available']): ?>
-            <div class="alert alert-error">Plik jail.local nie istnieje albo brak uprawnień odczytu (integracja dostępna tylko na serwerze).</div>
+            <div class="alert alert-error"><?= h('panel.f2b.unavailable') ?></div>
         <?php else: ?>
-        <form method="POST" data-ajax data-busy-label="Zapisywanie i przeładowanie Fail2Ban…">
+        <form method="POST" data-ajax data-busy-label="<?= h('panel.f2b.busy') ?>">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="save_fail2ban" value="1">
             <input type="hidden" name="_tab" value="fail2ban">
             <div class="f2b-card f2b-card--default">
-                <h3><i class="ri-settings-line" aria-hidden="true"></i> Ustawienia główne [DEFAULT]</h3>
+                <h3><i class="ri-settings-line" aria-hidden="true"></i> <?= h('panel.f2b.default.title') ?></h3>
                 <div class="form-group"><label for="f2b_default_findtime">findtime</label><input type="text" id="f2b_default_findtime" name="f2b_default_findtime" value="<?= $fv('f2b_default_findtime') ?>"></div>
                 <div class="form-group"><label for="f2b_default_bantime">bantime</label><input type="text" id="f2b_default_bantime" name="f2b_default_bantime" value="<?= $fv('f2b_default_bantime') ?>"></div>
                 <div class="form-group"><label for="f2b_default_maxretry">maxretry</label><input type="number" id="f2b_default_maxretry" name="f2b_default_maxretry" value="<?= $fv('f2b_default_maxretry') ?>"></div>
@@ -399,9 +441,9 @@ $qsort = '<span class="qsort-wrap">'
                 <div class="form-group"><label for="f2b_default_bantime_maxtime">bantime.maxtime</label><input type="text" id="f2b_default_bantime_maxtime" name="f2b_default_bantime_maxtime" value="<?= $fv('f2b_default_bantime_maxtime') ?>"></div>
                 <div class="form-group checkbox-group f2b-inc-check">
                     <input type="checkbox" id="f2b_inc" name="f2b_default_bantime_increment" value="1" <?= $fc('f2b_default_bantime_increment') ? 'checked' : '' ?>>
-                    <label for="f2b_inc">Wydłużanie bana (recydywa)</label>
+                    <label for="f2b_inc"><?= h('panel.f2b.default.increment') ?></label>
                 </div>
-                <div class="form-group f2b-span"><label for="f2b_default_ignoreip">ignoreip (oddziel spacją)</label><textarea id="f2b_default_ignoreip" name="f2b_default_ignoreip" rows="2" class="textarea-full" spellcheck="false"><?= $fv('f2b_default_ignoreip') ?></textarea></div>
+                <div class="form-group f2b-span"><label for="f2b_default_ignoreip"><?= h('panel.f2b.default.ignoreip') ?></label><textarea id="f2b_default_ignoreip" name="f2b_default_ignoreip" rows="2" class="textarea-full" spellcheck="false"><?= $fv('f2b_default_ignoreip') ?></textarea></div>
             </div>
             <div class="f2b-grid">
                 <?php
@@ -414,107 +456,108 @@ $qsort = '<span class="qsort-wrap">'
                 foreach ($jailCards as [$prefix, $icon, $title]): ?>
                 <div class="f2b-card">
                     <h3><i class="<?= $icon ?>" aria-hidden="true"></i> <?= $title ?></h3>
-                    <div class="form-group checkbox-group"><input type="checkbox" id="f2b_<?= $prefix ?>_en" name="f2b_<?= $prefix ?>_enabled" value="1" <?= $fc("f2b_{$prefix}_enabled") ? 'checked' : '' ?>><label for="f2b_<?= $prefix ?>_en">Włącz ochronę</label></div>
+                    <div class="form-group checkbox-group"><input type="checkbox" id="f2b_<?= $prefix ?>_en" name="f2b_<?= $prefix ?>_enabled" value="1" <?= $fc("f2b_{$prefix}_enabled") ? 'checked' : '' ?>><label for="f2b_<?= $prefix ?>_en"><?= h('panel.f2b.jail.enable') ?></label></div>
                     <div class="form-group"><label for="f2b_<?= $prefix ?>_findtime">findtime</label><input type="text" id="f2b_<?= $prefix ?>_findtime" name="f2b_<?= $prefix ?>_findtime" value="<?= $fv("f2b_{$prefix}_findtime") ?>"></div>
                     <div class="form-group"><label for="f2b_<?= $prefix ?>_maxretry">maxretry</label><input type="number" id="f2b_<?= $prefix ?>_maxretry" name="f2b_<?= $prefix ?>_maxretry" value="<?= $fv("f2b_{$prefix}_maxretry") ?>"></div>
                     <div class="form-group"><label for="f2b_<?= $prefix ?>_bantime">bantime</label><input type="text" id="f2b_<?= $prefix ?>_bantime" name="f2b_<?= $prefix ?>_bantime" value="<?= $fv("f2b_{$prefix}_bantime") ?>"></div>
                 </div>
                 <?php endforeach; ?>
             </div>
-            <div class="form-actions mt-4"><button type="submit" class="btn btn-dark"><i class="ri-refresh-line" aria-hidden="true"></i> Zapisz i przeładuj Fail2Ban</button></div>
+            <div class="form-actions mt-4"><button type="submit" class="btn btn-dark"><i class="ri-refresh-line" aria-hidden="true"></i> <?= h('panel.f2b.save') ?></button></div>
         </form>
         <?php endif; ?>
     </section>
 
     <!-- BEZPIECZEŃSTWO -->
     <section <?= $panel('security') ?>>
-        <h2><i class="ri-lock-line" aria-hidden="true"></i> Bezpieczeństwo</h2>
+        <h2><i class="ri-lock-line" aria-hidden="true"></i> <?= h('panel.security.title') ?></h2>
         <div class="settings-grid">
             <div class="settings-card">
-                <div class="settings-card-header"><i class="ri-spam-2-line" aria-hidden="true"></i> Ochrona Anty-Spam</div>
+                <div class="settings-card-header"><i class="ri-spam-2-line" aria-hidden="true"></i> <?= h('panel.security.antispam.title') ?></div>
                 <div class="settings-card-body">
-                    <form method="POST" data-ajax data-busy-label="Zapisywanie i aplikowanie…">
+                    <form method="POST" data-ajax data-busy-label="<?= h('panel.security.antispam.busy') ?>">
                         <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                         <input type="hidden" name="_tab" value="security">
                         <input type="hidden" name="update_antispam" value="1">
-                        <h3 class="section-title">Roundcube (Webmail)</h3>
-                        <div class="form-group"><label for="sec_rc_max">Max odbiorców w 1 mailu</label><input type="number" id="sec_rc_max" name="rc_max_recipients" value="<?= (int) $s['rc_max_recipients'] ?>"></div>
-                        <div class="form-group"><label for="sec_rc_delay">Opóźnienie wysyłki (s)</label><input type="number" id="sec_rc_delay" name="rc_sendmail_delay" value="<?= (int) $s['rc_sendmail_delay'] ?>"></div>
-                        <div class="form-group"><label for="sec_rc_login">Limit prób logowania / min</label><input type="number" id="sec_rc_login" name="rc_login_rate_limit" value="<?= (int) $s['rc_login_rate_limit'] ?>"></div>
-                        <h3 class="section-title">Postfix (Klienci zewnętrzni)</h3>
+                        <h3 class="section-title"><?= h('panel.security.antispam.roundcube') ?></h3>
+                        <div class="form-group"><label for="sec_rc_max"><?= h('panel.security.antispam.rc_max') ?></label><input type="number" id="sec_rc_max" name="rc_max_recipients" value="<?= (int) $s['rc_max_recipients'] ?>"></div>
+                        <div class="form-group"><label for="sec_rc_delay"><?= h('panel.security.antispam.rc_delay') ?></label><input type="number" id="sec_rc_delay" name="rc_sendmail_delay" value="<?= (int) $s['rc_sendmail_delay'] ?>"></div>
+                        <div class="form-group"><label for="sec_rc_login"><?= h('panel.security.antispam.rc_login') ?></label><input type="number" id="sec_rc_login" name="rc_login_rate_limit" value="<?= (int) $s['rc_login_rate_limit'] ?>"></div>
+                        <h3 class="section-title"><?= h('panel.security.antispam.postfix') ?></h3>
                         <?php if (!$pfAvail): ?>
-                            <div class="ds-msg ds-msg--err error-container"><strong><i class="ri-alert-line" aria-hidden="true"></i> Brak uprawnień sudo</strong> — zmiany zapiszą się tylko w bazie.</div>
+                            <div class="ds-msg ds-msg--err error-container"><strong><i class="ri-alert-line" aria-hidden="true"></i> <?= h('panel.security.antispam.no_sudo') ?></strong> <?= h('panel.security.antispam.no_sudo_text') ?></div>
                         <?php endif; ?>
-                        <div class="form-group"><label for="sec_pf_msg">Wiadomości / min (1 IP)</label><input type="number" id="sec_pf_msg" name="pf_message_rate_limit" value="<?= (int) $s['pf_message_rate_limit'] ?>"></div>
-                        <div class="form-group"><label for="sec_pf_conn">Połączeń / min (1 IP)</label><input type="number" id="sec_pf_conn" name="pf_connection_rate_limit" value="<?= (int) $s['pf_connection_rate_limit'] ?>"></div>
-                        <div class="form-group"><label for="sec_pf_cnt">Równoległych połączeń (1 IP)</label><input type="number" id="sec_pf_cnt" name="pf_connection_count_limit" value="<?= (int) $s['pf_connection_count_limit'] ?>"></div>
-                        <div class="mt-4"><button type="submit" name="update_antispam" class="btn"><i class="ri-shield-check-line" aria-hidden="true"></i> Zapisz i Aplikuj</button></div>
+                        <div class="form-group"><label for="sec_pf_msg"><?= h('panel.security.antispam.pf_msg') ?></label><input type="number" id="sec_pf_msg" name="pf_message_rate_limit" value="<?= (int) $s['pf_message_rate_limit'] ?>"></div>
+                        <div class="form-group"><label for="sec_pf_conn"><?= h('panel.security.antispam.pf_conn') ?></label><input type="number" id="sec_pf_conn" name="pf_connection_rate_limit" value="<?= (int) $s['pf_connection_rate_limit'] ?>"></div>
+                        <div class="form-group"><label for="sec_pf_cnt"><?= h('panel.security.antispam.pf_cnt') ?></label><input type="number" id="sec_pf_cnt" name="pf_connection_count_limit" value="<?= (int) $s['pf_connection_count_limit'] ?>"></div>
+                        <div class="mt-4"><button type="submit" name="update_antispam" class="btn"><i class="ri-shield-check-line" aria-hidden="true"></i> <?= h('panel.security.antispam.save') ?></button></div>
                     </form>
                 </div>
             </div>
 
             <div class="settings-card">
-                <div class="settings-card-header"><i class="ri-shield-flash-line" aria-hidden="true"></i> Ochrona Panelu</div>
+                <div class="settings-card-header"><i class="ri-shield-flash-line" aria-hidden="true"></i> <?= h('panel.security.panel.title') ?></div>
                 <div class="settings-card-body">
                     <form method="POST" data-ajax>
                         <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                         <input type="hidden" name="_tab" value="security">
                         <input type="hidden" name="update_security" value="1">
-                        <div class="form-group"><label for="sec_max_login">Max. nieudanych prób logowania</label><input type="number" id="sec_max_login" name="max_login_attempts" min="1" value="<?= (int) $s['max_login_attempts'] ?>"></div>
-                        <div class="form-group"><label for="sec_ban_min">Okno / czas blokady (min)</label><input type="number" id="sec_ban_min" name="ban_duration_minutes" min="1" value="<?= (int) $s['ban_duration_minutes'] ?>">
-                            <div class="help-text">Limit dotyczy pary (konto, adres klienta) oraz — na poziomie 4× większym — samego adresu klienta (IPv4 albo prefiks /64 IPv6). Konto nigdy nie jest blokowane globalnie, więc obcy nie zablokuje Ci panelu; adresy z <code>SCAN_TRUSTED_IPS</code> nie podlegają limitom.</div></div>
-                        <div class="mt-4"><button type="submit" name="update_security" class="btn"><i class="ri-save-line" aria-hidden="true"></i> Zapisz</button></div>
+                        <div class="form-group"><label for="sec_max_login"><?= h('panel.security.panel.max_login') ?></label><input type="number" id="sec_max_login" name="max_login_attempts" min="1" value="<?= (int) $s['max_login_attempts'] ?>"></div>
+                        <div class="form-group"><label for="sec_ban_min"><?= h('panel.security.panel.ban_min') ?></label><input type="number" id="sec_ban_min" name="ban_duration_minutes" min="1" value="<?= (int) $s['ban_duration_minutes'] ?>">
+                            <div class="help-text"><?= html('panel.security.panel.help') ?></div></div>
+                        <div class="mt-4"><button type="submit" name="update_security" class="btn"><i class="ri-save-line" aria-hidden="true"></i> <?= h('panel.common.save') ?></button></div>
                     </form>
                 </div>
             </div>
 
             <div class="settings-card">
-                <div class="settings-card-header"><i class="ri-key-2-line" aria-hidden="true"></i> Zmiana Hasła Admina</div>
+                <div class="settings-card-header"><i class="ri-key-2-line" aria-hidden="true"></i> <?= h('panel.security.password.title') ?></div>
                 <div class="settings-card-body">
                     <form method="POST" data-ajax>
                         <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                         <input type="hidden" name="_tab" value="security">
                         <input type="hidden" name="change_password" value="1">
                         <input type="text" name="username" value="<?= Html::e($admin) ?>" autocomplete="username" hidden readonly tabindex="-1">
-                        <div class="form-group"><label for="cp_current">Obecne hasło</label><input type="password" id="cp_current" name="current_password" required autocomplete="current-password"></div>
-                        <div class="form-group"><label for="cp_new">Nowe hasło</label><input type="password" id="cp_new" name="new_password" required minlength="12" autocomplete="new-password" aria-describedby="cp_help"><div class="help-text" id="cp_help">Min. 12 znaków i klasy znaków jak dla skrzynek. Zmiana wylogowuje inne sesje tego konta. Błędne obecne hasło trafia do dziennika audytowego; po <?= (int) $reauthLimit ?> błędach sesja się kończy.</div></div>
-                        <div class="form-group"><label for="cp_confirm">Powtórz nowe hasło</label><input type="password" id="cp_confirm" name="confirm_password" required autocomplete="new-password"></div>
-                        <div class="mt-4"><button type="submit" name="change_password" class="btn"><i class="ri-refresh-line" aria-hidden="true"></i> Zmień hasło</button></div>
+                        <div class="form-group"><label for="cp_current"><?= h('panel.security.password.current') ?></label><input type="password" id="cp_current" name="current_password" required autocomplete="current-password"></div>
+                        <div class="form-group"><label for="cp_new"><?= h('panel.security.password.new') ?></label><input type="password" id="cp_new" name="new_password" required minlength="12" autocomplete="new-password" aria-describedby="cp_help"><div class="help-text" id="cp_help"><?= h('panel.security.password.help', ['limit' => (int) $reauthLimit]) ?></div></div>
+                        <div class="form-group"><label for="cp_confirm"><?= h('panel.security.password.confirm') ?></label><input type="password" id="cp_confirm" name="confirm_password" required autocomplete="new-password"></div>
+                        <div class="mt-4"><button type="submit" name="change_password" class="btn"><i class="ri-refresh-line" aria-hidden="true"></i> <?= h('panel.security.password.submit') ?></button></div>
                     </form>
                 </div>
             </div>
         </div>
     </section>
 </main>
+<?php $footerInPanel = true; include __DIR__ . '/../partials/footer.php'; ?>
 
 <!-- MODAL: QUOTA -->
 <div id="quotaModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="quotaModalTitle" hidden>
     <div class="modal-content">
-        <div class="modal-header"><h2 id="quotaModalTitle"><i class="ri-hard-drive-2-line" aria-hidden="true"></i> Zmiana Quota</h2><?= $close('quotaModal') ?></div>
+        <div class="modal-header"><h2 id="quotaModalTitle"><i class="ri-hard-drive-2-line" aria-hidden="true"></i> <?= h('panel.modal.quota.title') ?></h2><?= $close('quotaModal') ?></div>
         <form method="POST" data-ajax data-modal-form="quotaModal">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="update_user_quota" value="1">
             <input type="hidden" name="_tab" value="users">
             <input type="hidden" name="user_id" id="quota_user_id">
-            <div class="form-group"><label for="quota_user_email">Użytkownik</label><input type="text" id="quota_user_email" readonly class="input-readonly"></div>
+            <div class="form-group"><label for="quota_user_email"><?= h('panel.modal.user') ?></label><input type="text" id="quota_user_email" readonly class="input-readonly"></div>
             <div class="form-group">
-                <label for="quota_value">Nowy limit skrzynki</label>
+                <label for="quota_value"><?= h('panel.modal.quota.new_limit') ?></label>
                 <div class="quota-input-group">
                     <input type="number" name="user_quota_value" id="quota_value" step="0.01" min="0" required>
-                    <select name="user_quota_unit" id="quota_unit" aria-label="Jednostka"><option value="KiB">KiB</option><option value="MiB" selected>MiB</option><option value="GiB">GiB</option></select>
+                    <select name="user_quota_unit" id="quota_unit" aria-label="<?= h('panel.modal.unit') ?>"><option value="KiB">KiB</option><option value="MiB" selected>MiB</option><option value="GiB">GiB</option></select>
                 </div>
             </div>
             <div class="form-group">
-                <label for="quota_send_limit">Indywidualny limit wysyłki (odbiorców / dzień)</label>
-                <input type="number" name="user_send_limit" id="quota_send_limit" min="0" step="1" placeholder="puste = globalny (<?= (int) $s['daily_send_limit'] ?>)" data-placeholder-bind="daily_send_limit">
-                <div class="help-text">Puste = limit globalny (<b data-bind="daily_send_limit"><?= (int) $s['daily_send_limit'] ?></b> odbiorców/dzień). <code>0</code> = bez limitu.</div>
+                <label for="quota_send_limit"><?= h('panel.modal.quota.send_limit') ?></label>
+                <input type="number" name="user_send_limit" id="quota_send_limit" min="0" step="1" placeholder="<?= h('panel.modal.send_limit.placeholder', ['n' => (int) $s['daily_send_limit']]) ?>" data-placeholder-bind="daily_send_limit">
+                <div class="help-text"><?= $sendHelp ?></div>
             </div>
             <div class="form-group">
-                <span class="label-like">Wysłane dzisiaj</span>
+                <span class="label-like"><?= h('panel.modal.quota.sent_today') ?></span>
                 <div id="quota_sent_today" class="sent-today-box">…</div>
             </div>
             <div class="form-msg" aria-live="assertive"></div>
-            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="quotaModal">Anuluj</button><button type="submit" class="btn"><i class="ri-save-line" aria-hidden="true"></i> Zapisz</button></div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="quotaModal"><?= h('panel.common.cancel') ?></button><button type="submit" class="btn"><i class="ri-save-line" aria-hidden="true"></i> <?= h('panel.common.save') ?></button></div>
         </form>
     </div>
 </div>
@@ -522,33 +565,33 @@ $qsort = '<span class="qsort-wrap">'
 <!-- MODAL: RESET HASŁA SKRZYNKI -->
 <div id="resetPassModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="resetPassTitle" hidden>
     <div class="modal-content">
-        <div class="modal-header"><h2 id="resetPassTitle"><i class="ri-key-2-line" aria-hidden="true"></i> Zmiana hasła skrzynki</h2><?= $close('resetPassModal') ?></div>
+        <div class="modal-header"><h2 id="resetPassTitle"><i class="ri-key-2-line" aria-hidden="true"></i> <?= h('panel.modal.reset.title') ?></h2><?= $close('resetPassModal') ?></div>
         <form method="POST" data-ajax data-modal-form="resetPassModal">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="reset_user_password" value="1">
             <input type="hidden" name="_tab" value="users">
             <input type="hidden" name="user_id" id="rp_user_id">
             <input type="hidden" name="user_email" id="rp_user_email_hidden">
-            <div class="form-group"><label for="rp_user_email">Użytkownik</label><input type="text" id="rp_user_email" readonly class="input-readonly" autocomplete="off"></div>
+            <div class="form-group"><label for="rp_user_email"><?= h('panel.modal.user') ?></label><input type="text" id="rp_user_email" readonly class="input-readonly" autocomplete="off"></div>
             <div class="form-group">
-                <label for="rp_password">Nowe hasło</label>
-                <input type="password" name="new_password" id="rp_password" required minlength="<?= (int) $pwd['min'] ?>" autocomplete="new-password" placeholder="Nowe hasło skrzynki" aria-describedby="rp_pwd_reqs">
+                <label for="rp_password"><?= h('panel.modal.reset.new_password') ?></label>
+                <input type="password" name="new_password" id="rp_password" required minlength="<?= (int) $pwd['min'] ?>" autocomplete="new-password" placeholder="<?= h('panel.modal.reset.new_placeholder') ?>" aria-describedby="rp_pwd_reqs">
                 <div class="pwd-meter" aria-hidden="true"><div class="pwd-meter-fill" id="rp_pwd_bar"></div></div>
                 <ul class="pwd-reqs" id="rp_pwd_reqs">
-                    <li data-req="len">Min. <?= (int) $pwd['min'] ?> znaków</li>
-                    <?php if ($pwd['upper']): ?><li data-req="up">Duża litera</li><?php endif; ?>
-                    <?php if ($pwd['digit']): ?><li data-req="dig">Cyfra</li><?php endif; ?>
-                    <?php if ($pwd['spec']): ?><li data-req="spec">Znak specjalny</li><?php endif; ?>
+                    <li data-req="len"><?= h('panel.pwd.min_chars', ['n' => (int) $pwd['min']]) ?></li>
+                    <?php if ($pwd['upper']): ?><li data-req="up"><?= h('panel.pwd.upper') ?></li><?php endif; ?>
+                    <?php if ($pwd['digit']): ?><li data-req="dig"><?= h('panel.pwd.digit') ?></li><?php endif; ?>
+                    <?php if ($pwd['spec']): ?><li data-req="spec"><?= h('panel.pwd.special') ?></li><?php endif; ?>
                 </ul>
             </div>
             <div class="form-group">
-                <label for="rp_password2">Powtórz nowe hasło</label>
-                <input type="password" name="new_password2" id="rp_password2" required autocomplete="new-password" placeholder="Powtórz hasło">
+                <label for="rp_password2"><?= h('panel.modal.reset.repeat') ?></label>
+                <input type="password" name="new_password2" id="rp_password2" required autocomplete="new-password" placeholder="<?= h('panel.modal.repeat_placeholder') ?>">
                 <div id="rp_pass_match" class="avail-status" aria-live="polite"></div>
-                <div class="help-text">Zmiana natychmiastowa — przekaż nowe hasło użytkownikowi bezpiecznym kanałem. Aktywne sesje webmaila mogą wymagać ponownego logowania.</div>
+                <div class="help-text"><?= h('panel.modal.reset.help') ?></div>
             </div>
             <div id="rp_form_msg" class="form-msg" aria-live="assertive"></div>
-            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="resetPassModal">Anuluj</button><button type="submit" class="btn"><i class="ri-save-line" aria-hidden="true"></i> Zmień hasło</button></div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="resetPassModal"><?= h('panel.common.cancel') ?></button><button type="submit" class="btn"><i class="ri-save-line" aria-hidden="true"></i> <?= h('panel.modal.reset.submit') ?></button></div>
         </form>
     </div>
 </div>
@@ -556,31 +599,35 @@ $qsort = '<span class="qsort-wrap">'
 <!-- MODAL: BAN -->
 <div id="banModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="banModalTitle" hidden>
     <div class="modal-content">
-        <div class="modal-header"><h2 id="banModalTitle"><i class="ri-forbid-line" aria-hidden="true"></i> Zbanuj adres IP</h2><?= $close('banModal') ?></div>
+        <div class="modal-header"><h2 id="banModalTitle"><i class="ri-forbid-line" aria-hidden="true"></i> <?= h('panel.modal.ban.title') ?></h2><?= $close('banModal') ?></div>
         <form method="POST" data-ajax data-modal-form="banModal">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="ban_user_ip" value="1">
             <input type="hidden" name="_tab" value="users">
-            <div class="form-group"><label for="ban_user_email">Użytkownik</label><input type="text" id="ban_user_email" readonly class="input-readonly"></div>
+            <div class="form-group"><label for="ban_user_email"><?= h('panel.modal.user') ?></label><input type="text" id="ban_user_email" readonly class="input-readonly"></div>
             <div class="form-group">
-                <label for="ban_ip_select">Wybierz IP do zbanowania</label>
-                <select name="ban_ip" id="ban_ip_select" required><option value="">-- Wybierz IP --</option></select>
-                <div class="help-text">Lista IP, z których użytkownik się logował</div>
+                <label for="ban_ip_select"><?= h('panel.modal.ban.select_ip') ?></label>
+                <select name="ban_ip" id="ban_ip_select" required><option value=""><?= h('panel.modal.ban.select_ip_option') ?></option></select>
+                <div class="help-text"><?= h('panel.modal.ban.select_ip_help') ?></div>
             </div>
             <div class="form-group">
-                <label for="ban_reason_select">Powód bana</label>
+                <label for="ban_reason_select"><?= h('panel.modal.ban.reason') ?></label>
+                <?php /* powód trafia do bazy (lista blokad), więc zapisujemy go w języku domyślnym serwisu, a pokazujemy w bieżącym */ ?>
                 <select id="ban_reason_select">
-                    <option value="Spam">Spam</option><option value="Próba włamania">Próba włamania</option>
-                    <option value="Nadużycie zasobów">Nadużycie zasobów</option><option value="Naruszenie regulaminu">Naruszenie regulaminu</option>
-                    <option value="Phishing">Phishing</option><option value="custom">Własny powód...</option>
+                    <option value="<?= Html::e(Lang::site('panel.modal.ban.reason_spam')) ?>"><?= h('panel.modal.ban.reason_spam') ?></option>
+                    <option value="<?= Html::e(Lang::site('panel.modal.ban.reason_intrusion')) ?>"><?= h('panel.modal.ban.reason_intrusion') ?></option>
+                    <option value="<?= Html::e(Lang::site('panel.modal.ban.reason_abuse')) ?>"><?= h('panel.modal.ban.reason_abuse') ?></option>
+                    <option value="<?= Html::e(Lang::site('panel.modal.ban.reason_rules')) ?>"><?= h('panel.modal.ban.reason_rules') ?></option>
+                    <option value="<?= Html::e(Lang::site('panel.modal.ban.reason_phishing')) ?>"><?= h('panel.modal.ban.reason_phishing') ?></option>
+                    <option value="custom"><?= h('panel.modal.ban.reason_custom') ?></option>
                 </select>
-                <input type="hidden" name="ban_reason" id="ban_reason_input" value="Spam">
+                <input type="hidden" name="ban_reason" id="ban_reason_input" value="<?= Html::e(Lang::site('panel.modal.ban.reason_spam')) ?>">
             </div>
-            <div class="form-group" id="custom_reason_group" hidden><label for="ban_custom_reason">Własny powód</label><input type="text" id="ban_custom_reason" placeholder="Wpisz powód..."></div>
-            <div class="form-group"><label for="ban_note">Dodatkowa uwaga</label><textarea id="ban_note" name="ban_note" rows="2" placeholder="Opcjonalnie..."></textarea></div>
-            <div class="form-group"><label for="ban_duration">Czas bana (minuty)</label><input type="number" id="ban_duration" name="ban_duration" value="60" min="1" max="129600"><div class="help-text">1440 = 1 dzień, 10080 = 1 tydzień, maks. 129600 (90 dni).<br>Zakres: blokuje IP w portalu i panelu oraz — gdy Fail2Ban jest dostępny — w jailu <code>panel-tempban</code> na firewallu (webmail, IMAP, SMTP). Komunikat po zapisie mówi, które warstwy zadziałały.</div></div>
+            <div class="form-group" id="custom_reason_group" hidden><label for="ban_custom_reason"><?= h('panel.modal.ban.custom_reason') ?></label><input type="text" id="ban_custom_reason" placeholder="<?= h('panel.modal.ban.custom_placeholder') ?>"></div>
+            <div class="form-group"><label for="ban_note"><?= h('panel.modal.ban.note') ?></label><textarea id="ban_note" name="ban_note" rows="2" placeholder="<?= h('panel.modal.ban.note_placeholder') ?>"></textarea></div>
+            <div class="form-group"><label for="ban_duration"><?= h('panel.modal.ban.duration') ?></label><input type="number" id="ban_duration" name="ban_duration" value="60" min="1" max="129600"><div class="help-text"><?= html('panel.modal.ban.duration_help') ?></div></div>
             <div class="form-msg" aria-live="assertive"></div>
-            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="banModal">Anuluj</button><button type="submit" class="btn btn-danger"><i class="ri-forbid-line" aria-hidden="true"></i> Zbanuj IP</button></div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="banModal"><?= h('panel.common.cancel') ?></button><button type="submit" class="btn btn-danger"><i class="ri-forbid-line" aria-hidden="true"></i> <?= h('panel.modal.ban.submit') ?></button></div>
         </form>
     </div>
 </div>
@@ -588,31 +635,30 @@ $qsort = '<span class="qsort-wrap">'
 <!-- MODAL: DELETE -->
 <div id="deleteUserModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteUserTitle" aria-describedby="deleteUserWhat" hidden>
     <div class="modal-content">
-        <div class="modal-header"><h2 id="deleteUserTitle" class="danger-title"><i class="ri-alarm-warning-line" aria-hidden="true"></i> Usuwanie konta</h2><?= $close('deleteUserModal') ?></div>
+        <div class="modal-header"><h2 id="deleteUserTitle" class="danger-title"><i class="ri-alarm-warning-line" aria-hidden="true"></i> <?= h('panel.modal.delete.title') ?></h2><?= $close('deleteUserModal') ?></div>
         <div class="delete-warning-box" id="deleteUserWhat">
-            <strong>Uwaga!</strong> Konto znika z bazy od razu: nie da się już na nie zalogować, aliasy kierujące na nie są usuwane,
-            a nazwa nie wróci do rejestracji publicznej przez <?= (int) $s['deleted_name_hold_days'] ?> dni.
+            <?= html('panel.modal.delete.warning', ['days' => (int) $s['deleted_name_hold_days']]) ?>
         </div>
         <ul class="delete-details-list">
-            <li><span>ID:</span> <strong id="del_user_id_display"></strong></li>
-            <li><span>Email:</span> <strong id="del_user_email_display"></strong></li>
-            <li><span>Pliki:</span>
-                <?php if ($delAvail): ?><span class="badge badge-warning">Przeniesione do kwarantanny <code>/var/mail/deleted</code></span>
-                    <div class="help-text">Katalog poczty trafia do <code>/var/mail/deleted/&lt;domena&gt;__&lt;nazwa&gt;__&lt;data&gt;</code> i jest kasowany automatycznie po 30 dniach (timer <code>mailpanel-purge-deleted</code>). Do tego czasu można go odzyskać ręcznie.</div>
-                <?php else: ?><span class="badge badge-danger">Zostaną na dysku — brak uprawnień sudo do kwarantanny</span><?php endif; ?>
+            <li><span><?= h('panel.modal.delete.id') ?></span> <strong id="del_user_id_display"></strong></li>
+            <li><span><?= h('panel.modal.delete.email') ?></span> <strong id="del_user_email_display"></strong></li>
+            <li><span><?= h('panel.modal.delete.files') ?></span>
+                <?php if ($delAvail): ?><span class="badge badge-warning"><?= html('panel.modal.delete.quarantined') ?></span>
+                    <div class="help-text"><?= html('panel.modal.delete.quarantine_help') ?></div>
+                <?php else: ?><span class="badge badge-danger"><?= h('panel.modal.delete.stays') ?></span><?php endif; ?>
             </li>
         </ul>
-        <form method="POST" data-ajax data-modal-form="deleteUserModal" data-busy-label="Usuwanie…">
+        <form method="POST" data-ajax data-modal-form="deleteUserModal" data-busy-label="<?= h('panel.modal.delete.busy') ?>">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="delete_user_confirm" value="1">
             <input type="hidden" name="_tab" value="users">
             <input type="hidden" name="delete_user_id" id="del_user_id_input">
             <input type="hidden" name="delete_user_email" id="del_user_email_input">
             <input type="text" name="username" value="<?= Html::e($admin) ?>" autocomplete="username" hidden readonly tabindex="-1">
-            <div class="password-confirm-group"><label for="del_admin_pass">Podaj hasło administratora, aby potwierdzić:</label><input type="password" id="del_admin_pass" name="admin_confirm_password" required placeholder="Hasło admina" autocomplete="current-password" aria-describedby="del_pass_help">
-                <div class="help-text" id="del_pass_help">Błędne hasło jest zapisywane w dzienniku audytowym; po <?= (int) $reauthLimit ?> błędach sesja panelu się kończy.</div></div>
+            <div class="password-confirm-group"><label for="del_admin_pass"><?= h('panel.modal.delete.confirm_password') ?></label><input type="password" id="del_admin_pass" name="admin_confirm_password" required placeholder="<?= h('panel.modal.delete.password_placeholder') ?>" autocomplete="current-password" aria-describedby="del_pass_help">
+                <div class="help-text" id="del_pass_help"><?= h('panel.modal.delete.password_help', ['limit' => (int) $reauthLimit]) ?></div></div>
             <div class="form-msg" aria-live="assertive"></div>
-            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="deleteUserModal">Anuluj</button><button type="submit" class="btn btn-danger"><i class="ri-delete-bin-2-line" aria-hidden="true"></i> Potwierdź usunięcie</button></div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="deleteUserModal"><?= h('panel.common.cancel') ?></button><button type="submit" class="btn btn-danger"><i class="ri-delete-bin-2-line" aria-hidden="true"></i> <?= h('panel.modal.delete.submit') ?></button></div>
         </form>
     </div>
 </div>
@@ -620,18 +666,18 @@ $qsort = '<span class="qsort-wrap">'
 <!-- MODAL: DODAJ UŻYTKOWNIKA -->
 <div id="addUserModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="addUserTitle" hidden>
     <div class="modal-content">
-        <div class="modal-header"><h2 id="addUserTitle"><i class="ri-user-add-line" aria-hidden="true"></i> Nowe konto pocztowe</h2><?= $close('addUserModal') ?></div>
+        <div class="modal-header"><h2 id="addUserTitle"><i class="ri-user-add-line" aria-hidden="true"></i> <?= h('panel.modal.add.title') ?></h2><?= $close('addUserModal') ?></div>
         <form method="POST" data-ajax data-modal-form="addUserModal" autocomplete="off">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="create_user" value="1">
             <input type="hidden" name="_tab" value="users">
             <div class="form-group">
-                <label for="nu_local">Adres e-mail</label>
+                <label for="nu_local"><?= h('panel.modal.add.email') ?></label>
                 <div class="email-compose">
-                    <input type="text" name="nu_local" id="nu_local" required placeholder="nazwa" autocomplete="off" maxlength="64" spellcheck="false" autocapitalize="none"
+                    <input type="text" name="nu_local" id="nu_local" required placeholder="<?= h('panel.modal.add.local_placeholder') ?>" autocomplete="off" maxlength="64" spellcheck="false" autocapitalize="none"
                            pattern="[A-Za-z0-9]([A-Za-z0-9._\-]*[A-Za-z0-9])?" aria-describedby="nu_availability nu_reason_text">
                     <span aria-hidden="true">@</span>
-                    <select name="nu_domain" id="nu_domain" aria-label="Domena">
+                    <select name="nu_domain" id="nu_domain" aria-label="<?= h('panel.modal.add.domain') ?>">
                         <?php foreach ($domains as $dm): ?>
                             <option value="<?= Html::e($dm) ?>"><?= Html::e($dm) ?></option>
                         <?php endforeach; ?>
@@ -644,51 +690,51 @@ $qsort = '<span class="qsort-wrap">'
                 </div>
                 <div class="checkbox-warning-wrapper" id="nu_allow_wrap" hidden>
                     <input type="checkbox" name="nu_allow_reserved" id="nu_allow_reserved" value="1">
-                    <label for="nu_allow_reserved">Rozumiem — załóż tę skrzynkę świadomie (zgoda trafi do dziennika audytowego)</label>
+                    <label for="nu_allow_reserved"><?= h('panel.modal.add.allow_reserved') ?></label>
                 </div>
                 <details class="name-rules">
-                    <summary>Których nazw nie można użyć?</summary>
+                    <summary><?= h('panel.modal.add.rules.title') ?></summary>
                     <ul>
-                        <li><b>Zarezerwowane</b> — adresy ról (admin, postmaster, hostmaster, webmaster, abuse, noreply…) i lista z <i>Ustawienia → Rejestracja</i>. Rejestracja publiczna ich nie odda; Ty możesz je założyć <b>ze zgodą</b>.</li>
-                        <li><b>Niedawno usunięte</b> i <b>cele aliasów</b> — też ze zgodą (poczta adresowana do poprzedniego właściciela albo z aliasu trafi do nowej skrzynki).</li>
-                        <li><b>Adres aliasu</b> — nigdy: Postfix przekierowuje pocztę z aliasu, zanim dotrze do skrzynek, więc skrzynka nic by nie dostała. Najpierw usuń alias (przycisk pojawi się tutaj).</li>
-                        <li><b>Istniejące konto</b> — nigdy.</li>
+                        <li><?= html('panel.modal.add.rules.reserved') ?></li>
+                        <li><?= html('panel.modal.add.rules.recent') ?></li>
+                        <li><?= html('panel.modal.add.rules.alias') ?></li>
+                        <li><?= html('panel.modal.add.rules.exists') ?></li>
                     </ul>
                 </details>
             </div>
             <div class="form-group">
-                <label for="nu_password">Hasło</label>
-                <input type="password" name="nu_password" id="nu_password" required minlength="<?= (int) $pwd['min'] ?>" autocomplete="new-password" placeholder="Silne hasło" aria-describedby="nu_pwd_reqs">
+                <label for="nu_password"><?= h('panel.modal.add.password') ?></label>
+                <input type="password" name="nu_password" id="nu_password" required minlength="<?= (int) $pwd['min'] ?>" autocomplete="new-password" placeholder="<?= h('panel.modal.add.password_placeholder') ?>" aria-describedby="nu_pwd_reqs">
                 <div class="pwd-meter" aria-hidden="true"><div class="pwd-meter-fill" id="nu_pwd_bar"></div></div>
                 <ul class="pwd-reqs" id="nu_pwd_reqs">
-                    <li data-req="len">Min. <?= (int) $pwd['min'] ?> znaków</li>
-                    <?php if ($pwd['upper']): ?><li data-req="up">Duża litera</li><?php endif; ?>
-                    <?php if ($pwd['digit']): ?><li data-req="dig">Cyfra</li><?php endif; ?>
-                    <?php if ($pwd['spec']): ?><li data-req="spec">Znak specjalny</li><?php endif; ?>
+                    <li data-req="len"><?= h('panel.pwd.min_chars', ['n' => (int) $pwd['min']]) ?></li>
+                    <?php if ($pwd['upper']): ?><li data-req="up"><?= h('panel.pwd.upper') ?></li><?php endif; ?>
+                    <?php if ($pwd['digit']): ?><li data-req="dig"><?= h('panel.pwd.digit') ?></li><?php endif; ?>
+                    <?php if ($pwd['spec']): ?><li data-req="spec"><?= h('panel.pwd.special') ?></li><?php endif; ?>
                 </ul>
             </div>
             <div class="form-group">
-                <label for="nu_password2">Powtórz hasło</label>
-                <input type="password" name="nu_password2" id="nu_password2" required autocomplete="new-password" placeholder="Powtórz hasło">
+                <label for="nu_password2"><?= h('panel.modal.add.repeat') ?></label>
+                <input type="password" name="nu_password2" id="nu_password2" required autocomplete="new-password" placeholder="<?= h('panel.modal.repeat_placeholder') ?>">
                 <div id="nu_pass_match" class="avail-status" aria-live="polite"></div>
-                <div class="help-text">Hasło skrzynki (Dovecot). Przekaż je użytkownikowi bezpiecznym kanałem.</div>
+                <div class="help-text"><?= h('panel.modal.add.password_help') ?></div>
             </div>
             <div class="form-group">
-                <label for="nu_quota_value">Limit skrzynki (Quota)</label>
+                <label for="nu_quota_value"><?= h('panel.modal.add.quota') ?></label>
                 <div class="quota-input-group">
                     <input type="number" name="nu_quota_value" id="nu_quota_value" step="1" min="0" value="<?= (int) $s['mailbox_quota_value'] ?>">
-                    <select name="nu_quota_unit" aria-label="Jednostka"><option value="MiB" selected>MiB</option><option value="GiB">GiB</option></select>
+                    <select name="nu_quota_unit" aria-label="<?= h('panel.modal.unit') ?>"><option value="MiB" selected>MiB</option><option value="GiB">GiB</option></select>
                 </div>
             </div>
             <div class="form-group">
-                <label for="nu_send_limit">Limit wysyłki (odbiorców / dzień)</label>
-                <input type="number" name="nu_send_limit" id="nu_send_limit" min="0" step="1" placeholder="puste = globalny (<?= (int) $s['daily_send_limit'] ?>)" data-placeholder-bind="daily_send_limit">
-                <div class="help-text">Puste = limit globalny (<b data-bind="daily_send_limit"><?= (int) $s['daily_send_limit'] ?></b> odbiorców/dzień). <code>0</code> = bez limitu.</div>
+                <label for="nu_send_limit"><?= h('panel.modal.add.send_limit') ?></label>
+                <input type="number" name="nu_send_limit" id="nu_send_limit" min="0" step="1" placeholder="<?= h('panel.modal.send_limit.placeholder', ['n' => (int) $s['daily_send_limit']]) ?>" data-placeholder-bind="daily_send_limit">
+                <div class="help-text"><?= $sendHelp ?></div>
             </div>
             <div id="nu_form_msg" class="form-msg" aria-live="assertive"></div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="addUserModal">Anuluj</button>
-                <button type="submit" class="btn"><i class="ri-user-add-line" aria-hidden="true"></i> Utwórz konto</button>
+                <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="addUserModal"><?= h('panel.common.cancel') ?></button>
+                <button type="submit" class="btn"><i class="ri-user-add-line" aria-hidden="true"></i> <?= h('panel.modal.add.submit') ?></button>
             </div>
         </form>
     </div>
@@ -697,33 +743,33 @@ $qsort = '<span class="qsort-wrap">'
 <!-- MODAL: ZARZĄDZANIE BANEM -->
 <div id="manageBanModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="manageBanTitle" hidden>
     <div class="modal-content">
-        <div class="modal-header"><h2 id="manageBanTitle"><i class="ri-shield-keyhole-line" aria-hidden="true"></i> Zarządzaj blokadą</h2><?= $close('manageBanModal') ?></div>
+        <div class="modal-header"><h2 id="manageBanTitle"><i class="ri-shield-keyhole-line" aria-hidden="true"></i> <?= h('panel.modal.manage.title') ?></h2><?= $close('manageBanModal') ?></div>
         <ul class="delete-details-list">
-            <li><span>IP:</span> <strong id="mb_ip"></strong></li>
-            <li><span>Rodzaj:</span> <strong id="mb_type"></strong></li>
+            <li><span><?= h('panel.modal.manage.ip') ?></span> <strong id="mb_ip"></strong></li>
+            <li><span><?= h('panel.modal.manage.kind') ?></span> <strong id="mb_type"></strong></li>
         </ul>
         <div id="mb_change_wrap" class="form-group">
-            <label for="mb_target_jail">Zmień typ bana / przenieś do jaila</label>
+            <label for="mb_target_jail"><?= h('panel.modal.manage.change') ?></label>
             <div class="manage-ban-row">
                 <select id="mb_target_jail">
-                    <?php foreach ($jails as $j): ?><option value="<?= Html::e($j) ?>" <?= $j === 'panel-permaban' ? 'selected' : '' ?>><?= Html::e($j) ?><?= $j === 'panel-permaban' ? ' (na stałe)' : ($j === 'panel-tempban' ? ' (czasowy)' : '') ?></option><?php endforeach; ?>
+                    <?php foreach ($jails as $j): ?><option value="<?= Html::e($j) ?>" <?= $j === 'panel-permaban' ? 'selected' : '' ?>><?= Html::e($j) ?><?= $j === 'panel-permaban' ? ' ' . h('panel.modal.manage.permanent') : ($j === 'panel-tempban' ? ' ' . h('panel.modal.manage.temporary') : '') ?></option><?php endforeach; ?>
                 </select>
-                <select id="mb_duration" aria-label="Czas bana" hidden>
-                    <option value="3600">1 godz.</option>
-                    <option value="21600">6 godz.</option>
-                    <option value="86400" selected>24 godz.</option>
-                    <option value="259200">3 dni</option>
-                    <option value="604800">7 dni</option>
-                    <option value="2592000">30 dni</option>
-                    <option value="7776000">3 miesiące</option>
+                <select id="mb_duration" aria-label="<?= h('panel.modal.manage.duration') ?>" hidden>
+                    <option value="3600"><?= h('panel.modal.manage.d1h') ?></option>
+                    <option value="21600"><?= h('panel.modal.manage.d6h') ?></option>
+                    <option value="86400" selected><?= h('panel.modal.manage.d24h') ?></option>
+                    <option value="259200"><?= h('panel.modal.manage.d3d') ?></option>
+                    <option value="604800"><?= h('panel.modal.manage.d7d') ?></option>
+                    <option value="2592000"><?= h('panel.modal.manage.d30d') ?></option>
+                    <option value="7776000"><?= h('panel.modal.manage.d3m') ?></option>
                 </select>
-                <button type="button" class="btn btn-warning" id="mb_move_btn"><i class="ri-arrow-left-right-line" aria-hidden="true"></i> Przenieś</button>
+                <button type="button" class="btn btn-warning" id="mb_move_btn"><i class="ri-arrow-left-right-line" aria-hidden="true"></i> <?= h('panel.modal.manage.move') ?></button>
             </div>
-            <div class="help-text">Przeniesie IP do wybranego jaila (odbanuje z obecnego, zbanuje w nowym). Dla <code>panel-tempban</code> wybierz czas trwania.</div>
+            <div class="help-text"><?= html('panel.modal.manage.help') ?></div>
         </div>
         <div class="modal-footer modal-footer--center">
-            <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="manageBanModal">Zamknij</button>
-            <button type="button" class="btn btn-success" id="mb_unban_btn"><i class="ri-check-line" aria-hidden="true"></i> Odblokuj całkowicie</button>
+            <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="manageBanModal"><?= h('panel.common.close') ?></button>
+            <button type="button" class="btn btn-success" id="mb_unban_btn"><i class="ri-check-line" aria-hidden="true"></i> <?= h('panel.modal.manage.unban') ?></button>
         </div>
     </div>
 </div>
@@ -731,40 +777,41 @@ $qsort = '<span class="qsort-wrap">'
 <!-- MODAL: SKANER PODEJRZANYCH IP -->
 <div id="scannerModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="scannerTitle" hidden>
     <div class="modal-content scanner-modal">
-        <div class="modal-header"><h2 id="scannerTitle"><i class="ri-radar-line" aria-hidden="true"></i> Skaner podejrzanych IP</h2><?= $close('scannerModal') ?></div>
+        <div class="modal-header"><h2 id="scannerTitle"><i class="ri-radar-line" aria-hidden="true"></i> <?= h('panel.scanner.title') ?></h2><?= $close('scannerModal') ?></div>
         <div class="scanner-params">
-            <div class="scanner-field"><label for="scan_from">Od (data)</label><input type="date" id="scan_from"></div>
-            <div class="scanner-field"><label for="scan_to">Do (data)</label><input type="date" id="scan_to"></div>
-            <div class="scanner-field"><label for="scan_min">Min. nieudanych</label><input type="number" id="scan_min" value="10" min="1"></div>
-            <button type="button" class="btn" id="scan_run"><i class="ri-search-line" aria-hidden="true"></i> Przeskanuj</button>
+            <div class="scanner-field"><label for="scan_from"><?= h('panel.scanner.from') ?></label><input type="date" id="scan_from"></div>
+            <div class="scanner-field"><label for="scan_to"><?= h('panel.scanner.to') ?></label><input type="date" id="scan_to"></div>
+            <div class="scanner-field"><label for="scan_min"><?= h('panel.scanner.min') ?></label><input type="number" id="scan_min" value="10" min="1"></div>
+            <button type="button" class="btn" id="scan_run"><i class="ri-search-line" aria-hidden="true"></i> <?= h('panel.scanner.run') ?></button>
         </div>
-        <div class="help-text">Źródła: logi systemowe (SSH, Dovecot, Postfix SASL) + baza panelu (nieudane logowania admina, rejestracje). Liczone są wyłącznie <b>nieudane</b> próby uwierzytelnienia. Zaufane IP (serwer, Twoje) są pomijane. Parametry zostają po zamknięciu — zmień i skanuj ponownie.</div>
+        <div class="help-text"><?= html('panel.scanner.help') ?></div>
         <div id="scan_status" class="scan-status" hidden>
             <div class="scan-status-row">
-                <span class="scan-status-label" id="scan_status_label"><i class="ri-loader-4-line spin" aria-hidden="true"></i> Przygotowanie…</span>
+                <span class="scan-status-label" id="scan_status_label"><i class="ri-loader-4-line spin" aria-hidden="true"></i> <?= h('panel.scanner.preparing') ?></span>
                 <span class="scan-status-count" id="scan_status_count" aria-live="polite"></span>
             </div>
             <div class="scan-progress-bar"><div class="scan-progress-fill" id="scan_progress_fill"></div></div>
             <div class="scan-steps" id="scan_steps"></div>
         </div>
         <div id="scan_ban_msg" aria-live="polite"></div>
-        <div id="scan_results" class="scanner-results"><p class="empty-state-text">Ustaw parametry i kliknij „Przeskanuj".</p></div>
+        <div id="scan_results" class="scanner-results"><p class="empty-state-text"><?= html('panel.scanner.empty') ?></p></div>
     </div>
 </div>
 
 <!-- MODAL: POTWIERDZENIE (generyczny) -->
 <div id="confirmModal" class="modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm_title" aria-describedby="confirm_msg" hidden>
     <div class="modal-content confirm-modal">
-        <div class="modal-header"><h2 id="confirm_title"><i class="ri-error-warning-line" aria-hidden="true"></i> Potwierdzenie</h2><?= $close('confirmModal') ?></div>
+        <div class="modal-header"><h2 id="confirm_title"><i class="ri-error-warning-line" aria-hidden="true"></i> <?= h('panel.modal.confirm.title') ?></h2><?= $close('confirmModal') ?></div>
         <p id="confirm_msg" class="confirm-msg"></p>
         <div class="form-msg" id="confirm_form_msg" aria-live="assertive"></div>
         <div class="modal-footer modal-footer--center">
-            <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="confirmModal">Anuluj</button>
-            <button type="button" class="btn" id="confirm_ok"><i class="ri-check-line" aria-hidden="true"></i> Potwierdź</button>
+            <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="confirmModal"><?= h('panel.common.cancel') ?></button>
+            <button type="button" class="btn" id="confirm_ok"><i class="ri-check-line" aria-hidden="true"></i> <?= h('panel.modal.confirm.ok') ?></button>
         </div>
     </div>
 </div>
 
+<?= Lang::jsBridge('panel') ?>
 <script src="<?= $av('panel.js') ?>" defer></script>
 </body>
 </html>

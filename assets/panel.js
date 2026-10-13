@@ -1,7 +1,7 @@
 /* =========================================================================
    Panel administratora — logika front-endu (delegacja zdarzeń, bez inline JS).
 
-   1.2.0: nic nie przeładowuje strony. Każdy formularz (form[data-ajax]) idzie przez fetch() z polem _ajax i tokenem
+   Nic nie przeładowuje strony. Każdy formularz (form[data-ajax]) idzie przez fetch() z polem _ajax i tokenem
    CSRF; serwer odpowiada JSON-em {ok, msg, error, refresh, values, data, done, auth, csrf}. Komunikaty są zawsze
    tekstem z serwera (powiadomienia w rogu nie przesuwają treści; błędy w oknach — w zarezerwowanym miejscu okna).
    Listy odświeżają się w miejscu: wysokość i szerokości kolumn są trzymane, więc tabela nie skacze.
@@ -9,12 +9,39 @@
 (function () {
     'use strict';
 
+    /* Teksty interfejsu z pliku języka (app/lang/<kod>/js.php, klucze js.<obszar>.*) — blok #i18n-data drukuje PHP. */
+    var I18N = (function () {
+        try { return JSON.parse(document.getElementById('i18n-data').textContent) || {}; } catch (e) { return {}; }
+    })();
+    var LANG = I18N.lang || document.documentElement.lang || 'pl';
+    /* t(klucz, {nazwa: wartość}) — parametry :nazwa podstawiane (najdłuższe nazwy najpierw); brak klucza = sam klucz. */
+    function t(key, params) {
+        var dict = I18N.strings || {};
+        var s = Object.prototype.hasOwnProperty.call(dict, key) ? String(dict[key]) : key;
+        if (params) {
+            Object.keys(params).sort(function (a, b) { return b.length - a.length; }).forEach(function (k) {
+                s = s.split(':' + k).join(String(params[k]));
+            });
+        }
+        return s;
+    }
+    /* Liczebnik: klucze <baza>.one / .few / .many (polski: 1 / 2–4, 22–24… / reszta), parametr :n. Formę wybiera
+       Intl.PluralRules języka strony; formy spoza one/few (other, two…) idą do .many. */
+    function plural(n, base, params) {
+        var form;
+        try { form = new Intl.PluralRules(LANG).select(n); } catch (e) { form = n === 1 ? 'one' : 'many'; }
+        if (form !== 'one' && form !== 'few') form = 'many';
+        return t(base + '.' + form, Object.assign({ n: n }, params || {}));
+    }
+
     var ENDPOINT = 'index.php';
     var $ = function (id) { return document.getElementById(id); };
     var body = document.body;
     var REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+    // do atrybutu w cudzysłowie (title="…", aria-label="…"): esc() nie zamienia cudzysłowu
+    function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
 
     /* ---------------- Sieć ---------------- */
 
@@ -32,7 +59,7 @@
 
     // JSON z odpowiedzi; 403 z {auth:true} = sesja wygasła (pokazujemy pasek i nie udajemy, że coś się zapisało)
     function readJson(r) {
-        return r.json().catch(function () { return { ok: false, error: 'Serwer zwrócił nieoczekiwaną odpowiedź (HTTP ' + r.status + ').' }; })
+        return r.json().catch(function () { return { ok: false, error: t('net.bad_response', { status: r.status }) }; })
             .then(function (d) {
                 if (d && d.auth) sessionExpired(d.error);
                 return d || {};
@@ -47,7 +74,7 @@
         fd.set('_csrf', body.dataset.csrf || '');
         fd.set('_ajax', '1');
         return tfetch(ENDPOINT, { method: 'POST', body: fd }, ms || 90000).then(readJson)
-            .catch(function () { return { ok: false, error: 'Brak połączenia z serwerem — nic nie zostało zapisane. Spróbuj ponownie.' }; });
+            .catch(function () { return { ok: false, error: t('net.offline_save') }; });
     }
 
     var expired = false;
@@ -62,28 +89,52 @@
         document.querySelectorAll('.modal:not([hidden])').forEach(function (m) { closeModal(m.id, true); });
     }
 
-    /* ---------------- Powiadomienia (nakładka, bez przesuwania treści) ---------------- */
+    /* ---------------- Komunikaty po zapisie ----------------
+       Jeden wzorzec dla wszystkich zapisów: wygląd klasycznego alertu (zielony / czerwony pas z lewą krawędzią), ale jako
+       NAKŁADKA przy tym, co zapisano — nic nie przesuwa:
+         - formularz w karcie (Bezpieczeństwo, ręczny ban…): u góry tej karty,
+         - formularz na całą zakładkę (Ustawienia, Fail2Ban): u góry formularza,
+         - akcje z okien i list (quota, usuwanie, bany…): pod zakładkami (#flash-dock, przyklejony do góry ekranu).
+       Gdy to miejsce jest poza ekranem (np. długi formularz przewinięty do przycisku), komunikat idzie pod zakładki,
+       które są zawsze widoczne. Sukces znika po 6 s, błąd po 12 s (pauza pod kursorem / fokusem), × zamyka od razu.
+       Treść zawsze z serwera; role status / alert + aria-live dla czytników ekranu. */
 
-    function toast(kind, text) {
-        if (!text) return;
-        var box = $('toasts');
+    function flashHost(form) {
+        var dock = $('flash-dock');
+        if (!form) return dock;
+        var box = form.closest('.settings-card') || form;
+        var host = box.querySelector(':scope > .flash-host');
+        if (!host) {
+            host = document.createElement('div');
+            host.className = 'flash-host';
+            host.setAttribute('aria-live', 'polite');
+            box.classList.add('has-flash-host');
+            box.insertBefore(host, box.firstChild);
+        }
+        var r = box.getBoundingClientRect();
+        return r.top >= 0 && r.top < window.innerHeight - 80 ? host : dock;
+    }
+
+    function flash(kind, text, host) {
+        if (!text) return null;
+        host = host || $('flash-dock');
         var el = document.createElement('div');
-        el.className = 'toast toast--' + (kind === 'ok' ? 'ok' : 'err');
+        el.className = 'alert flash ' + (kind === 'ok' ? 'alert-success' : 'alert-error');
         el.setAttribute('role', kind === 'ok' ? 'status' : 'alert');
         el.innerHTML = '<i class="' + (kind === 'ok' ? 'ri-checkbox-circle-line' : 'ri-error-warning-line') + '" aria-hidden="true"></i>' +
-            '<div class="toast-text"></div><button type="button" class="toast-close" aria-label="Zamknij powiadomienie"><i class="ri-close-line" aria-hidden="true"></i></button>';
-        el.querySelector('.toast-text').textContent = text;
-        box.appendChild(el);
-        while (box.children.length > 4) box.removeChild(box.firstElementChild);
-        if (kind === 'ok') armToast(el, 7000);
+            '<div class="flash-text"></div><button type="button" class="flash-close" aria-label="' + escAttr(t('flash.close')) + '"><i class="ri-close-line" aria-hidden="true"></i></button>';
+        el.querySelector('.flash-text').textContent = text;
+        // nowy komunikat zastępuje stary tego samego rodzaju w tym miejscu (najwyżej dwa naraz: sukces + błąd)
+        Array.prototype.forEach.call(host.children, function (c) { if (c.className === el.className) dismissFlash(c, true); });
+        host.appendChild(el);
+        armFlash(el, kind === 'ok' ? 6000 : 12000);
         return el;
     }
 
-    // sukces znika sam (pauza, gdy kursor/fokus na nim); błąd zostaje, aż ktoś go zamknie
-    function armToast(el, ms) {
-        var t = null;
-        var start = function () { t = setTimeout(function () { dismissToast(el); }, ms); };
-        var stop = function () { clearTimeout(t); };
+    function armFlash(el, ms) {
+        var timer = null;
+        var start = function () { clearTimeout(timer); timer = setTimeout(function () { dismissFlash(el); }, ms); };
+        var stop = function () { clearTimeout(timer); };
         el.addEventListener('mouseenter', stop);
         el.addEventListener('mouseleave', start);
         el.addEventListener('focusin', stop);
@@ -91,17 +142,21 @@
         start();
     }
 
-    function dismissToast(el) {
-        if (!el || !el.parentNode) return;
+    function dismissFlash(el, now) {
+        if (!el || !el.parentNode || el.classList.contains('is-leaving')) return;
         el.classList.add('is-leaving');
-        setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, REDUCED ? 0 : 200);
+        setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, now || REDUCED ? 0 : 220);
     }
 
     // wynik zapisu: sukces i/lub błąd (np. konto usunięte, ale plików nie przeniesiono — oba komunikaty)
-    function report(d) {
-        if (d.msg) toast('ok', d.msg);
-        if (d.error && !d.auth) toast('err', d.error);
+    function report(d, form) {
+        var host = flashHost(form);
+        if (d.msg) flash('ok', d.msg, host);
+        if (d.error && !d.auth) flash('err', d.error, host);
     }
+
+    // błąd bez kontekstu formularza (lista się nie wczytała, sesja…) — pod zakładkami
+    function toast(kind, text) { return flash(kind, text, $('flash-dock')); }
 
     /* ---------------- Przyciski w toku ---------------- */
 
@@ -130,7 +185,7 @@
         if (!btn || REDUCED) return;
         var html = btn.innerHTML;
         btn.classList.add('is-saved');
-        btn.innerHTML = '<i class="ri-check-line" aria-hidden="true"></i> Zapisano';
+        btn.innerHTML = '<i class="ri-check-line" aria-hidden="true"></i> ' + t('btn.saved');
         setTimeout(function () { btn.classList.remove('is-saved'); if (btn.dataset.busy !== '1') btn.innerHTML = html; }, 1500);
     }
 
@@ -213,16 +268,16 @@
     // Sort: users/reg/admin/audit = serwerowo (SQL); users.usage = klientowo w obrębie strony (dane z Dovecot).
     // users.crit = JEDNA uporządkowana lista kryteriów w kolejności klikania: {kind:'srv'|'ico', key, dir}.
     var state = {
-        users: { page: 1, per: 20, crit: [{ kind: 'srv', key: 'id', dir: 'DESC' }], usage: null, filters: [] },
+        users: { page: 1, per: 20, crit: [{ kind: 'srv', key: 'id', dir: 'DESC' }], filters: [] },
         reg:   { page: 1, per: 20, sort: [], search: '' },
         admin: { page: 1, per: 20, sort: [], search: '' },
         audit: { page: 1, per: 20, sort: [], search: '' }
     };
     var LIST = {
-        users: { tbody: 'users-tbody', pag: 'users-pagination', total: 'total-results-text', label: 'Łącznie kont:', param: 'ajax_fetch_users' },
-        reg:   { tbody: 'reg-logs-tbody', pag: 'reg-logs-pagination', total: 'reg-total-text', label: 'Łącznie zdarzeń:', param: 'ajax_fetch_reg_logs' },
-        admin: { tbody: 'admin-logs-tbody', pag: 'admin-logs-pagination', total: 'admin-total-text', label: 'Łącznie logów:', param: 'ajax_fetch_admin_logs' },
-        audit: { tbody: 'audit-logs-tbody', pag: 'audit-logs-pagination', total: 'audit-total-text', label: 'Łącznie wpisów:', param: 'ajax_fetch_audit_logs' }
+        users: { tbody: 'users-tbody', pag: 'users-pagination', total: 'total-results-text', label: t('list.total.users'), param: 'ajax_fetch_users' },
+        reg:   { tbody: 'reg-logs-tbody', pag: 'reg-logs-pagination', total: 'reg-total-text', label: t('list.total.reg'), param: 'ajax_fetch_reg_logs' },
+        admin: { tbody: 'admin-logs-tbody', pag: 'admin-logs-pagination', total: 'admin-total-text', label: t('list.total.admin'), param: 'ajax_fetch_admin_logs' },
+        audit: { tbody: 'audit-logs-tbody', pag: 'audit-logs-pagination', total: 'audit-total-text', label: t('list.total.audit'), param: 'ajax_fetch_audit_logs' }
     };
     var seq = {};          // numer ostatniego zapytania listy: starsze odpowiedzi są pomijane
     var searchTimer = null;
@@ -285,7 +340,7 @@
         return getJSON(listUrl(nav)).then(function (d) {
             if (my !== seq[nav]) return;          // przyszła nowsza odpowiedź
             if (d.auth || typeof d.html !== 'string') {
-                if (!d.auth) toast('err', d.error || 'Nie udało się wczytać listy.');
+                if (!d.auth) toast('err', d.error || t('list.load_failed'));
                 return;
             }
             var tb = $(LIST[nav].tbody), ae = document.activeElement, keep = null;
@@ -310,7 +365,7 @@
                 if (act) act.focus({ preventScroll: true });
             }
         }).catch(function () {
-            if (my === seq[nav]) toast('err', 'Nie udało się wczytać listy — sprawdź połączenie.');
+            if (my === seq[nav]) toast('err', t('list.load_offline'));
         }).then(function () { if (my === seq[nav]) release(); });
     }
 
@@ -406,11 +461,11 @@
     /* ---------------- Użycie skrzynek (Dovecot) ---------------- */
 
     function fmtKb(kb) {
-        if (kb <= 0) return '0 B';
-        if (kb < 1024) return kb + ' KiB';
-        if (kb < 1048576) { var m = kb / 1024; return (m >= 100 ? Math.round(m) : Math.round(m * 10) / 10) + ' MiB'; }
+        if (kb <= 0) return t('size.b', { n: 0 });
+        if (kb < 1024) return t('size.kib', { n: kb });
+        if (kb < 1048576) { var m = kb / 1024; return t('size.mib', { n: m >= 100 ? Math.round(m) : Math.round(m * 10) / 10 }); }
         var g = kb / 1048576;
-        return (g >= 100 ? Math.round(g) : Math.round(g * 100) / 100) + ' GiB';
+        return t('size.gib', { n: g >= 100 ? Math.round(g) : Math.round(g * 100) / 100 });
     }
 
     var usageCache = {};
@@ -425,13 +480,12 @@
         var msgs = q.msgs || 0;
         c.dataset.usedKb = q.used_kb;
         c.dataset.msgCount = msgs;
-        c.innerHTML = '<div class="usage-wrap" title="' + fmtKb(q.used_kb) + ' / ' + limit + ' · ' + msgs + ' wiadomości">' +
+        c.innerHTML = '<div class="usage-wrap" title="' + escAttr(fmtKb(q.used_kb) + ' / ' + limit + ' · ' + plural(msgs, 'usage.msgs')) + '">' +
             '<div class="usage-bar"><div class="usage-fill ' + cls + '" style="width:' + q.pct + '%"></div></div>' +
-            '<span class="usage-txt">' + fmtKb(q.used_kb) + ' · ' + q.pct + '%</span></div>';
+            '<span class="usage-txt">' + esc(fmtKb(q.used_kb)) + ' · ' + q.pct + '%</span></div>';
     }
 
     function applyClientSorts() {
-        if (state.users.usage) applyUsageSort();
         applyUnifiedSort();
         applyUserFilters();
     }
@@ -480,7 +534,7 @@
                         delete usageCache[email];
                         delete c.dataset.usedKb;
                         delete c.dataset.msgCount;
-                        c.innerHTML = '<span class="usage-na" title="Brak danych z Dovecot">—</span>';
+                        c.innerHTML = '<span class="usage-na" title="' + escAttr(t('usage.no_data')) + '">—</span>';
                         return;
                     }
                     if (sameUsage(usageCache[email], q) && c.querySelector('.usage-wrap')) { usageCache[email] = q; return; }
@@ -494,13 +548,17 @@
             });
     }
 
-    /* ---------------- Sortowanie ---------------- */
+
+    /* ---------------- Sortowanie ----------------
+       Jedna lista kryteriów dla kont (kolumny SQL + dane Dovecot: "Użycie" = zajęte miejsce, ikonka koperty =
+       liczba wiadomości). Klik = sortuj tylko po tym (drugi klik odwraca), Shift+klik = dołóż / odwróć. Wskaźnik to
+       ikona o stałej szerokości; numer priorytetu pokazuje się dopiero przy sortowaniu po kilku kolumnach. */
 
     function indHtml(dir, n) {
-        return '<span class="contrast-color">' + (dir === 'ASC' ? '▲' : '▼') + '</span>' +
-            (n ? '<sup class="contrast-color sub-style">' + n + '</sup>' : '');
+        return '<i class="' + (dir === 'ASC' ? 'ri-arrow-up-line' : 'ri-arrow-down-line') + ' contrast-color"></i>' +
+            (n ? '<span class="sort-n">' + n + '</span>' : '');
     }
-    var PLACEHOLDER = '<span class="sort-placeholder">⇅</span>';
+    var PLACEHOLDER = '<i class="ri-arrow-up-down-line sort-placeholder"></i>';
 
     function setInd(th, html, ariaDir) {
         var ind = th.querySelector('.sort-ind');
@@ -509,30 +567,32 @@
         else th.removeAttribute('aria-sort');
     }
 
+    // kolumna "Użycie" sortuje po kluczu Dovecot 'size'
+    function critTh(c) {
+        if (c.kind === 'ico' && c.key === 'msgs') return null;
+        return document.querySelector(navSel('users') + '[data-col="' + (c.kind === 'ico' ? 'usage' : c.key) + '"]');
+    }
+
     function renderSortHeaders(nav) {
         document.querySelectorAll(navSel(nav)).forEach(function (th) { setInd(th, PLACEHOLDER, null); });
 
         if (nav === 'users') {
-            state.users.crit.forEach(function (c, i) {
-                if (c.kind !== 'srv') return;
-                var th = document.querySelector(navSel('users') + '[data-col="' + c.key + '"]');
-                if (th) setInd(th, indHtml(c.dir, i + 1), i === 0 ? c.dir : null);
+            var crit = state.users.crit, multi = crit.length > 1;
+            crit.forEach(function (c, i) {
+                var th = critTh(c);
+                if (th) setInd(th, indHtml(c.dir, multi ? i + 1 : 0), i === 0 ? c.dir : null);
             });
-            if (state.users.usage) {
-                var uth = document.querySelector(navSel('users') + '[data-col="usage"]');
-                if (uth) setInd(uth, indHtml(state.users.usage, 0), state.users.usage);
-            }
             renderQSortIcons();
             return;
         }
         if (nav === 'bans') return;
+        var many = state[nav].sort.length > 1;
         state[nav].sort.forEach(function (s, i) {
             var th = document.querySelector(navSel(nav) + '[data-col="' + s.field + '"]');
-            if (th) setInd(th, indHtml(s.dir, i + 1), i === 0 ? s.dir : null);
+            if (th) setInd(th, indHtml(s.dir, many ? i + 1 : 0), i === 0 ? s.dir : null);
         });
     }
 
-    /* Ikony sortowania po danych Dovecot (w nagłówku Quota). Klik: brak → ▼ → ▲ → wyłączone. */
     function renderQSortIcons() {
         var crit = state.users.crit;
         document.querySelectorAll('.qsort-ico[data-qsort]').forEach(function (ico) {
@@ -541,32 +601,34 @@
             ico.classList.toggle('on', !!s);
             ico.setAttribute('aria-pressed', s ? 'true' : 'false');
             var n = ico.querySelector('.qsort-n');
-            if (n) n.innerHTML = s ? indHtml(s.dir, idx + 1) : '';
+            if (n) n.innerHTML = s ? indHtml(s.dir, crit.length > 1 ? idx + 1 : 0) : '';
         });
     }
 
-    function changeSort(nav, field, multi) {
-        if (nav === 'users' && field === 'usage') {
-            state.users.crit = [];
-            state.users.usage = state.users.usage === 'DESC' ? 'ASC' : 'DESC';
-            renderSortHeaders('users');
-            applyUsageSort();
-            return;
+    /* Konta: kind 'srv' (SQL — nowa strona z serwera) albo 'ico' (Dovecot — przestawienie wierszy bieżącej strony).
+       Dane Dovecot zaczynają malejąco (największe najpierw), kolumny SQL rosnąco. */
+    function sortUsers(kind, key, multi) {
+        var before = usersSrvSort();
+        var crit = state.users.crit;
+        var first = kind === 'ico' ? 'DESC' : 'ASC';
+        var i = crit.findIndex(function (c) { return c.kind === kind && c.key === key; });
+        var flip = function (c) { c.dir = c.dir === 'ASC' ? 'DESC' : 'ASC'; };
+        if (multi) {
+            if (i !== -1) flip(crit[i]); else crit.push({ kind: kind, key: key, dir: first });
+        } else if (i === 0 && crit.length === 1) {
+            flip(crit[0]);
+        } else {
+            state.users.crit = [{ kind: kind, key: key, dir: first }];
         }
+        renderSortHeaders('users');
+        if (usersSrvSort() !== before) loadUsers({ paging: true });
+        else applyUnifiedSort();
+    }
+
+    function changeSort(nav, field, multi) {
         if (nav === 'users') {
-            state.users.usage = null;
-            var crit = state.users.crit;
-            var i = crit.findIndex(function (c) { return c.kind === 'srv' && c.key === field; });
-            if (multi) {
-                if (i !== -1) crit[i].dir = crit[i].dir === 'ASC' ? 'DESC' : 'ASC';
-                else crit.push({ kind: 'srv', key: field, dir: 'ASC' });
-            } else if (i === 0 && crit.length === 1) {
-                crit[0].dir = crit[0].dir === 'ASC' ? 'DESC' : 'ASC';
-            } else {
-                state.users.crit = [{ kind: 'srv', key: field, dir: 'ASC' }];
-            }
-            renderSortHeaders('users');
-            loadUsers({ paging: true });
+            if (field === 'usage') sortUsers('ico', 'size', multi);
+            else sortUsers('srv', field, multi);
             return;
         }
         var st = state[nav];
@@ -584,28 +646,6 @@
         loaders[nav]({ paging: true });
     }
 
-    function usageVal(tr) {
-        var c = tr.querySelector('.usage-cell');
-        if (!c || c.dataset.usedKb === undefined) return null;
-        var v = parseFloat(c.dataset.usedKb);
-        return isNaN(v) ? null : v;
-    }
-
-    function applyUsageSort() {
-        var tbody = $('users-tbody');
-        if (!tbody) return;
-        var dir = state.users.usage === 'ASC' ? 1 : -1;
-        var rows = userRows();
-        rows.sort(function (a, b) {
-            var av = usageVal(a), bv = usageVal(b);
-            if (av === null && bv === null) return 0;
-            if (av === null) return 1;
-            if (bv === null) return -1;
-            return (av - bv) * dir;
-        });
-        rows.forEach(function (r) { tbody.appendChild(r); });
-    }
-
     function qVal(tr, key) {
         var c = tr.querySelector('.usage-cell');
         if (!c) return null;
@@ -617,18 +657,20 @@
 
     function critVal(tr, c) {
         if (c.kind === 'ico') return qVal(tr, c.key);
-        var t = function (i) { var v = tr.children[i] ? tr.children[i].textContent.trim() : ''; return v === '-' || v === '' ? null : v; };
+        var cell = function (i) { var v = tr.children[i] ? tr.children[i].textContent.trim() : ''; return v === '-' || v === '' ? null : v; };
         switch (c.key) {
             case 'id':         return parseInt(tr.children[0].textContent, 10);
-            case 'email':      return (t(1) || '').toLowerCase();
-            case 'created':    return t(2);
-            case 'last_login': return t(3);
-            case 'reg_ip':     return t(4);
+            case 'email':      return (cell(1) || '').toLowerCase();
+            case 'created':    return cell(2);
+            case 'last_login': return cell(3);
+            case 'reg_ip':     return cell(4);
             case 'quota':      var b = tr.querySelector('[data-action="quota"]'); return b ? parseInt(b.dataset.quota, 10) : null;
         }
         return null;
     }
 
+    /* Dosortowanie bieżącej strony wg PEŁNEJ listy kryteriów — tylko gdy są wśród nich dane Dovecot (same kolumny SQL
+       przychodzą już posortowane z serwera, spójnie między stronami). */
     function applyUnifiedSort() {
         var crit = state.users.crit;
         var tbody = $('users-tbody');
@@ -641,7 +683,7 @@
                 if (av === null) return 1;
                 if (bv === null) return -1;
                 var cmp = (typeof av === 'number' && typeof bv === 'number') ? av - bv
-                    : String(av).localeCompare(String(bv), 'pl', { numeric: true });
+                    : String(av).localeCompare(String(bv), LANG, { numeric: true });
                 if (cmp !== 0) return cmp * (crit[i].dir === 'ASC' ? 1 : -1);
             }
             return 0;
@@ -649,16 +691,6 @@
         rows.forEach(function (r) { tbody.appendChild(r); });
     }
 
-    function toggleQSortKey(key) {
-        state.users.usage = null;
-        var crit = state.users.crit;
-        var i = crit.findIndex(function (c) { return c.kind === 'ico' && c.key === key; });
-        if (i === -1) crit.push({ kind: 'ico', key: key, dir: 'DESC' });
-        else if (crit[i].dir === 'DESC') crit[i].dir = 'ASC';
-        else crit.splice(i, 1);
-        renderSortHeaders('users');
-        applyUnifiedSort();
-    }
 
     /* ---------------- Tabela blokad (sort i filtr w przeglądarce) ---------------- */
 
@@ -685,7 +717,7 @@
         rows.sort(function (a, b) {
             var ka = cellKey(a, bansSort.col), kb = cellKey(b, bansSort.col);
             if (typeof ka === 'number' && typeof kb === 'number') return (ka - kb) * mult;
-            return String(ka).localeCompare(String(kb), 'pl', { numeric: true }) * mult;
+            return String(ka).localeCompare(String(kb), LANG, { numeric: true }) * mult;
         });
         rows.forEach(function (r) { tbody.appendChild(r); });
     }
@@ -707,7 +739,7 @@
     function rebuildBansIndex() {
         bansIndex = {};
         document.querySelectorAll('#bans-tbody [data-action="manage-ban"]').forEach(function (b) {
-            bansIndex[b.dataset.ip] = { type: b.dataset.type, jail: b.dataset.jail || '', label: b.dataset.type === 'local' ? 'blokada lokalna' : (b.dataset.jail || 'fail2ban') };
+            bansIndex[b.dataset.ip] = { type: b.dataset.type, jail: b.dataset.jail || '', label: b.dataset.type === 'local' ? t('ban.local_label') : (b.dataset.jail || 'fail2ban') };
         });
     }
 
@@ -796,15 +828,15 @@
     function loadSentToday(id) {
         var box = $('quota_sent_today');
         if (!box) return;
-        box.innerHTML = '<i class="ri-loader-4-line spin" aria-hidden="true"></i> Ładowanie…';
+        box.innerHTML = '<i class="ri-loader-4-line spin" aria-hidden="true"></i> ' + t('common.loading');
         getJSON(ENDPOINT + '?ajax_sent_today=1&id=' + encodeURIComponent(id))
             .then(function (d) {
                 if (!d.ok) { box.innerHTML = '<span class="usage-na">—</span>'; return; }
                 var limitTxt = d.limit > 0 ? d.limit : '∞';
-                var src = d.individual ? 'limit indywidualny' : 'limit globalny';
+                var src = d.individual ? t('quota.limit_individual') : t('quota.limit_global');
                 var cls = d.limit > 0 && d.sent >= d.limit ? 'crit' : (d.limit > 0 && d.sent >= d.limit * 0.8 ? 'warn' : 'ok');
                 box.innerHTML = '<b class="sent-' + cls + '">' + (d.sent | 0) + '</b> / ' + esc(limitTxt) +
-                    ' odbiorców <span class="sent-src">(' + src + ')</span>';
+                    ' ' + t('quota.recipients') + ' <span class="sent-src">(' + src + ')</span>';
             })
             .catch(function () { box.innerHTML = '<span class="usage-na">—</span>'; });
     }
@@ -813,25 +845,25 @@
         $('ban_user_email').value = email;
         formMsg($('banModal'), '');
         var sel = $('ban_ip_select');
-        sel.innerHTML = '<option value="">Ładowanie IP…</option>';
+        sel.innerHTML = '<option value="">' + t('ban.ip.loading') + '</option>';
         tfetch('user_ips.php?email=' + encodeURIComponent(email)).then(readJson)
             .then(function (d) {
-                sel.innerHTML = '<option value="">-- Wybierz IP --</option>';
-                if (d.error) { sel.innerHTML = '<option value="">Brak IP (błąd)</option>'; return; }
+                sel.innerHTML = '<option value="">' + t('ban.ip.choose') + '</option>';
+                if (d.error) { sel.innerHTML = '<option value="">' + t('ban.ip.error') + '</option>'; return; }
                 var added = {};
-                var labels = { reg_ip: 'Rejestracja', first_login_ip: 'Pierwsze logowanie', prev_login_ip: 'Poprzednie logowanie', last_login_ip: 'Ostatnie logowanie' };
+                var labels = { reg_ip: t('ban.ip.reg'), first_login_ip: t('ban.ip.first_login'), prev_login_ip: t('ban.ip.prev_login'), last_login_ip: t('ban.ip.last_login') };
                 if (d.flags) Object.keys(labels).forEach(function (k) {
                     var v = d.flags[k];
                     if (v && !added[v]) { addOpt(sel, v, v + ' (' + labels[k] + ')'); added[v] = 1; }
                 });
                 if (Array.isArray(d.recent)) d.recent.forEach(function (ip) { if (ip && !added[ip]) { addOpt(sel, ip, ip); added[ip] = 1; } });
-                if (sel.options.length === 1) sel.innerHTML = '<option value="">Brak znanych IP</option>';
-            }).catch(function () { sel.innerHTML = '<option value="">Błąd pobierania IP</option>'; });
+                if (sel.options.length === 1) sel.innerHTML = '<option value="">' + t('ban.ip.none') + '</option>';
+            }).catch(function () { sel.innerHTML = '<option value="">' + t('ban.ip.fetch_failed') + '</option>'; });
         openModal('banModal', 'ban_ip_select');
     }
 
     function showDirectBanModal(ip) {
-        $('ban_user_email').value = 'N/A (log logowania administratorów)';
+        $('ban_user_email').value = t('ban.direct_email');
         formMsg($('banModal'), '');
         var sel = $('ban_ip_select');
         sel.innerHTML = '';
@@ -862,7 +894,7 @@
         $('confirm_msg').textContent = o.msg;
         var ok = $('confirm_ok');
         ok.className = 'btn' + (o.danger ? ' btn-danger' : '');
-        ok.innerHTML = '<i class="ri-check-line" aria-hidden="true"></i> ' + esc(o.okLabel || 'Potwierdź');
+        ok.innerHTML = '<i class="ri-check-line" aria-hidden="true"></i> ' + esc(o.okLabel || t('confirm.ok'));
         formMsg($('confirmModal'), '');
         confirmAction = o;
         openModal('confirmModal', 'confirm_ok');
@@ -872,7 +904,7 @@
         var o = confirmAction;
         if (!o) return;
         var ok = $('confirm_ok');
-        busy(ok, true, o.busyLabel || 'Wykonywanie…');
+        busy(ok, true, o.busyLabel || t('btn.running'));
         Promise.resolve(o.run()).then(function (d) {
             busy(ok, false);
             d = d || {};
@@ -880,11 +912,13 @@
             if (d.ok || d.done) {
                 confirmAction = null;
                 closeModal('confirmModal', true);
-                report(d);
+                var under = topModal();      // potwierdzenie z wnętrza innego okna (np. usunięcie aliasu) — komunikat tam
+                if (under) formMsg(under, d.error || d.msg, d.error ? 'err' : 'ok');
+                else report(d, o.form);
                 if (o.after) o.after(d);
                 refreshAfter(d);
             } else {
-                formMsg($('confirmModal'), d.error || 'Operacja się nie powiodła.');
+                formMsg($('confirmModal'), d.error || t('op.failed'));
             }
         });
     }
@@ -895,7 +929,7 @@
     function openManageBan(data) {
         currentBan = { ip: data.ip, type: data.type, jail: data.jail || '' };
         $('mb_ip').textContent = data.ip;
-        $('mb_type').textContent = data.type === 'local' ? 'Lokalny (baza panelu)' : 'Fail2Ban — jail: ' + currentBan.jail;
+        $('mb_type').textContent = data.type === 'local' ? t('ban.type.local') : t('ban.type.f2b', { jail: currentBan.jail });
         $('mb_change_wrap').hidden = data.type === 'local';
         $('mb_duration').hidden = $('mb_target_jail').value !== 'panel-tempban';
         openModal('manageBanModal', data.type === 'local' ? 'mb_unban_btn' : 'mb_target_jail');
@@ -905,7 +939,7 @@
         var b = currentBan;
         closeModal('manageBanModal');
         askConfirm({
-            title: 'Odblokować IP?', msg: 'Adres ' + b.ip + ' zostanie całkowicie odblokowany.', okLabel: 'Odblokuj', busyLabel: 'Odblokowywanie…',
+            title: t('unban.title'), msg: t('unban.msg', { ip: b.ip }), okLabel: t('unban.ok'), busyLabel: t('unban.busy'),
             run: function () { return postFields({ unban_ip: 1, ip: b.ip, unban_type: b.type, jail: b.jail }); }
         });
     }
@@ -919,8 +953,9 @@
         var durLabel = isTemp ? durSel.options[durSel.selectedIndex].text : '';
         closeModal('manageBanModal');
         askConfirm({
-            title: 'Zmienić typ bana?', okLabel: 'Przenieś', busyLabel: 'Przenoszenie…',
-            msg: 'IP ' + b.ip + ' zostanie przeniesione: ' + b.jail + ' → ' + target + (isTemp ? ' (na ' + durLabel + ')' : '') + '.',
+            title: t('move.title'), okLabel: t('move.ok'), busyLabel: t('move.busy'),
+            msg: isTemp ? t('move.msg_temp', { ip: b.ip, from: b.jail, to: target, duration: durLabel })
+                : t('move.msg', { ip: b.ip, from: b.jail, to: target }),
             run: function () { return postFields({ move_ban: 1, ip: b.ip, from_jail: b.jail, to_jail: target, duration: duration }); }
         });
     }
@@ -929,7 +964,7 @@
 
     var SCAN_SOURCES = [
         { key: 'ssh', label: 'SSH' }, { key: 'dovecot', label: 'Dovecot' },
-        { key: 'postfix', label: 'Postfix SASL' }, { key: 'db', label: 'Baza panelu' }
+        { key: 'postfix', label: 'Postfix SASL' }, { key: 'db', label: t('scan.source.db') }
     ];
     var scan = { running: false, finished: false, agg: null, banned: {}, failed: [], from: '', to: '' };
 
@@ -956,8 +991,8 @@
         scan.failed = [];
         scan.from = $('scan_from').value;
         scan.to = $('scan_to').value;
-        busy($('scan_run'), true, 'Skanowanie…');
-        $('scan_results').innerHTML = '<p class="empty-state-text">Na razie brak wyników…</p>';
+        busy($('scan_run'), true, t('scan.busy'));
+        $('scan_results').innerHTML = '<p class="empty-state-text">' + t('scan.no_results_yet') + '</p>';
         $('scan_status').hidden = false;
         $('scan_ban_msg').innerHTML = '';
         scanNext(0);
@@ -980,15 +1015,16 @@
             scan.finished = true;
             busy($('scan_run'), false);
             $('scan_status_label').innerHTML = scan.failed.length
-                ? '<i class="ri-error-warning-line" aria-hidden="true"></i> Zakończono z błędami źródeł (' + scan.failed.length + ')'
-                : '<i class="ri-checkbox-circle-line" aria-hidden="true"></i> Przeszukano wszystkie źródła (' + esc(scan.from) + ' → ' + esc(scan.to) + ')';
+                ? '<i class="ri-error-warning-line" aria-hidden="true"></i> ' + t('scan.done_errors', { n: scan.failed.length })
+                : '<i class="ri-checkbox-circle-line" aria-hidden="true"></i> ' + t('scan.done_all', { from: esc(scan.from), to: esc(scan.to) });
             $('scan_progress_fill').style.width = '100%';
             renderScanSteps(SCAN_SOURCES.length);
             renderScanResults();
             return;
         }
         var src = SCAN_SOURCES[i];
-        $('scan_status_label').innerHTML = '<i class="ri-loader-4-line spin" aria-hidden="true"></i> Skanuję: <b>' + src.label + '</b> (' + (i + 1) + '/' + SCAN_SOURCES.length + ')';
+        $('scan_status_label').innerHTML = '<i class="ri-loader-4-line spin" aria-hidden="true"></i> ' +
+            t('scan.scanning', { source: src.label, current: i + 1, total: SCAN_SOURCES.length });
         $('scan_progress_fill').style.width = Math.round(i / SCAN_SOURCES.length * 100) + '%';
         renderScanSteps(i);
         getJSON(ENDPOINT + '?ajax_scan=1&source=' + src.key + '&from=' + encodeURIComponent(scan.from) + '&to=' + encodeURIComponent(scan.to), 120000)
@@ -1020,41 +1056,41 @@
 
     function scanActionCell(ip) {
         var b = scan.banned[ip];
-        if (b) return '<span class="scan-banned"><i class="ri-checkbox-circle-line" aria-hidden="true"></i> Zbanowano (' + esc(b) + ')</span>';
+        if (b) return '<span class="scan-banned"><i class="ri-checkbox-circle-line" aria-hidden="true"></i> ' + t('scan.banned', { label: esc(b) }) + '</span>';
         if (bansIndex[ip]) {
-            return '<div class="scan-ban-controls"><span class="scan-already" title="To IP jest już na liście blokad">' +
-                '<i class="ri-shield-check-line" aria-hidden="true"></i> Już zbanowane (' + esc(bansIndex[ip].label) + ')</span>' +
-                '<button type="button" class="btn-action btn-manage" data-scan-unban="' + esc(ip) + '"><i class="ri-lock-unlock-line" aria-hidden="true"></i> Odbanuj</button></div>';
+            return '<div class="scan-ban-controls"><span class="scan-already" title="' + escAttr(t('scan.already_title')) + '">' +
+                '<i class="ri-shield-check-line" aria-hidden="true"></i> ' + t('scan.already', { label: esc(bansIndex[ip].label) }) + '</span>' +
+                '<button type="button" class="btn-action btn-manage" data-scan-unban="' + esc(ip) + '"><i class="ri-lock-unlock-line" aria-hidden="true"></i> ' + t('scan.unban') + '</button></div>';
         }
-        return '<div class="scan-ban-controls"><select class="scan-ban-sel" aria-label="Rodzaj blokady dla ' + esc(ip) + '">' +
-            '<option value="perma">Na stałe</option><option value="3600">1 godz.</option><option value="21600">6 godz.</option>' +
-            '<option value="86400">24 godz.</option><option value="259200">3 dni</option><option value="604800">7 dni</option>' +
-            '<option value="2592000">30 dni</option><option value="7776000">3 miesiące</option></select>' +
-            '<button type="button" class="btn-action btn-danger-action" data-scan-ban="' + esc(ip) + '"><i class="ri-forbid-line" aria-hidden="true"></i> Zbanuj</button></div>';
+        return '<div class="scan-ban-controls"><select class="scan-ban-sel" aria-label="' + escAttr(t('scan.ban_kind', { ip: ip })) + '">' +
+            '<option value="perma">' + t('scan.dur.perma') + '</option><option value="3600">' + t('scan.dur.1h') + '</option><option value="21600">' + t('scan.dur.6h') + '</option>' +
+            '<option value="86400">' + t('scan.dur.24h') + '</option><option value="259200">' + t('scan.dur.3d') + '</option><option value="604800">' + t('scan.dur.7d') + '</option>' +
+            '<option value="2592000">' + t('scan.dur.30d') + '</option><option value="7776000">' + t('scan.dur.3m') + '</option></select>' +
+            '<button type="button" class="btn-action btn-danger-action" data-scan-ban="' + esc(ip) + '"><i class="ri-forbid-line" aria-hidden="true"></i> ' + t('scan.ban') + '</button></div>';
     }
 
     function renderScanResults() {
         var box = $('scan_results');
         var rows = scanRows();
-        $('scan_status_count').textContent = 'Znalezione: ' + rows.length + ' IP (próg ≥ ' + scanMin() + ')';
+        $('scan_status_count').textContent = t('scan.count', { n: rows.length, min: scanMin() });
         if (!rows.length) {
-            box.innerHTML = scan.finished ? '<p class="empty-state-text">Brak podejrzanych IP dla podanych kryteriów.</p>'
-                : '<p class="empty-state-text">Na razie brak wyników…</p>';
+            box.innerHTML = '<p class="empty-state-text">' + (scan.finished ? t('scan.none') : t('scan.no_results_yet')) + '</p>';
             return;
         }
-        var h = '<div class="table-responsive"><table><thead><tr><th scope="col">IP</th><th scope="col">Nieudane</th><th scope="col">Usługi (liczba)</th><th scope="col">Blokada</th></tr></thead><tbody>';
+        var h = '<div class="table-responsive"><table><thead><tr><th scope="col">' + t('scan.col.ip') + '</th><th scope="col">' + t('scan.col.failed') +
+            '</th><th scope="col">' + t('scan.col.services') + '</th><th scope="col">' + t('scan.col.block') + '</th></tr></thead><tbody>';
         rows.slice(0, 100).forEach(function (r) {
             var svc = Object.keys(r.services).map(function (s) { return s + ': ' + r.services[s]; }).join(', ');
             h += '<tr><td class="scan-ip"><strong>' + esc(r.ip) + '</strong></td><td>' + r.total + '</td>' +
                 '<td class="scan-svc">' + esc(svc) + '</td><td>' + scanActionCell(r.ip) + '</td></tr>';
         });
         h += '</tbody></table></div>';
-        if (rows.length > 100) h += '<div class="help-text">Pokazano 100 z ' + rows.length + ' IP — zawęź zakres dat lub podnieś próg.</div>';
+        if (rows.length > 100) h += '<div class="help-text">' + t('scan.shown', { shown: 100, n: rows.length }) + '</div>';
         box.innerHTML = h;
     }
 
     function scanBan(btn, ip, mode, label) {
-        busy(btn, true, 'Banowanie…');
+        busy(btn, true, t('ban.busy'));
         postFields({ ajax_scan_ban: '1', ip: ip, mode: mode }).then(function (d) {
             busy(btn, false);
             if (d.auth) return;
@@ -1063,9 +1099,9 @@
                 renderScanResults();
                 refreshBans();
                 loadAudit({ paging: true });
-                scanNote(true, 'Zbanowano ' + ip + ' (' + (d.label || label) + '). Lista blokad na karcie została odświeżona.');
+                scanNote(true, t('scan.banned_note', { ip: ip, label: d.label || label }));
             } else {
-                scanNote(false, d.error || 'Błąd banowania.');
+                scanNote(false, d.error || t('scan.ban_failed'));
             }
         });
     }
@@ -1112,7 +1148,7 @@
                     b.dataset.aliasSource = a.source;
                     b.dataset.aliasDest = a.destination;
                     b.innerHTML = '<i class="ri-delete-bin-line" aria-hidden="true"></i> ';
-                    b.appendChild(document.createTextNode('Usuń alias ' + a.source + ' → ' + a.destination));
+                    b.appendChild(document.createTextNode(t('alias.delete.button', { source: a.source, dest: a.destination })));
                     actions.appendChild(b);
                 });
             } else if (n.status === 'taken') {
@@ -1121,7 +1157,7 @@
                 s.className = 'btn btn-small btn-secondary';
                 s.dataset.action = 'show-user';
                 s.dataset.email = n.email || '';
-                s.innerHTML = '<i class="ri-search-line" aria-hidden="true"></i> Pokaż na liście kont';
+                s.innerHTML = '<i class="ri-search-line" aria-hidden="true"></i> ' + t('users.new.show_user');
                 actions.appendChild(s);
             }
         }
@@ -1147,17 +1183,17 @@
         if (!NU_LOCAL_RE.test(local)) {
             nuResetName();
             nuName = { status: 'invalid' };
-            nuSetAvail('taken', '✗ Niedozwolone znaki (litery, cyfry, . _ -; bez kropki ani myślnika na brzegach)');
+            nuSetAvail('taken', '✗ ' + t('users.new.invalid_chars'));
             return Promise.resolve();
         }
-        nuSetAvail('loading', 'Sprawdzanie…');
+        nuSetAvail('loading', t('checking'));
         return getJSON(ENDPOINT + '?ajax_check_user=1&local=' + encodeURIComponent(local) + '&domain=' + encodeURIComponent(domain))
             .then(function (d) {
                 if (my !== nuSeq || d.auth) return;
                 if (d.ok) renderNameStatus(d);
-                else { nuResetName(); nuName = { status: 'invalid' }; nuSetAvail('taken', '✗ ' + (d.msg || 'Błąd')); }
+                else { nuResetName(); nuName = { status: 'invalid' }; nuSetAvail('taken', '✗ ' + (d.msg || t('error'))); }
             })
-            .catch(function () { if (my === nuSeq) { nuName = null; nuSetAvail('taken', 'Brak połączenia — nie sprawdzono'); } });
+            .catch(function () { if (my === nuSeq) { nuName = null; nuSetAvail('taken', t('users.new.offline')); } });
     }
 
     function pwdMeter(barId, reqsId, val) {
@@ -1190,8 +1226,8 @@
     function pwdMatch(v1, v2, statusEl) {
         if (!statusEl) return;
         if (!v2) { statusEl.className = 'avail-status'; statusEl.textContent = ''; return; }
-        if (v1 === v2) { statusEl.className = 'avail-status free'; statusEl.textContent = 'Hasła są zgodne'; }
-        else { statusEl.className = 'avail-status taken'; statusEl.textContent = 'Hasła różnią się'; }
+        if (v1 === v2) { statusEl.className = 'avail-status free'; statusEl.textContent = t('pwd.match'); }
+        else { statusEl.className = 'avail-status taken'; statusEl.textContent = t('pwd.mismatch'); }
     }
 
     function resetPwdUi(barId, reqsId, matchId) {
@@ -1205,13 +1241,13 @@
     /** Opis błędu albo '' gdy formularz może iść na serwer (serwer i tak sprawdza wszystko jeszcze raz). */
     function nuValidate() {
         var local = ($('nu_local').value || '').trim();
-        if (!local) return ['nu_local', 'Podaj nazwę konta.'];
-        if (!NU_LOCAL_RE.test(local)) return ['nu_local', 'Niedozwolone znaki w nazwie konta (dozwolone: litery, cyfry, . _ -).'];
-        if (nuName && nuName.status === 'taken') return ['nu_local', 'Konto o tym adresie już istnieje.'];
-        if (nuName && nuName.status === 'alias') return ['nu_local', 'To adres aliasu — skrzynki o tej nazwie nie da się założyć (szczegóły i przycisk usunięcia aliasu pod polem adresu).'];
-        if (nuName && nuName.override && !$('nu_allow_reserved').checked) return ['nu_allow_reserved', nuName.msg + ' — zaznacz zgodę pod polem adresu, jeśli to zamierzone.'];
-        if (!pwdValid($('nu_password').value)) return ['nu_password', 'Hasło nie spełnia wymogów bezpieczeństwa.'];
-        if ($('nu_password').value !== $('nu_password2').value) return ['nu_password2', 'Hasła nie są identyczne.'];
+        if (!local) return ['nu_local', t('users.new.name_required')];
+        if (!NU_LOCAL_RE.test(local)) return ['nu_local', t('users.new.invalid_name')];
+        if (nuName && nuName.status === 'taken') return ['nu_local', t('users.new.exists')];
+        if (nuName && nuName.status === 'alias') return ['nu_local', t('users.new.is_alias')];
+        if (nuName && nuName.override && !$('nu_allow_reserved').checked) return ['nu_allow_reserved', t('users.new.override_hint', { msg: nuName.msg })];
+        if (!pwdValid($('nu_password').value)) return ['nu_password', t('pwd.weak')];
+        if ($('nu_password').value !== $('nu_password2').value) return ['nu_password2', t('pwd.not_identical')];
         return null;
     }
 
@@ -1227,9 +1263,8 @@
     function deleteAlias(btn) {
         var id = btn.dataset.aliasId, src = btn.dataset.aliasSource, dst = btn.dataset.aliasDest;
         askConfirm({
-            title: 'Usunąć alias?', danger: true, okLabel: 'Usuń alias', busyLabel: 'Usuwanie…',
-            msg: 'Alias ' + src + ' → ' + dst + ' zniknie z bazy: poczta na ' + src + ' przestanie trafiać do ' + dst +
-                ' i do czasu założenia skrzynki ' + src + ' będzie odrzucana. Panel nie odtworzy aliasu (pełny wiersz zostanie w dzienniku audytowym).',
+            title: t('alias.delete.title'), danger: true, okLabel: t('alias.delete.ok'), busyLabel: t('alias.delete.busy'),
+            msg: t('alias.delete.msg', { source: src, dest: dst }),
             run: function () { return postFields({ delete_alias: 1, alias_id: id, alias_source: src }); },
             after: function () {
                 // nazwa jest teraz "tylko" zarezerwowana: fokus na zgodzie (albo na nazwie), okno zostaje otwarte
@@ -1253,8 +1288,8 @@
     }
 
     function rpValidate() {
-        if (!pwdValid($('rp_password').value)) return ['rp_password', 'Hasło nie spełnia wymogów bezpieczeństwa.'];
-        if ($('rp_password').value !== $('rp_password2').value) return ['rp_password2', 'Hasła nie są identyczne.'];
+        if (!pwdValid($('rp_password').value)) return ['rp_password', t('pwd.weak')];
+        if ($('rp_password').value !== $('rp_password2').value) return ['rp_password2', t('pwd.not_identical')];
         return null;
     }
 
@@ -1265,7 +1300,7 @@
         Object.keys(values).forEach(function (name) {
             var v = values[name];
             document.querySelectorAll('[data-bind="' + name + '"]').forEach(function (el) { el.textContent = v; });
-            document.querySelectorAll('[data-placeholder-bind="' + name + '"]').forEach(function (el) { el.placeholder = 'puste = globalny (' + v + ')'; });
+            document.querySelectorAll('[data-placeholder-bind="' + name + '"]').forEach(function (el) { el.placeholder = t('settings.placeholder_global', { value: v }); });
             var el = form.elements.namedItem(name);
             if (!el || el.type === 'hidden') return;
             if (el.type === 'checkbox') el.checked = !!v;
@@ -1278,11 +1313,11 @@
         if (form.elements.namedItem('create_user')) err = nuValidate();
         else if (form.elements.namedItem('reset_user_password')) err = rpValidate();
         else if (form.elements.namedItem('change_password') && form.elements.namedItem('new_password').value !== form.elements.namedItem('confirm_password').value) {
-            err = ['cp_confirm', 'Nowe hasła nie są identyczne.'];
+            err = ['cp_confirm', t('pwd.new_not_identical')];
         }
         if (!err) return true;
         var modal = form.closest('.modal');
-        if (modal) formMsg(modal, err[1]); else toast('err', err[1]);
+        if (modal) formMsg(modal, err[1]); else flash('err', err[1], flashHost(form));
         var f = $(err[0]);
         if (f) f.focus();
         return false;
@@ -1295,9 +1330,10 @@
             var jail = form.elements.namedItem('f2b_jail').value;
             if (!ip) { form.elements.namedItem('f2b_ip').focus(); return true; }
             askConfirm({
-                title: 'Zbanować IP?', danger: true, okLabel: 'Zbanuj', busyLabel: 'Banowanie…',
-                msg: 'Adres ' + ip + ' zostanie zbanowany w Fail2Ban (jail: ' + jail + ').',
+                title: t('ban.title'), danger: true, okLabel: t('ban.ok'), busyLabel: t('ban.busy'),
+                msg: t('ban.msg', { ip: ip, jail: jail }),
                 run: function () { return go(); },
+                form: form,
                 after: function () { form.elements.namedItem('f2b_ip').value = ''; }
             });
             return true;
@@ -1305,24 +1341,57 @@
         var chk = form.dataset.confirmCheck && form.elements.namedItem(form.dataset.confirmCheck);
         if (chk && chk.checked) {
             askConfirm({
-                title: 'Ustawić limit wszystkim kontom?', okLabel: 'Zapisz i zastosuj', busyLabel: 'Zapisywanie…',
-                msg: 'Domyślny limit (' + form.elements.namedItem('mailbox_quota_value').value + ' ' + form.elements.namedItem('mailbox_quota_unit').value +
-                    ') zostanie od razu ustawiony WSZYSTKIM kontom poza admin@ — także tym, które mają dziś inny limit.',
+                title: t('quota.all.title'), okLabel: t('quota.all.ok'), busyLabel: t('btn.saving'),
+                msg: t('quota.all.msg', { value: form.elements.namedItem('mailbox_quota_value').value, unit: form.elements.namedItem('mailbox_quota_unit').value }),
                 run: function () { return go(); },
+                form: form,
                 after: function (d) { applyValues(form, d.values); afterSettingsSaved(form, d); }
+            });
+            return true;
+        }
+        // Potwierdzenie z tekstami z szablonu (data-confirm-title / -msg / -ok / -busy), np. usunięcie języka.
+        if (form.dataset.confirm === 'generic') {
+            askConfirm({
+                title: form.dataset.confirmTitle || '', danger: true, okLabel: form.dataset.confirmOk, busyLabel: form.dataset.confirmBusy,
+                msg: form.dataset.confirmMsg || '',
+                run: function () { return go(); },
+                form: form,
+                after: function (d) { afterLangOp(form, d); }
             });
             return true;
         }
         return false;
     }
 
+    /* Zapis ustawień: sekret CAPTCHA nigdy nie wraca do przeglądarki — po zapisie pole jest puste, a podpowiedź mówi,
+       czy dla danego dostawcy sekret jest zapisany. */
     function afterSettingsSaved(form, d) {
-        var sec = form.elements.namedItem('recaptcha_secret_key');
-        if (sec && d.data && d.data.recaptcha_secret_set) sec.placeholder = sec.dataset.placeholderSet || sec.placeholder;
+        var set = (d.data && d.data.captcha_secret_set) || {};
+        Object.keys(set).forEach(function (pid) {
+            var sec = form.elements.namedItem(pid + '_secret_key');
+            if (sec && set[pid]) sec.placeholder = sec.dataset.placeholderSet || sec.placeholder;
+        });
+        captchaSwitch(form.querySelector('[data-captcha-switch]'));
+    }
+
+    /* Ustawienia → CAPTCHA: widoczne są tylko pola kluczy wybranego dostawcy. */
+    function captchaSwitch(sel) {
+        if (!sel) return;
+        document.querySelectorAll('.captcha-keys[data-captcha-for]').forEach(function (box) {
+            box.toggleAttribute('data-inactive', box.dataset.captchaFor !== sel.value);
+        });
+    }
+
+    /* Języki: po każdej operacji serwer odsyła świeże wiersze tabeli; formularze kopii / wgrania czyszczą się po sukcesie. */
+    function afterLangOp(form, d) {
+        if (!d || !d.data || typeof d.data.languages_html !== 'string') return;
+        var rows = $('lang-rows');
+        if (rows) rows.innerHTML = d.data.languages_html;
+        if (d.ok && form && form.hasAttribute('data-reset-on-success')) form.reset();
     }
 
     function submitAjax(form, submitter) {
-        if (expired) { toast('err', 'Sesja wygasła — zaloguj się ponownie.'); return; }
+        if (expired) { toast('err', t('session.expired')); return; }
         if (!preValidate(form)) return;
         var btn = submitter || form.querySelector('[type="submit"]');
         var modal = form.closest('.modal');
@@ -1333,7 +1402,7 @@
         };
         if (needsConfirm(form, send)) return;
 
-        busy(btn, true, form.dataset.busyLabel || 'Zapisywanie…');
+        busy(btn, true, form.dataset.busyLabel || t('btn.saving'));
         if (modal) formMsg(modal, '');
         send().then(function (d) {
             busy(btn, false);
@@ -1347,14 +1416,15 @@
                     report(d);
                     if (form.elements.namedItem('create_user')) form.reset();
                 } else {
-                    formMsg(modal, d.error || 'Operacja się nie powiodła.');
+                    formMsg(modal, d.error || t('op.failed'));
                     if (d.data && d.data.name) renderNameStatus(Object.assign({ email: '' }, d.data.name));
                     var pass = form.querySelector('input[type="password"]');
                     if (form.elements.namedItem('delete_user_confirm') && pass) pass.focus();
                 }
             } else {
                 if (d.ok) flashSaved(btn);
-                report(d);
+                report(d, form);
+                afterLangOp(form, d);
             }
             refreshAfter(d, { flash: d.data && d.data.id });
         });
@@ -1363,49 +1433,49 @@
     /* ---------------- Delegacja: kliknięcia ---------------- */
 
     document.addEventListener('click', function (e) {
-        var t = e.target;
-        if (t.closest('.toast-close')) { dismissToast(t.closest('.toast')); return; }
-        if (t.closest('#confirm_ok')) { runConfirm(); return; }
-        if (t.closest('#mb_unban_btn')) { manageUnban(); return; }
-        if (t.closest('#mb_move_btn')) { manageMove(); return; }
-        if (t.closest('#scan_run')) { runScan(); return; }
+        var tg = e.target;
+        if (tg.closest('.flash-close')) { dismissFlash(tg.closest('.flash'), true); return; }
+        if (tg.closest('#confirm_ok')) { runConfirm(); return; }
+        if (tg.closest('#mb_unban_btn')) { manageUnban(); return; }
+        if (tg.closest('#mb_move_btn')) { manageMove(); return; }
+        if (tg.closest('#scan_run')) { runScan(); return; }
 
-        var sunb = t.closest('[data-scan-unban]');
+        var sunb = tg.closest('[data-scan-unban]');
         if (sunb) {
             var uip = sunb.dataset.scanUnban;
             var bi = bansIndex[uip] || { type: 'fail2ban', jail: '', label: 'fail2ban' };
             askConfirm({
-                title: 'Odblokować IP?', okLabel: 'Odblokuj', busyLabel: 'Odblokowywanie…',
-                msg: 'Adres ' + uip + ' zostanie całkowicie odblokowany (' + bi.label + ').',
+                title: t('unban.title'), okLabel: t('unban.ok'), busyLabel: t('unban.busy'),
+                msg: t('unban.msg_label', { ip: uip, label: bi.label }),
                 run: function () { return postFields({ unban_ip: 1, ip: uip, unban_type: bi.type, jail: bi.jail }); },
                 after: function (d) { scanNote(true, d.msg); }
             });
             return;
         }
-        var sban = t.closest('[data-scan-ban]');
+        var sban = tg.closest('[data-scan-ban]');
         if (sban) {
             var sip = sban.dataset.scanBan;
             var sel = sban.closest('.scan-ban-controls').querySelector('.scan-ban-sel');
             var mode = sel ? sel.value : 'perma';
-            var optLabel = sel ? sel.options[sel.selectedIndex].text : 'na stałe';
+            var optLabel = sel ? sel.options[sel.selectedIndex].text : t('scan.perma_label');
             scanBan(sban, sip, mode, optLabel);
             return;
         }
 
-        var tab = t.closest('.tab[data-tab]');
+        var tab = tg.closest('.tab[data-tab]');
         if (tab) { showTab(tab.dataset.tab); return; }
 
-        var qs = t.closest('[data-qsort]');
-        if (qs) { toggleQSortKey(qs.dataset.qsort); return; }
+        var qs = tg.closest('[data-qsort]');
+        if (qs) { sortUsers('ico', qs.dataset.qsort, e.shiftKey); return; }
 
-        var th = t.closest('th.sortable[data-col]');
+        var th = tg.closest('th.sortable[data-col]');
         if (th) {
             if (th.dataset.nav === 'bans') sortBansTable(parseInt(th.dataset.col, 10), true);
             else changeSort(th.dataset.nav, th.dataset.col, e.shiftKey);
             return;
         }
 
-        var pag = t.closest('.pagination-btn[data-page]');
+        var pag = tg.closest('.pagination-btn[data-page]');
         if (pag) {
             if (pag.disabled || pag.classList.contains('active')) return;
             var pnav = pag.dataset.nav;
@@ -1416,10 +1486,10 @@
             return;
         }
 
-        var advBtn = t.closest('[data-adv-clear]');
+        var advBtn = tg.closest('[data-adv-clear]');
         if (advBtn) { advClearStart($(advBtn.dataset.advClear)); return; }
 
-        var el = t.closest('[data-action]');
+        var el = tg.closest('[data-action]');
         if (!el) return;
         var a = el.dataset.action;
         if (a === 'search-ip')        triggerSearch(el.dataset.ip, e.shiftKey);
@@ -1433,7 +1503,7 @@
         else if (a === 'delete')      showDeleteModal(el.dataset.id, el.dataset.email);
         else if (a === 'delete-alias') deleteAlias(el);
         else if (a === 'show-user')   { closeModal('addUserModal', true); triggerSearch(el.dataset.email, false); }
-        else if (a === 'refresh-audit') { busy(el, true, 'Odświeżanie…'); loadAudit({ paging: true }).then(function () { busy(el, false); }); }
+        else if (a === 'refresh-audit') { busy(el, true, t('btn.refreshing')); loadAudit({ paging: true }).then(function () { busy(el, false); }); }
         else if (a === 'modal-close') closeModal(el.dataset.modal);
     });
 
@@ -1488,6 +1558,7 @@
     /* ---------------- Zmiany / wpisywanie ---------------- */
 
     document.addEventListener('change', function (e) {
+        if (e.target.matches && e.target.matches('[data-captcha-switch]')) captchaSwitch(e.target);
         var per = e.target.closest('[data-per]');
         if (per) {
             var nav = per.dataset.per;
@@ -1498,7 +1569,7 @@
         }
         if (e.target.id === 'ban_reason_select') {
             var custom = $('custom_reason_group');
-            if (e.target.value === 'custom') { custom.hidden = false; $('ban_reason_input').value = $('ban_custom_reason').value || 'Własny powód'; $('ban_custom_reason').focus(); }
+            if (e.target.value === 'custom') { custom.hidden = false; $('ban_reason_input').value = $('ban_custom_reason').value || t('ban.custom_reason'); $('ban_custom_reason').focus(); }
             else { custom.hidden = true; $('ban_reason_input').value = e.target.value; }
         }
         if (e.target.id === 'nu_domain') nuCheckAvailability();
@@ -1524,7 +1595,7 @@
             }, 400);
         }
         if (id === 'ban-search-input') applyBansFilter();
-        if (id === 'ban_custom_reason') $('ban_reason_input').value = e.target.value || 'Własny powód';
+        if (id === 'ban_custom_reason') $('ban_reason_input').value = e.target.value || t('ban.custom_reason');
         if (id === 'nu_local') {
             formMsg($('addUserModal'), '');
             clearTimeout(nuAvailTimer);
@@ -1554,7 +1625,7 @@
             icon.className = light ? 'ri-sun-line' : 'ri-moon-line';
             btn.setAttribute('aria-pressed', light ? 'true' : 'false');
         };
-        // dawny wybór zapisany tylko w localStorage (sprzed 1.2.0) -> przenieś do ciasteczka (serwer renderuje motyw)
+        // dawny wybór zapisany tylko w localStorage (starsze wersje) -> przenieś do ciasteczka (serwer renderuje motyw)
         try { if (localStorage.getItem('theme') === 'light' && document.cookie.indexOf('mp_theme=') === -1) { apply(true); saveTheme(true); } } catch (e) { /* prywatny tryb */ }
         btn.addEventListener('click', function () {
             var light = body.classList.contains('dark-mode');
@@ -1572,14 +1643,23 @@
     /* ---------------- Start ---------------- */
 
     window.addEventListener('resize', (function () {
-        var t = null;
-        return function () { clearTimeout(t); t = setTimeout(releaseWidths, 250); };
+        var timer = null;
+        return function () { clearTimeout(timer); timer = setTimeout(releaseWidths, 250); };
     })());
-    document.querySelectorAll('#toasts .toast--ok').forEach(function (el) { armToast(el, 9000); });
     initTheme();
     rebuildBansIndex();
     renderQSortIcons();
     var hash = (location.hash || '').substring(1);
     if (TABS.indexOf(hash) > -1) showTab(hash);           // stare zakładki (#users) -> ?tab=users
     afterUsersRendered(null);                              // pierwsza strona kont jest już w HTML — dociągamy tylko użycie
+
+    /* Przełącznik języka (<details>): zamyka się klawiszem Esc (fokus wraca na przycisk) i kliknięciem poza nim. */
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var open = document.querySelector('.lang-switch[open]');
+        if (open) { open.open = false; open.querySelector('summary').focus(); }
+    });
+    document.addEventListener('click', function (e) {
+        document.querySelectorAll('.lang-switch[open]').forEach(function (d) { if (!d.contains(e.target)) d.open = false; });
+    });
 })();

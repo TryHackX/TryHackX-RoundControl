@@ -8,9 +8,10 @@ declare(strict_types=1);
 
 require __DIR__ . '/app/web.php';
 
+use App\I18n\Lang;
 use App\Portal\PortalController;
+use App\Security\Captcha;
 use App\Security\Csrf;
-use App\Security\Recaptcha;
 use App\Settings\Settings;
 use App\Support\Database;
 use App\Support\Http;
@@ -23,7 +24,9 @@ if (!empty($_SESSION['admin_id'])) {
     exit;
 }
 
-SecurityHeaders::send();
+// CAPTCHA: dowolny z dostawców; polityka CSP dopuszcza wyłącznie hosty AKTYWNEGO dostawcy.
+$captchaCfg = Captcha::config();
+SecurityHeaders::send(Captcha::cspHostsIn($captchaCfg));
 
 // Obsługa akcji AJAX.
 if (Http::isPost() && isset($_POST['ajax_action'])) {
@@ -36,8 +39,13 @@ $domains = $users->domains();
 
 $enabled  = (Settings::get('allow_registration', Settings::get('registration_enabled', '1')) === '1')
             && $domains !== [];
-$rcOn     = Recaptcha::isEnabled();
-$siteKey  = Recaptcha::siteKey();
+$captcha  = Captcha::activeIn($captchaCfg) ? [
+    'provider' => Captcha::providerOf($captchaCfg),
+    'siteKey'  => Captcha::siteKeyOf($captchaCfg),
+    'script'   => Captcha::scriptUrlIn($captchaCfg, Lang::current()),
+    'class'    => Captcha::widgetClassIn($captchaCfg),
+    'size'     => Captcha::WIDGET_SIZE[Captcha::providerOf($captchaCfg)] ?? null,
+] : null;
 $pwdMin   = Settings::int('pwd_min_length', 10);
 $pwdUpper = Settings::int('pwd_require_upper', 1);
 $pwdDigit = Settings::int('pwd_require_digit', 1);

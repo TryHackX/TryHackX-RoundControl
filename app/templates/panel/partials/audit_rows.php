@@ -4,9 +4,11 @@ declare(strict_types=1);
 use App\Support\Html;
 use App\Support\Ip;
 
+use function App\I18n\h;
+
 /** @var array<int,array> $rows */
 if ($rows === []): ?>
-<tr class="empty-row"><td colspan="5" class="empty-state-text">Brak wpisów.</td></tr>
+<tr class="empty-row"><td colspan="5" class="empty-state-text"><?= h('rows.empty_entries') ?></td></tr>
 <?php endif;
 foreach ($rows as $l):
     $ip   = Ip::toStr($l['ip']) ?? '';

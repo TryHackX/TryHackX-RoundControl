@@ -10,9 +10,10 @@ use App\Auth\AuthFlow;
 use App\Security\Csrf;
 use App\Security\Password;
 use App\Security\RateLimiter;
-use App\Security\Recaptcha;
+use App\Security\Captcha;
 use App\Settings\Settings;
 use App\Support\AuthLog;
+use App\Support\Cookie;
 use App\Support\Database;
 use App\Support\Env;
 use App\Support\Http;
@@ -24,14 +25,16 @@ use PDO;
 use PDOException;
 use Throwable;
 
+use function App\I18n\t;
+
 /**
  * Router akcji AJAX portalu. Każda metoda-handler zwraca tablicę odpowiedzi;
  * wyjątki PortalException zamieniane są na komunikat dla użytkownika.
  *
- * 1.1.0: serwer nie zdradza, czy konto istnieje ani czy jest administratorem (krok "identyfikacja" odpowiada tak samo
+ * Serwer nie zdradza, czy konto istnieje ani czy jest administratorem (krok "identyfikacja" odpowiada tak samo
  * na każdy poprawnie zapisany adres); limity są szybkie (odmowa zamiast sleep()) — patrz RateLimiter.
  *
- * 1.2.0 — logowanie: adres -> hasło -> (administrator) kafelki. Hasło sprawdzane jest NAJPIERW jako hasło do panelu
+ * Logowanie: adres -> hasło -> (administrator) kafelki. Hasło sprawdzane jest NAJPIERW jako hasło do panelu
  * (zawsze jedno Argon2id, dla nie-administratora względem atrapy), a gdy nim nie jest — jako hasło skrzynki (logowanie
  * IMAP przez Roundcube). Każde złe hasło przechodzi więc tę samą drogę (Argon2id + IMAP) i dostaje tę samą odpowiedź,
  * niezależnie od tego, czy adres nie istnieje, jest zwykłym kontem czy kontem administratora. Kto zna hasło do panelu,
@@ -60,18 +63,18 @@ final class PortalController
         $resp = ['ok' => false, 'msg' => '', 'html' => '', 'redirect' => '', 'focus_id' => ''];
 
         if (!Csrf::check(Http::post('_csrf'))) {
-            return ['ok' => false, 'msg' => 'Błąd bezpieczeństwa (CSRF). Odśwież stronę.', 'reload' => true];
+            return ['ok' => false, 'msg' => t('portal.err.csrf'), 'reload' => true];
         }
 
         try {
             // Ręcznie zablokowany adres (ip_blocks, panel → "Zbanuj"): odmowa na wszystkie akcje portalu.
             if (!Ip::isTrusted(Ip::raw()) && $this->limiter->ipBlockedUntil(Ip::bin()) !== null) {
-                throw new PortalException('Dostęp z tego adresu IP jest zablokowany.');
+                throw new PortalException(t('rate.ip_blocked'));
             }
 
             if ($action === 'perform_login' && !$this->flow->valid('password')) {
                 // ten sam komunikat dla każdego adresu; front wraca do kroku "adres e-mail"
-                throw PortalException::withReset('Sesja logowania wygasła — podaj adres jeszcze raz.');
+                throw PortalException::withReset(t('portal.err.flow_expired'));
             }
 
             $resp = match ($action) {
@@ -81,7 +84,7 @@ final class PortalController
                 'cancel_login'       => $this->cancelLogin($resp),
                 'check_availability' => $this->checkAvailability($resp),
                 'register'           => $this->register($resp),
-                default              => throw new PortalException('Nieznana akcja'),
+                default              => throw new PortalException(t('portal.err.unknown_action')),
             };
         } catch (PortalException $e) {
             $resp['ok']  = false;
@@ -99,7 +102,7 @@ final class PortalController
                 $action, $e::class, $e->getMessage(), $e->getFile(), $e->getLine()
             ));
             $resp['ok']  = false;
-            $resp['msg'] = Env::isDev() ? 'Błąd: ' . $e->getMessage() : 'Wystąpił błąd serwera';
+            $resp['msg'] = Env::isDev() ? t('portal.err.dev', ['error' => $e->getMessage()]) : t('portal.err.server');
         }
 
         return $resp;
@@ -110,18 +113,18 @@ final class PortalController
         $email = Accounts::normalize((string) filter_var((string) Http::post('email', ''), FILTER_SANITIZE_EMAIL));
 
         if ($email === '') {
-            throw new PortalException('Podaj adres e-mail');
+            throw new PortalException(t('portal.err.email_required'));
         }
         if (strlen($email) > 190 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            throw new PortalException('Nieprawidłowy format adresu e-mail');
+            throw new PortalException(t('portal.err.email_format'));
         }
-        // Najpierw tania odmowa (baza), dopiero potem reCAPTCHA (żądanie HTTP do Google, do 5 s).
+        // Najpierw tania odmowa (baza), dopiero potem CAPTCHA (żądanie HTTP do dostawcy, do 8 s).
         $blocked = $this->limiter->loginBlocked($email, Ip::bin());
         if ($blocked !== null) {
             throw new PortalException($blocked);
         }
-        if (Recaptcha::isEnabled() && !Recaptcha::verify(Http::post('g-recaptcha-response'))) {
-            throw new PortalException('Błąd weryfikacji reCAPTCHA');
+        if (!Captcha::check('login')) {
+            throw new PortalException(t('portal.err.captcha'));
         }
 
         // Żadnego zapytania o konto: ten sam ekran dla istniejących i nieistniejących adresów, dla adminów i reszty.
@@ -142,16 +145,7 @@ final class PortalController
 
     private function rememberTarget(string $target): void
     {
-        if (headers_sent()) {
-            return;
-        }
-        setcookie('mp_target', $target, [
-            'expires'  => time() + 86400 * 180,
-            'path'     => '/',
-            'secure'   => !Env::isDev(),
-            'httponly' => true,
-            'samesite' => 'Lax',
-        ]);
+        Cookie::set('mp_target', $target, 86400 * 180);
     }
 
     /**
@@ -165,7 +159,7 @@ final class PortalController
         $ipBin    = Ip::bin();
 
         if ($password === '') {
-            throw new PortalException('Podaj hasło');
+            throw new PortalException(t('portal.err.password_required'));
         }
         $blocked = $this->limiter->loginBlocked($email, $ipBin);
         if ($blocked !== null) {
@@ -189,7 +183,7 @@ final class PortalController
             if ($isAdmin) {
                 $this->admins->logAttempt($email, false, 'Invalid password', $ipBin);
             }
-            throw PortalException::withReset('Nieprawidłowe dane logowania');
+            throw PortalException::withReset(t('portal.err.bad_credentials'));
         }
 
         return $this->webmailEntered($resp, $email);
@@ -225,7 +219,7 @@ final class PortalController
     {
         if (!$this->flow->valid('choose')) {
             $this->flow->clear();
-            throw PortalException::withReset('Wybór wygasł — zaloguj się jeszcze raz.');
+            throw PortalException::withReset(t('portal.err.choice_expired'));
         }
         $email = $this->flow->email();
 
@@ -234,7 +228,7 @@ final class PortalController
             $row = $this->admins->findById($this->flow->adminId());
             if ($row === null || !hash_equals($this->flow->adminFp(), hash('sha256', (string) $row['pwd_hash']))) {
                 $this->flow->clear();
-                throw PortalException::withReset('Wybór wygasł — zaloguj się jeszcze raz.');
+                throw PortalException::withReset(t('portal.err.choice_expired'));
             }
             return $this->panelEntered($resp, $email, ['id' => (int) $row['id'], 'pwd_hash' => (string) $row['pwd_hash']]);
         }
@@ -242,12 +236,12 @@ final class PortalController
         $password = $this->flow->takePassword((string) Http::post('key', ''));
         $this->flow->clear();
         if ($password === null) {
-            throw PortalException::withReset('Wybór wygasł — zaloguj się jeszcze raz.');
+            throw PortalException::withReset(t('portal.err.choice_expired'));
         }
         // Hasło zostało sprawdzone przed chwilą (administrator). Skrzynka może je mimo to odrzucić (konto zablokowane
         // w Dovecot, chwilowa awaria IMAP) — to nie jest zgadywanie hasła, więc bez zapisu porażki do limitów.
         if (!AuthenticatorFactory::make($this->users)->authenticate($email, $password)) {
-            throw PortalException::withReset('Webmail nie przyjął tego hasła (skrzynka może być zablokowana albo mieć inne hasło). Zaloguj się hasłem skrzynki.');
+            throw PortalException::withReset(t('portal.err.webmail_refused'));
         }
         return $this->webmailEntered($resp, $email);
     }
@@ -321,13 +315,13 @@ final class PortalController
         $domain = Accounts::normalize((string) Http::post('domain', ''));
 
         if (!Accounts::validLocal($local)) {
-            throw new PortalException('Niedozwolone znaki w nazwie');
+            throw new PortalException(t('portal.reg.bad_chars'));
         }
         if (!in_array($domain, $this->users->domains(), true)) {
-            throw new PortalException('Nieprawidłowa domena');
+            throw new PortalException(t('portal.reg.bad_domain'));
         }
         if (strlen($local . '@' . $domain) > Accounts::MAX_EMAIL) {
-            throw new PortalException('Adres jest za długi');
+            throw new PortalException(t('portal.reg.too_long'));
         }
         return [$local, $domain];
     }
@@ -335,10 +329,10 @@ final class PortalController
     private function checkAvailability(array $resp): array
     {
         if (!$this->registrationEnabled()) {
-            throw new PortalException('Rejestracja wyłączona');
+            throw new PortalException(t('portal.reg.disabled'));
         }
         if (!$this->limiter->allowNameProbe(Ip::bin())) {
-            throw new PortalException('Zbyt częste zapytania. Odczekaj chwilę.');
+            throw new PortalException(t('portal.reg.too_fast'));
         }
 
         [$local, $domain] = $this->parseName();
@@ -347,10 +341,10 @@ final class PortalController
         $resp['ok']     = true;
         $resp['status'] = $problem === null ? 'free' : 'taken';
         $resp['msg']    = match ($problem) {
-            null       => 'Wolne',
-            'reserved' => 'Zarezerwowane',
-            'taken'    => 'Zajęte',
-            default    => 'Niedostępne',
+            null       => t('portal.reg.free'),
+            'reserved' => t('portal.reg.reserved'),
+            'taken'    => t('portal.reg.taken'),
+            default    => t('portal.reg.unavailable'),
         };
 
         return $resp;
@@ -359,37 +353,37 @@ final class PortalController
     private function register(array $resp): array
     {
         if (!$this->registrationEnabled()) {
-            throw new PortalException('Rejestracja wyłączona');
+            throw new PortalException(t('portal.reg.disabled'));
         }
         if (!$this->limiter->allowNameProbe(Ip::bin())) {
-            throw new PortalException('Zbyt częste zapytania. Odczekaj chwilę.');
+            throw new PortalException(t('portal.reg.too_fast'));
         }
 
         $pass  = (string) Http::post('password', '');
         $pass2 = (string) Http::post('password2', '');
 
-        if (Recaptcha::isEnabled() && !Recaptcha::verify(Http::post('g-recaptcha-response'))) {
-            throw new PortalException('Błąd reCAPTCHA');
+        if (!Captcha::check('register')) {
+            throw new PortalException(t('portal.err.captcha'));
         }
         [$local, $domain] = $this->parseName();
         $email = $local . '@' . $domain;
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            throw new PortalException('Nieprawidłowy format adresu email');
+            throw new PortalException(t('portal.err.email_format'));
         }
         if (Accounts::isReserved($local, Settings::get('reserved_local_parts'))) {
-            throw new PortalException('Ta nazwa konta jest zarezerwowana');
+            throw new PortalException(t('portal.reg.reserved_name'));
         }
         if ($pass !== $pass2) {
-            throw new PortalException('Hasła nie są identyczne');
+            throw new PortalException(t('portal.reg.pass_mismatch'));
         }
         if (!Password::meetsPolicy($pass)) {
-            throw new PortalException('Hasło nie spełnia wymogów bezpieczeństwa');
+            throw new PortalException(t('portal.reg.pass_policy'));
         }
 
         // Limity + sprawdzenie nazwy + utworzenie konta pod jedną blokadą, żeby równoległe żądania nie przekraczały limitów.
         $ipBin = Ip::bin();
         if (!$this->limiter->lockRegistration($ipBin)) {
-            throw new PortalException('Spróbuj ponownie za chwilę');
+            throw new PortalException(t('portal.reg.retry_later'));
         }
         try {
             $throttle = $this->limiter->registrationThrottle();
@@ -400,14 +394,14 @@ final class PortalController
 
             $domainId = $this->users->domainIdForEmail($email);
             if ($domainId === null) {
-                throw new PortalException('Błąd konfiguracji domeny');
+                throw new PortalException(t('portal.reg.domain_config'));
             }
             $problem = $this->nameProblem($local, $email);
             if ($problem === 'taken') {
-                throw new PortalException('Konto o takiej nazwie już istnieje');
+                throw new PortalException(t('portal.reg.exists'));
             }
             if ($problem !== null) {
-                throw new PortalException('Ta nazwa konta jest niedostępna');
+                throw new PortalException(t('portal.reg.name_unavailable'));
             }
 
             $quota = Settings::int('mailbox_default_quota_mb', 1024);
@@ -415,7 +409,7 @@ final class PortalController
                 $this->users->create($domainId, Password::dovecotHash($pass), $email, $quota);
             } catch (PDOException $e) {
                 if (($e->errorInfo[1] ?? 0) === 1062) {
-                    throw new PortalException('Konto o takiej nazwie już istnieje');
+                    throw new PortalException(t('portal.reg.exists'));
                 }
                 throw $e;
             }
@@ -425,7 +419,7 @@ final class PortalController
         }
 
         $resp['ok']  = true;
-        $resp['msg'] = 'Konto utworzone pomyślnie!';
+        $resp['msg'] = t('portal.reg.created');
 
         return $resp;
     }

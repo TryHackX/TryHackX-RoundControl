@@ -5,6 +5,8 @@ namespace App\System;
 
 use App\Support\Env;
 
+use function App\I18n\t;
+
 /**
  * Fasada dla wywołań systemowych (Fail2Ban, Postfix, usuwanie skrzynek).
  * Aktywna wyłącznie na Linuksie poza trybem dev — na Windows/WAMP wszystkie
@@ -164,7 +166,7 @@ final class Commands
     {
         $proc = @proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w']], $pipes);
         if (!is_resource($proc)) {
-            return ['code' => -1, 'out' => 'proc_open nie powiodło się'];
+            return ['code' => -1, 'out' => t('cmd.proc_open_failed')];
         }
         $written = @fwrite($pipes[0], $stdin);
         fclose($pipes[0]);
@@ -172,7 +174,7 @@ final class Commands
         fclose($pipes[1]);
         $code = proc_close($proc);
         if ($written === false || $written < strlen($stdin)) {
-            return ['code' => $code === 0 ? -1 : $code, 'out' => trim($out . ' (nie przekazano całej propozycji)')];
+            return ['code' => $code === 0 ? -1 : $code, 'out' => trim($out . ' (' . t('cmd.proposal_incomplete') . ')')];
         }
         return ['code' => $code, 'out' => $out];
     }
@@ -339,7 +341,9 @@ final class Commands
         // own message says what it refused or what failed; it never reports success it did not verify.
         $r = self::pipeTo('sudo -n /usr/local/sbin/mailpanel-f2b-apply 2>&1', implode("\n", $lines) . "\n");
         if ($r['code'] !== 0) {
-            throw new \RuntimeException('Fail2Ban: ' . trim($r['out']) . ($r['code'] > 0 ? " (kod {$r['code']})" : ''));
+            throw new \RuntimeException($r['code'] > 0
+                ? t('cmd.f2b_failed', ['out' => trim($r['out']), 'code' => $r['code']])
+                : t('cmd.f2b_failed_nocode', ['out' => trim($r['out'])]));
         }
         return trim($r['out']);
     }
@@ -455,12 +459,12 @@ final class Commands
     public static function mailboxDeleteMessage(int $code): string
     {
         return match ($code) {
-            0       => 'Pliki poczty przeniesione do kwarantanny /var/mail/deleted — zostaną skasowane automatycznie po 30 dniach (do tego czasu można je odzyskać).',
-            4       => 'Na dysku nie było katalogu poczty tego konta (nic do przeniesienia).',
-            6       => 'Uwaga: konto nadal istnieje w Dovecot — pliki NIE zostały ruszone.',
-            7       => 'Uwaga: nie można potwierdzić w Dovecot, że konto nie istnieje (doveadm) — pliki NIE zostały ruszone.',
-            -1      => 'Pliki poczty nie zostały przeniesione do kwarantanny (brak konfiguracji sudo lub tryb dev) — zostały na dysku.',
-            default => "Uwaga: pliki poczty NIE zostały przeniesione do kwarantanny (kod $code) — sprawdź /var/mail/vhosts i dziennik; przenieś je ręcznie.",
+            0       => t('cmd.mailbox_moved'),
+            4       => t('cmd.mailbox_no_dir'),
+            6       => t('cmd.mailbox_still_in_dovecot'),
+            7       => t('cmd.mailbox_dovecot_unchecked'),
+            -1      => t('cmd.mailbox_not_moved_no_sudo'),
+            default => t('cmd.mailbox_not_moved', ['code' => $code]),
         };
     }
 

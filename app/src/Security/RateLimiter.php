@@ -8,6 +8,8 @@ use App\Support\Ip;
 use PDO;
 use Throwable;
 
+use function App\I18n\t;
+
 /**
  * Limity prób: logowanie (admin / webmail), zapytania o dostępność nazwy, blokady IP (ip_blocks) i throttling rejestracji.
  *
@@ -53,10 +55,10 @@ final class RateLimiter
         if (Ip::isTrusted(Ip::toStr($ipBin) ?? '')) {
             return null;
         }
-        $msg = 'Zbyt wiele prób logowania. Spróbuj ponownie za kilka minut.';
+        $msg = t('rate.too_many_logins');
 
         if ($this->ipBlockedUntil($ipBin) !== null) {
-            return 'Dostęp z tego adresu IP jest zablokowany.';
+            return t('rate.ip_blocked');
         }
 
         // Awaria samego limitera (np. brak tabeli / grantu w trakcie aktualizacji) nie może zamknąć logowania wszystkim,
@@ -175,10 +177,10 @@ final class RateLimiter
         $last  = $row[1] ? strtotime((string) $row[1]) : false;
 
         if ($maxPerWin > 0 && $count >= $maxPerWin) {
-            return ['ok' => false, 'msg' => "Limit rejestracji ($window h).", 'code' => 'rate'];
+            return ['ok' => false, 'msg' => t('rate.reg_window', ['hours' => $window]), 'code' => 'rate'];
         }
         if ($minSeconds > 0 && $last !== false && (time() - $last) < $minSeconds) {
-            return ['ok' => false, 'msg' => 'Zbyt szybko.', 'code' => 'interval'];
+            return ['ok' => false, 'msg' => t('rate.reg_interval'), 'code' => 'interval'];
         }
         if ($totalLimit > 0) {
             $sa = $this->pdo->prepare(
@@ -186,7 +188,7 @@ final class RateLimiter
             );
             $sa->execute([$lo, $hi, strlen($lo)]);
             if ((int) $sa->fetchColumn() >= $totalLimit) {
-                return ['ok' => false, 'msg' => 'Limit całkowity IP.', 'code' => 'total'];
+                return ['ok' => false, 'msg' => t('rate.reg_total'), 'code' => 'total'];
             }
         }
 

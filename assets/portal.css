@@ -225,9 +225,10 @@ button[type="submit"]:disabled {
     cursor: not-allowed;
     opacity: 0.6;
 }
-/* w trakcie żądania: przycisk nie "gaśnie", tylko pokazuje spinner (busy() w portal.js trzyma jego szerokość) */
-button[aria-busy="true"],
-button[type="submit"][aria-busy="true"]:disabled {
+/* w trakcie żądania: przycisk nie "gaśnie", tylko pokazuje spinner (busy() w portal.js trzyma jego szerokość);
+   tylko przyciski akcji — kafelki mają własny stan (inaczej zalewało kafelek na niebiesko) */
+button.btn-action[aria-busy="true"],
+button.btn-action[aria-busy="true"]:disabled {
     background: var(--primary);
     opacity: 0.88;
     cursor: progress;
@@ -268,7 +269,7 @@ button[type="submit"][aria-busy="true"]:disabled {
 .back-link:hover {
     color: var(--primary);
 }
-/* Komunikat w karcie (1.2.0): zawsze w DOM, rozwija się płynnie (grid 0fr -> 1fr) zamiast wskakiwać — bez skoku treści. */
+/* Komunikat w karcie: zawsze w DOM, rozwija się płynnie (grid 0fr -> 1fr) zamiast wskakiwać — bez skoku treści. */
 .msg-box {
     display: grid;
     grid-template-rows: 0fr;
@@ -328,11 +329,38 @@ button[type="submit"][aria-busy="true"]:disabled {
 .status-ok { color: var(--status-success); }
 .status-bad { color: var(--status-error); }
 .status-load { color: var(--status-load); }
+/* CAPTCHA (reCAPTCHA v2, Turnstile, hCaptcha): dostawca rysuje ciemny widżet w ramce iframe, która bywa o 1–2 px
+   większa i ma jasne tło — stąd białe paski po prawej i u dołu. Okno .captcha-box ma dokładnie rozmiar widżetu
+   (--rc-w × --rc-h z szablonu) i przycina nadmiar; tło w kolorze widżetu rezerwuje miejsce, zanim skrypt dostawcy się
+   wczyta (bez skoku). Na wąskich ekranach portal.js skaluje widżet (--rc-scale). */
 .captcha-container {
     display: flex;
     justify-content: center;
-    margin-top: 15px;
+    width: 100%;
+    min-width: 0;
+    margin-top: 18px;
 }
+/* stała szerokość widżetu nie może rozpychać karty poza ekran telefonu (karta to element siatki: min-width auto) */
+.card { min-width: 0; }
+.captcha-box {
+    --rc-scale: 1;
+    --rc-w: 302px;
+    --rc-h: 76px;
+    position: relative;
+    width: calc(var(--rc-w) * var(--rc-scale));
+    height: calc(var(--rc-h) * var(--rc-scale));
+    overflow: hidden;
+    border-radius: 4px;
+    background: #222;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.captcha-box > div {
+    width: var(--rc-w);
+    height: var(--rc-h);
+    transform: scale(var(--rc-scale));
+    transform-origin: 0 0;
+}
+.captcha-box iframe { display: block; }
 .hidden {
     display: none !important;
 }
@@ -380,7 +408,7 @@ button[type="submit"][aria-busy="true"]:disabled {
     font-size: 12px;
     font-weight: 600;
 }
-/* Kafelki wyboru usługi (1.2.0: dopiero po poprawnym haśle administratora) — prawdziwe <button>. */
+/* Kafelki wyboru usługi (dopiero po poprawnym haśle administratora) — prawdziwe <button>. */
 .choice-lead { margin-bottom: 4px; }
 .service-choices {
     display: grid;
@@ -414,9 +442,48 @@ button[type="submit"][aria-busy="true"]:disabled {
     transform: translateY(-2px);
 }
 .service-card:disabled { cursor: not-allowed; opacity: 0.45; }
-.service-card.is-busy { opacity: 1; border-color: var(--primary); cursor: progress; }
-.service-card.is-busy .service-icon { animation: tilePulse 0.9s ease-in-out infinite alternate; }
-.service-icon { color: #7ea6ff; line-height: 0; margin-bottom: 8px; }
+.service-icon { position: relative; color: #7ea6ff; line-height: 0; margin-bottom: 8px; }
+.service-icon svg { transition: opacity 0.2s, transform 0.2s; }
+/* Wybrany kafelek: ikona zamienia się w spinner, u dołu biegnie pasek postępu, drugi kafelek przygasa —
+   zamiast dopisku "Otwieram…" pod kafelkami. Kafelek zostaje w tym stanie aż przeglądarka przejdzie dalej. */
+.service-choices.is-choosing .service-card:not(.is-busy) {
+    opacity: 0.28;
+    transform: scale(0.96);
+    filter: saturate(0.4);
+    pointer-events: none;
+}
+.service-choices.is-choosing .service-last { opacity: 0; }
+.service-card.is-busy,
+.service-card.is-busy:disabled {
+    opacity: 1;
+    cursor: progress;
+    border-color: var(--primary);
+    background: rgba(47, 111, 237, 0.14);
+    box-shadow: 0 0 0 3px var(--primary-light);
+    transform: none;
+}
+.service-card.is-busy .service-icon svg { opacity: 0; transform: scale(0.6); }
+.service-card.is-busy .service-icon::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border: 3px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+}
+.service-card.is-busy::after {
+    content: '';
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 9px;
+    height: 3px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent 0%, var(--primary) 50%, transparent 100%) 0 0 / 50% 100% no-repeat, var(--primary-light);
+    animation: tileBar 1.1s ease-in-out infinite;
+}
+@keyframes tileBar { from { background-position: -100% 0, 0 0; } to { background-position: 200% 0, 0 0; } }
 .service-name { font-weight: 600; }
 .service-desc { font-size: 12px; color: #94a3b8; }
 .service-last {
@@ -441,7 +508,6 @@ button[type="submit"][aria-busy="true"]:disabled {
     margin: 12px 0 0;
     line-height: 1.45;
 }
-@keyframes tilePulse { from { opacity: 0.45; } to { opacity: 1; } }
 
 /* Pole hasła z przyciskiem "pokaż" */
 .pwd-field { position: relative; }
@@ -472,7 +538,28 @@ button[type="submit"][aria-busy="true"]:disabled {
     line-height: 1.4;
     color: var(--status-error);
 }
-#choiceHint { text-align: center; color: var(--status-load); }
+#choiceHint { text-align: center; }
+/* tekst tylko dla czytników ekranu */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+/* Udane logowanie: przycisk przechodzi w stan "otwieram…" (zielony, spinner), pola przygasają — do chwili, gdy
+   przeglądarka pokaże webmail / panel. */
+button.btn-action.is-success,
+button.btn-action.is-success:disabled {
+    background: #16a34a;
+    opacity: 1;
+    cursor: progress;
+}
+form.is-leaving input { opacity: 0.55; transition: opacity 0.25s; }
 .shake { animation: shake 0.36s ease; }
 @keyframes shake {
     20%, 60% { transform: translateX(-6px); }
@@ -515,8 +602,11 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     .card {
          border-radius: 0 0 16px 16px;
          box-shadow: none;
+         /* karta przylega do górnej krawędzi (wyśrodkowana względem wyższej karty rejestracji wisiałaby w połowie
+            ekranu z kwadratowymi górnymi rogami) */
+         align-self: start;
     }
-    main {
+    main:not(.scene) {
         margin-top: 0;
         border-radius: 0 0 16px 16px;
     }
@@ -592,6 +682,88 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     .service-card { padding: 18px 8px 14px; }
     .card { padding: 24px 18px; }
 }
+
+/* Przełącznik języka: prawy górny róg strony (poza kartami — nie obraca się razem z nimi). Zwykłe odnośniki ?lang=xx;
+   lista rozwija się pod przyciskiem. */
+.lang-switch--portal {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    z-index: 20;
+}
+.lang-switch summary {
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-input);
+    color: var(--text-muted);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.15s, color 0.15s;
+}
+.lang-switch summary::-webkit-details-marker { display: none; }
+.lang-switch summary:hover, .lang-switch[open] summary { border-color: var(--primary); color: var(--text-main); }
+.lang-switch summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.lang-switch-list {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 160px;
+    margin: 0;
+    padding: 6px;
+    list-style: none;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.lang-switch-list a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    color: var(--text-main);
+    text-decoration: none;
+    font-size: 14px;
+}
+.lang-switch-list a:hover, .lang-switch-list a:focus-visible { background: var(--bg-hover); outline: none; }
+.lang-switch-list a[aria-current="true"] { color: var(--primary); font-weight: 600; }
+.lang-switch-list .lang-switch-code { width: 24px; font-size: 11.5px; font-weight: 700; color: var(--text-muted); }
+
+/* Stopka: na samym dole strony (body to kolumna flex), bez numeru wersji na stronie publicznej. */
+.app-footer {
+    margin-top: auto;
+    width: 100%;
+    max-width: 480px;
+    padding: 8px 4px 0;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    line-height: 1.7;
+}
+.app-footer p { margin: 0; }
+.app-footer a { color: var(--text-label); text-decoration: none; }
+.app-footer a:hover, .app-footer a:focus-visible { color: var(--text-main); text-decoration: underline; }
+.app-footer svg { vertical-align: -2px; }
+.app-footer-sep { margin: 0 6px; opacity: 0.6; }
+.app-footer-name { color: var(--text-label); font-weight: 600; }
+@media (max-width: 768px) {
+    .app-footer { padding: 4px 16px 18px; }
+    /* wąsko: bez kropek-separatorów (zawinięta linia zaczynałaby się od kropki), pozycje w elastycznym wierszu */
+    .app-footer p { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 14px; }
+    .app-footer-sep { display: none; }
+    .lang-switch--portal { top: 10px; right: 10px; }
+}
+
 /* Ograniczony ruch: bez rozmyć, skalowania i drgania — tylko natychmiastowa zmiana */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {

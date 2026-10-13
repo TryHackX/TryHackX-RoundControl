@@ -1,0 +1,196 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * Messages of the panel PHP classes — English.
+ *   guard.*  AdminGuard            pager.*  Pagination            cmd.*    Commands
+ *   msg.*    messages for the administrator (PanelController: t() = the administrator's language)
+ *   audit.*  audit log entries (Lang::site() = the site language, whatever the administrator's browser uses)
+ * The code fills in the :name parameters. The characters < > cannot stand in a text (value filter) — the code supplies command syntax.
+ */
+
+return [
+    /* ------------------------------------------------------------------ AdminGuard */
+    'guard.session_expired' => 'The administrator session has expired — sign in again.',
+
+    /* ------------------------------------------------------------------ Pagination */
+    'pager.showing'   => 'Showing',
+    'pager.range'     => ':label :from - :to of :total',
+    'pager.nav_label' => 'List pages',
+    'pager.first'     => '« First',
+    'pager.first_page' => 'First page',
+    'pager.prev'      => '‹ Previous',
+    'pager.prev_page' => 'Previous page',
+    'pager.page'      => 'Page :n',
+    'pager.next'      => 'Next ›',
+    'pager.next_page' => 'Next page',
+    'pager.last'      => 'Last »',
+    'pager.last_page' => 'Last page (:n)',
+
+    /* ------------------------------------------------------------------ Commands */
+    'cmd.proc_open_failed'          => 'proc_open failed',
+    'cmd.proposal_incomplete'       => 'the whole proposal was not passed on',
+    'cmd.f2b_failed'                => 'Fail2Ban: :out (code :code)',
+    'cmd.f2b_failed_nocode'         => 'Fail2Ban: :out',
+    'cmd.mailbox_moved'             => 'The mail files were moved to the quarantine /var/mail/deleted — they will be deleted automatically after 30 days (until then they can be recovered).',
+    'cmd.mailbox_no_dir'            => 'There was no mail directory for this account on the disk (nothing to move).',
+    'cmd.mailbox_still_in_dovecot'  => 'Warning: the account still exists in Dovecot — the files were NOT touched.',
+    'cmd.mailbox_dovecot_unchecked' => 'Warning: it could not be confirmed in Dovecot (doveadm) that the account does not exist — the files were NOT touched.',
+    'cmd.mailbox_not_moved_no_sudo' => 'The mail files were not moved to the quarantine (no sudo configuration or dev mode) — they were left on the disk.',
+    'cmd.mailbox_not_moved'         => 'Warning: the mail files were NOT moved to the quarantine (code :code) — check /var/mail/vhosts and the log; move them manually.',
+
+    /* ------------------------------------------------------------------ msg.common */
+    'msg.common.csrf'          => 'The security token does not match the session (page open in another session?). Refresh the page (F5) and try again.',
+    'msg.common.unknown_op'    => 'Unknown operation.',
+    'msg.common.op_failed'     => 'Operation failed. See the server log for details.',
+    'msg.common.op_failed_detail' => 'Operation failed. :detail See the server log for details.',
+    'msg.common.op_failed_dev' => 'Operation failed: :detail',
+    'msg.common.bad_ip'        => 'Invalid IP address.',
+    'msg.common.pass_mismatch' => 'The passwords do not match.',
+    'msg.common.pass_policy'   => 'The password does not meet the security requirements (length and required character classes).',
+
+    /* ------------------------------------------------------------------ settings */
+    'msg.settings.saved'         => 'General settings have been saved.',
+    'msg.settings.quota_applied' => 'Limit updated for accounts: :count.',
+    'msg.security.saved'         => 'Security settings have been saved.',
+    'msg.antispam.saved_applied' => 'Anti-spam settings have been saved. (Postfix: saved, verified and reloaded)',
+    'msg.antispam.saved_no_sudo' => 'Anti-spam settings have been saved. (Saved in the database — no sudo permission for the script)',
+    'msg.antispam.postfix_failed' => 'Anti-spam settings saved in the database. Saved in the database, but Postfix was NOT changed: :detail',
+    'msg.antispam.script_error'  => 'script error',
+
+    /* ------------------------------------------------------------------ administrator password */
+    'msg.password.mismatch'      => 'The new passwords do not match.',
+    'msg.password.admin_policy'  => 'Administrator password: at least :min characters and the required character classes (as for mailboxes).',
+    'msg.password.wrong_current' => 'The current password is incorrect (the attempt has been recorded in the audit log).',
+    'msg.password.changed'       => 'The administrator password has been changed. Other sessions have been signed out.',
+    'msg.reauth.too_many'        => 'Too many wrong administrator passwords — the session has been ended. Sign in again.',
+
+    /* ------------------------------------------------------------------ Fail2Ban */
+    'msg.f2b.unchanged'      => 'Fail2Ban configuration unchanged — nothing was saved.',
+    'msg.f2b.saved'          => 'The Fail2Ban configuration has been saved, verified (fail2ban-client -t) and reloaded.',
+    'msg.f2b.bad_jail'       => 'Invalid jail.',
+    'msg.f2b.bad_jail_to'    => 'Invalid target jail.',
+    'msg.f2b.bad_jail_from'  => 'Invalid source jail.',
+    'msg.f2b.banned'         => 'IP :ip has been banned in Fail2Ban (jail: :jail).',
+    'msg.f2b.ban_failed'     => 'Fail2Ban command failed — check the sudoers rule: :cmd (file system/sudoers.d/mailpanel).',
+    'msg.f2b.bantime_failed' => 'Failed to set the ban time (sudoers: :cmd).',
+    'msg.f2b.move_failed'    => 'Fail2Ban command failed while moving the ban.',
+    'msg.f2b.cmd_failed'     => 'Fail2Ban command failed.',
+    'msg.f2b.seconds'        => 'seconds',
+
+    /* ------------------------------------------------------------------ accounts */
+    'msg.users.gone_refreshed'  => 'This account no longer exists (deleted in another tab?) — the list has been refreshed.',
+    'msg.users.gone_mismatch'   => 'This account no longer exists or the data does not match — the list has been refreshed.',
+    'msg.users.limit_global'    => 'global',
+    'msg.users.limit_none'      => 'unlimited',
+    'msg.users.limit_per_day'   => ':n/day',
+    'msg.users.quota_updated'   => 'Account :email: quota :quota, send limit: :limit.',
+    'msg.users.bad_data'        => 'Invalid user data.',
+    'msg.users.pass_reset'      => 'The password of mailbox :email has been changed.',
+    'msg.users.delete_bad_pass'      => 'Wrong administrator password — the account was NOT deleted. The attempt has been recorded in the audit log.',
+    'msg.users.delete_bad_pass_left' => 'Wrong administrator password — the account was NOT deleted. The attempt has been recorded in the audit log (the session will end after :left more wrong attempts).',
+    'msg.users.deleted'         => 'Account :email has been deleted from the database.',
+    'msg.users.deleted_aliases' => 'Aliases pointing to this account that were removed: :count.',
+    'msg.users.deleted_lists'   => 'WARNING: aliases with a list of targets still mention this account: :ids — fix them manually.',
+    'msg.users.delete_files_no_sudo' => 'Warning: the mail files were NOT moved to the quarantine — they were left on the disk (no sudo configuration for mailpanel-delete-user.sh).',
+    'msg.users.bad_local'       => 'Characters not allowed in the account name (letters, digits, . _ -; no dot or hyphen at the ends).',
+    'msg.users.bad_domain'      => 'Invalid domain.',
+    'msg.users.bad_email'       => 'Invalid e-mail address.',
+    'msg.users.exists'          => 'Account :email already exists.',
+    'msg.users.is_alias'        => ':email is an alias address (→ :dest): a mailbox with this name would receive no mail, so the consent does not change that. Leave the alias or delete it (button under the address field) and then create the mailbox.',
+    'msg.users.need_consent'    => ':email: :why — to create this mailbox knowingly, tick the consent box under the address field.',
+    'msg.users.domain_config'   => 'Domain configuration error.',
+    'msg.users.exists_race'     => 'Account :email already exists (created a moment ago in another tab?).',
+    'msg.users.created'         => 'Account :email has been created (quota :quota, send limit: :limit).',
+
+    /* ------------------------------------------------------------------ aliases */
+    'msg.alias.gone'    => 'This alias no longer exists or the data does not match.',
+    'msg.alias.deleted' => 'Alias :source → :dest has been deleted. Mail to :source is no longer forwarded — create the mailbox now, or this address will reject mail.',
+
+    /* ------------------------------------------------------------------ blocks */
+    'msg.bans.trusted'        => 'This IP is on the trusted list (SCAN_TRUSTED_IPS) — it cannot be banned.',
+    'msg.bans.duration_range' => 'Ban duration: from 1 to 129600 minutes (90 days).',
+    'msg.bans.banned_f2b'     => 'IP address :ip has been banned for :min min — in the portal and the panel and in Fail2Ban (jail panel-tempban: webmail, IMAP, SMTP).',
+    'msg.bans.banned_local'   => 'IP address :ip has been banned for :min min — ONLY in the portal and the panel (login, registration). Fail2Ban is unavailable, so IMAP/SMTP/webmail are not blocked on the firewall.',
+    'msg.bans.dur_days'       => ':n days',
+    'msg.bans.dur_hours'      => ':n h',
+    'msg.bans.for_dur'        => 'for :dur',
+    'msg.bans.moved'          => 'IP :ip moved: :from → :to.',
+    'msg.bans.moved_for'      => 'IP :ip moved: :from → :to :dur.',
+    'msg.bans.unbanned'       => 'IP :ip has been unblocked.',
+    'msg.bans.unbanned_also'  => 'IP :ip has been unblocked (and in Fail2Ban: panel-tempban).',
+    'msg.bans.unbanned_warn'  => 'IP :ip has been unblocked (WARNING: the Fail2Ban panel-tempban entry could not be removed — remove it in the block list).',
+    'msg.bans.unbanned_f2b'   => 'IP :ip has been unblocked in Fail2Ban.',
+    'msg.bans.reason_perma'   => 'Permanent block (panel)',
+    'msg.bans.reason_temp'    => 'Temporary block (panel)',
+    'msg.bans.reason_auto'    => 'Auto-Ban: :jail',
+    'msg.bans.service_perma'  => 'PERMANENT',
+    'msg.bans.until_perma'    => 'Permanent',
+    'msg.bans.until_dynamic'  => 'Dynamic',
+
+    /* ------------------------------------------------------------------ account name assessment */
+    'msg.name.free'           => 'Available',
+    'msg.name.taken'          => 'An account with this address already exists',
+    'msg.name.taken_detail'   => 'Mailbox :email is already on the account list.',
+    'msg.name.alias'          => 'This is an alias address — a mailbox cannot be created here',
+    'msg.name.alias_detail'   => ':email is an alias: mail to this address goes to :dest. Postfix resolves aliases before mail reaches the mailboxes, so a mailbox with this name would not receive a single message — that is why no consent lifts this block. The way out: leave the alias (mail already reaches :dest) or delete it below and only then create the mailbox.',
+    'msg.name.reserved_base'  => 'Permanently reserved name',
+    'msg.name.reserved_list'  => 'Name from the reserved list',
+    'msg.name.why_list'       => '“:pattern” is on the list of reserved names (Settings → Registration). Public registration will not give it away.',
+    'msg.name.why_ca'         => '“:local” is a role address: certificate authorities send domain validation links to admin@, administrator@, hostmaster@, postmaster@ and webmaster@ — whoever reads such a mailbox can obtain a TLS certificate for the domain. Public registration will never give it away.',
+    'msg.name.why_system'     => '“:pattern” is a system / role name (RFC 2142: abuse, noreply, mailer-daemon…), trusted by others. Public registration will never give it away.',
+    'msg.name.held_deleted'   => 'An account with this name was deleted recently',
+    'msg.name.why_deleted'    => 'Account :email was deleted :when; for :days days the name does not return to the pool (Settings → Registration), so that a new owner does not receive mail addressed to the previous one.',
+    'msg.name.held_alias'     => 'An alias forwards mail to this address',
+    'msg.name.why_alias_to'   => 'Alias :list → :email: once the mailbox is created, mail from this alias will start arriving in it.',
+    'msg.name.list_item'      => ':source (list)',
+    'msg.name.override_hint'  => 'You can create this mailbox knowingly — tick the consent box (it goes to the audit log).',
+    'msg.name.bad_chars'      => 'Characters not allowed (letters, digits, . _ -; no dot or hyphen at the ends)',
+    'msg.name.bad_domain'     => 'Invalid domain',
+
+    /* ------------------------------------------------------------------ scanner */
+    'msg.scan.bad_source'      => 'Unknown scan source.',
+    'msg.scan.svc_registration' => 'registration',
+    'msg.scan.session_expired' => 'The session has expired — refresh the panel page.',
+    'msg.scan.trusted'         => 'This IP is on the trusted list.',
+    'msg.scan.no_permaban'     => 'There is no panel-permaban jail in Fail2Ban.',
+    'msg.scan.cmd_failed'      => 'fail2ban-client error (sudoers: :cmd).',
+    'msg.scan.label_perma'     => 'permanent',
+    'msg.scan.bad_duration'    => 'Invalid ban duration.',
+    'msg.scan.no_tempban'      => 'There is no panel-tempban jail in Fail2Ban (add the section to jail.local).',
+    'msg.scan.bantime_failed'  => 'Failed to set bantime (sudoers: :cmd).',
+    'msg.scan.ban_failed'      => 'fail2ban-client error while banning.',
+
+    /* ------------------------------------------------------------------ audit log (site language) */
+    'audit.settings_update'        => 'General settings updated',
+    'audit.quota_all'              => 'Default limit :quota set for :count accounts',
+    'audit.security_update'        => 'Limits changed: :max attempts, :min min lockout',
+    'audit.antispam_update'        => 'RC=:rc, PF msg=:pf',
+    'audit.antispam_update_failed' => 'RC=:rc, PF msg=:pf (Postfix: error)',
+    'audit.admin_pass_change'      => 'The administrator changed their password',
+    'audit.reauth_what_password'   => 'administrator password change',
+    'audit.reauth_what_delete'     => 'deleting account :email (ID: :id)',
+    'audit.reauth_failed'          => 'Wrong administrator password on confirmation: :what (attempt :n of :max in this session)',
+    'audit.reauth_lockout'         => 'Session ended after :max wrong passwords in the confirmation windows',
+    'audit.fail2ban_update'        => 'Fail2Ban configuration saved + reload (:result)',
+    'audit.user_quota'             => 'Account :email (ID: :id): quota :quota, send limit: :limit',
+    'audit.user_pass_reset'        => 'Mailbox password reset: :email (ID: :id)',
+    'audit.ban_reason_default'     => 'Banned by admin',
+    'audit.ban_ip_f2b'             => 'IP :ip for :min min (portal + Fail2Ban panel-tempban). Reason: :reason',
+    'audit.ban_ip_local'           => 'IP :ip for :min min (portal/panel only). Reason: :reason',
+    'audit.delete_user_moved'      => 'Account deleted: :email (ID: :id) — mailbox moved to the quarantine /var/mail/deleted',
+    'audit.delete_user_nodir'      => 'Account deleted: :email (ID: :id) — there was no mail directory on the disk',
+    'audit.delete_user_kept'       => 'Account deleted: :email (ID: :id) — mail files NOT moved to the quarantine',
+    'audit.create_user'            => 'Account created: :email (quota :quota, send limit: :limit)',
+    'audit.create_user_override'   => 'Account created: :email (quota :quota, send limit: :limit) — with the administrator consent despite: :why',
+    'audit.delete_alias'           => 'Alias deleted #:id: :source → :dest',
+    'audit.f2b_ban'                => 'Manual IP ban: :ip (jail: :jail)',
+    'audit.move_ban'               => 'IP moved: :ip (:from -> :to)',
+    'audit.move_ban_for'           => 'IP moved: :ip (:from -> :to :dur)',
+    'audit.unban_f2b'              => 'IP unblocked: :ip (Fail2Ban: :jail)',
+    'audit.unban_ip'               => 'IP unblocked: :ip',
+    'audit.unban_ip_also'          => 'IP unblocked: :ip (and in Fail2Ban: panel-tempban)',
+    'audit.unban_ip_warn'          => 'IP unblocked: :ip (WARNING: the Fail2Ban panel-tempban entry could not be removed — remove it in the block list)',
+    'audit.scan_ban_perma'         => 'Ban from the scanner: :ip (permanent, jail: panel-permaban)',
+    'audit.scan_ban_temp'          => 'Ban from the scanner: :ip (temporary :label, jail: panel-tempban)',
+];

@@ -5,6 +5,8 @@ namespace App\Panel;
 
 use App\Admin\AdminRepository;
 use App\Admin\AuditLog;
+use App\I18n\Lang;
+use App\Security\Captcha;
 use App\Security\Csrf;
 use App\Security\Password;
 use App\Settings\Settings;
@@ -20,6 +22,8 @@ use App\Users\Accounts;
 use App\Users\UserRepository;
 use PDO;
 use Throwable;
+
+use function App\I18n\t;
 
 /**
  * Kontroler panelu administratora. Rozdziela żądanie na:
@@ -82,7 +86,7 @@ final class PanelController
         // żeby odświeżenie strony nie ponawiało operacji.
         if (Http::isPost()) {
             if (!Csrf::check(Http::post('_csrf'))) {
-                $this->error = 'Token bezpieczeństwa nie pasuje do sesji (strona otwarta w innej sesji?). Odśwież stronę (F5) i spróbuj ponownie.';
+                $this->error = t('msg.common.csrf');
                 $this->csrfFailed = true;
                 $this->redirectAfterPost();
             }
@@ -172,15 +176,18 @@ final class PanelController
                 isset($_POST['unban_ip'])            => $this->unbanIp(),
                 isset($_POST['delete_user_confirm']) => $this->deleteUser(),
                 isset($_POST['delete_alias'])        => $this->deleteAlias(),
-                default => $this->error = 'Nieznana operacja.',
+                isset($_POST['lang_op'])             => $this->languageOp(),
+                default => $this->error = t('msg.common.unknown_op'),
             };
         } catch (Throwable $e) {
             // Szczegóły (SQL, ścieżki) idą do logu serwera, nie do przeglądarki — poza trybem dev.
             error_log(sprintf('panel: wyjątek w akcji POST: [%s] %s w %s:%d', $e::class, $e->getMessage(), $e->getFile(), $e->getLine()));
-            $detail = $e instanceof \RuntimeException && !$e instanceof \PDOException ? ' ' . $e->getMessage() : '';
+            $detail = $e instanceof \RuntimeException && !$e instanceof \PDOException ? $e->getMessage() : '';
             $this->error = $this->error ?: (Env::isDev()
-                ? 'Błąd operacji: ' . $e->getMessage()
-                : 'Błąd operacji.' . $detail . ' Szczegóły w dzienniku serwera.');
+                ? t('msg.common.op_failed_dev', ['detail' => $e->getMessage()])
+                : ($detail !== ''
+                    ? t('msg.common.op_failed_detail', ['detail' => $detail])
+                    : t('msg.common.op_failed')));
         }
     }
 
@@ -196,15 +203,7 @@ final class PanelController
 
         Settings::set('allow_registration', $allow);
         Settings::set('registration_enabled', $allow);
-        Settings::set('recaptcha_enabled', $recap);
-        if (isset($_POST['recaptcha_site_key'])) {
-            Settings::set('recaptcha_site_key', trim((string) $_POST['recaptcha_site_key']));
-        }
-        // Sekret reCAPTCHA nie jest już wypisywany w HTML strony: puste pole = zostaw zapisany, nowa wartość = podmień.
-        $newSecret = trim((string) ($_POST['recaptcha_secret_key'] ?? ''));
-        if ($newSecret !== '') {
-            Settings::set('recaptcha_secret', $newSecret);
-        }
+        $captchaError = $this->saveCaptcha($recap === '1');
 
         // Zarezerwowane nazwy kont (poza listą wbudowaną w Accounts::BASE_RESERVED) i okres blokady usuniętych nazw.
         if (isset($_POST['reserved_local_parts'])) {
@@ -222,13 +221,13 @@ final class PanelController
         $extra = '';
         if (isset($_POST['apply_quota_to_all'])) {
             $count = $this->users->applyQuotaToAll($quotaMb);
-            $extra = " Zaktualizowano limit dla $count użytkowników.";
+            $extra = ' ' . t('msg.settings.quota_applied', ['count' => $count]);
             $this->refresh[] = 'users';
-            $this->audit->log('QUOTA_ALL', 'Domyślny limit ' . Quota::display($quotaMb) . " ustawiony $count kontom");
+            $this->audit->log('QUOTA_ALL', Lang::site('audit.quota_all', ['quota' => Quota::display($quotaMb), 'count' => $count]));
         }
 
-        $this->audit->log('SETTINGS_UPDATE', 'Zaktualizowano ustawienia ogólne');
-        $this->success = 'Ustawienia ogólne zostały zapisane.' . $extra;
+        $this->audit->log('SETTINGS_UPDATE', Lang::site('audit.settings_update'));
+        $this->success = t('msg.settings.saved') . $extra;
 
         // to, co naprawdę zapisano (normalizacja i przycięcia po stronie serwera) wraca do formularza
         [$qValue, $qUnit] = Quota::toBest($quotaMb);
@@ -243,11 +242,86 @@ final class PanelController
             'ip_total_limit'         => (string) Settings::int('ip_total_limit', 999),
             'reserved_local_parts'   => (string) Settings::get('reserved_local_parts', ''),
             'deleted_name_hold_days' => (string) Settings::int('deleted_name_hold_days', 365),
-            'recaptcha_enabled'      => $recap === '1',
-            'recaptcha_site_key'     => (string) Settings::get('recaptcha_site_key', ''),
-            'recaptcha_secret_key'   => '',
         ];
-        $this->data['recaptcha_secret_set'] = (string) Settings::get('recaptcha_secret', '') !== '';
+        // CAPTCHA: stan po zapisie — klucze witryny wracają, sekrety NIGDY (tylko "zapisany / brak")
+        $cap = Captcha::panelState();
+        $this->values['recaptcha_enabled']      = $cap['enabled'];
+        $this->values['captcha_provider']       = $cap['provider'];
+        $this->values['recaptcha_v3_min_score'] = $cap['min_score'];
+        foreach ($cap['keys'] as $pid => $k) {
+            $this->values[$pid . '_site_key']   = $k['site'];
+            $this->values[$pid . '_secret_key'] = '';
+        }
+        $this->data['captcha_secret_set'] = array_map(static fn(array $k): bool => $k['secret_set'], $cap['keys']);
+        if ($captchaError !== '') {
+            $this->error = $captchaError;
+        }
+    }
+
+    /**
+     * CAPTCHA (1.3.0): dostawca, klucze witryny, sekrety (puste pole = zostaw zapisany; sekret nigdy nie wraca do
+     * przeglądarki), próg v3. Włączenie bez klucza witryny i sekretu wybranego dostawcy jest odrzucane (CAPTCHA zostaje
+     * wyłączona) — inaczej nikt, także administrator, nie przeszedłby kroku "adres e-mail". Zwraca komunikat błędu albo ''.
+     */
+    private function saveCaptcha(bool $enable): string
+    {
+        $errors   = [];
+        $before   = Captcha::panelState();
+        $provider = (string) ($_POST['captcha_provider'] ?? $before['provider']);
+        if (!isset(Captcha::PROVIDERS[$provider])) {
+            $errors[] = t('msg.captcha.bad_provider');
+            $provider = $before['provider'];
+        }
+        Settings::set('captcha_provider', $provider);
+
+        foreach (array_keys(Captcha::PROVIDERS) as $pid) {
+            $label = t(Captcha::PROVIDERS[$pid]);
+            if (isset($_POST[$pid . '_site_key'])) {
+                $site = trim((string) $_POST[$pid . '_site_key']);
+                if ($site === '' || Captcha::validKey($site)) {
+                    Settings::set($pid . '_site_key', $site);
+                } else {
+                    $errors[] = t('msg.captcha.bad_site_key', ['provider' => $label]);
+                }
+            }
+            $secret = trim((string) ($_POST[$pid . '_secret_key'] ?? ''));
+            if ($secret !== '') {
+                if (Captcha::validKey($secret)) {
+                    Settings::set($pid . '_secret', $secret);
+                } else {
+                    $errors[] = t('msg.captcha.bad_secret', ['provider' => $label]);
+                }
+            }
+        }
+        if (isset($_POST['recaptcha_v3_min_score'])) {
+            $raw = str_replace(',', '.', trim((string) $_POST['recaptcha_v3_min_score']));
+            $score = is_numeric($raw) ? max(0.0, min(1.0, round((float) $raw, 2))) : 0.5;
+            Settings::set('recaptcha_v3_min_score', (string) $score);
+        }
+
+        $cfg = Captcha::config();
+        $cfg['recaptcha_enabled'] = $enable ? '1' : '0';
+        if ($enable && !Captcha::activeIn($cfg)) {
+            $enable   = false;
+            $errors[] = t('msg.captcha.enable_without_keys', ['provider' => t(Captcha::PROVIDERS[$provider])]);
+        }
+        Settings::set('recaptcha_enabled', $enable ? '1' : '0');
+        if ($before['enabled'] !== $enable || ($enable && $before['provider'] !== $provider)) {
+            $this->audit->log('CAPTCHA', Lang::site($enable ? 'audit.captcha_on' : 'audit.captcha_off', ['provider' => $provider]));
+        }
+        return $errors === [] ? '' : implode(' ', $errors);
+    }
+
+    /** Języki interfejsu (1.3.0): włącz/wyłącz, domyślny, kopia, wgranie pakietu, usunięcie — logika w LanguageAdmin. */
+    private function languageOp(): void
+    {
+        $r = (new LanguageAdmin($this->audit))->handle($_POST, $_FILES);
+        $this->success = $r['ok'] ? $r['msg'] : '';
+        $this->error   = $r['ok'] ? '' : $r['msg'];
+        $this->data['languages_html'] = View::render(self::TPL . '/partials/lang_rows.php', ['lang' => LanguageAdmin::listing(), 'csrf' => Csrf::token()]);
+        if (isset($r['dropped'])) {
+            $this->data['dropped'] = $r['dropped'];
+        }
     }
 
     private function saveSecurity(): void
@@ -260,8 +334,8 @@ final class PanelController
         Settings::set('admin_lock_minutes', $banMin);
         Settings::set('ban_duration_minutes', $banMin);
 
-        $this->audit->log('SECURITY_UPDATE', "Zmiana limitów: $maxLog prób, $banMin min blokady");
-        $this->success = 'Ustawienia bezpieczeństwa zostały zapisane.';
+        $this->audit->log('SECURITY_UPDATE', Lang::site('audit.security_update', ['max' => $maxLog, 'min' => $banMin]));
+        $this->success = t('msg.security.saved');
         $this->values  = ['max_login_attempts' => $maxLog, 'ban_duration_minutes' => $banMin];
     }
 
@@ -283,26 +357,28 @@ final class PanelController
         if (Commands::postfixAvailable()) {
             $r = Commands::postfixApply($rcMsg, $pfConn, $pfCnt);
             if ($r['ok']) {
-                $info = ' (Postfix: zapisane, sprawdzone i przeładowane)';
+                $done = t('msg.antispam.saved_applied');
             } else {
                 // Skrypt kończy się kodem != 0, gdy zapis do main.cf się nie udał albo wartość po zapisie jest inna
                 // niż żądana — nie raportujemy wtedy sukcesu (patrz sekcja o ReadWritePaths w README).
                 $failed = true;
-                $info = ' Zapisano w bazie, ale Postfix NIE został zmieniony: ' . ($r['output'] !== '' ? $r['output'] : 'błąd skryptu');
+                $done = t('msg.antispam.postfix_failed', ['detail' => $r['output'] !== '' ? $r['output'] : t('msg.antispam.script_error')]);
             }
         } else {
-            $info = ' (Zapisano w bazie — brak uprawnień sudo dla skryptu)';
+            $done = t('msg.antispam.saved_no_sudo');
         }
 
-        $this->audit->log('ANTISPAM_UPDATE', "RC=$rcMax, PF msg=$rcMsg" . ($failed ? ' (Postfix: błąd)' : ''));
+        $this->audit->log('ANTISPAM_UPDATE', $failed
+            ? Lang::site('audit.antispam_update_failed', ['rc' => $rcMax, 'pf' => $rcMsg])
+            : Lang::site('audit.antispam_update', ['rc' => $rcMax, 'pf' => $rcMsg]));
         foreach (['rc_max_recipients', 'rc_sendmail_delay', 'rc_login_rate_limit', 'pf_message_rate_limit',
                   'pf_connection_rate_limit', 'pf_connection_count_limit'] as $k) {
             $this->values[$k] = (string) Settings::int($k, 0);
         }
         if ($failed) {
-            $this->error = 'Ustawienia antyspamowe zapisane w bazie.' . $info;
+            $this->error = $done;
         } else {
-            $this->success = 'Ustawienia antyspamowe zostały zapisane.' . $info;
+            $this->success = $done;
         }
     }
 
@@ -313,21 +389,20 @@ final class PanelController
         $conf = (string) ($_POST['confirm_password'] ?? '');
 
         if ($new !== $conf) {
-            $this->error = 'Nowe hasła nie są identyczne.';
+            $this->error = t('msg.password.mismatch');
             return;
         }
         // Jedna polityka z hasłami skrzynek (długość + klasy znaków z ustawień), ale administrator: min. 12 znaków.
         if (!Password::meetsAdminPolicy($new)) {
-            $this->error = 'Hasło administratora: minimum ' . max(Password::ADMIN_MIN_LENGTH, Settings::int('pwd_min_length', 10))
-                . ' znaków oraz wymagane klasy znaków (jak dla skrzynek).';
+            $this->error = t('msg.password.admin_policy', ['min' => max(Password::ADMIN_MIN_LENGTH, Settings::int('pwd_min_length', 10))]);
             return;
         }
 
-        $admin = $this->reauth($cur, 'zmiana hasła administratora');
+        $admin = $this->reauth($cur, Lang::site('audit.reauth_what_password'));
         if ($admin === null) {
             $this->values = ['current_password' => ''];
             if (!$this->ended) {
-                $this->error = 'Obecne hasło jest nieprawidłowe (próba zapisana w dzienniku audytowym).';
+                $this->error = t('msg.password.wrong_current');
             }
             return;
         }
@@ -337,8 +412,8 @@ final class PanelController
         // Inne sesje tego admina przestają być ważne (odcisk hasha w sesji), ta dostaje nowy identyfikator i odcisk.
         $_SESSION['admin_fp'] = hash('sha256', $newHash);
         \App\Support\Session::regenerate();
-        $this->audit->log('ADMIN_PASS_CHANGE', 'Administrator zmienił swoje hasło');
-        $this->success = 'Hasło administratora zostało zmienione. Inne sesje zostały wylogowane.';
+        $this->audit->log('ADMIN_PASS_CHANGE', Lang::site('audit.admin_pass_change'));
+        $this->success = t('msg.password.changed');
         $this->values  = ['current_password' => '', 'new_password' => '', 'confirm_password' => ''];
     }
 
@@ -360,14 +435,14 @@ final class PanelController
 
         $fails = (int) ($_SESSION['reauth_fail'] ?? 0) + 1;
         $_SESSION['reauth_fail'] = $fails;
-        $this->audit->log('REAUTH_FAILED', "Błędne hasło administratora przy potwierdzaniu: $what (próba $fails z " . self::REAUTH_LIMIT . ' w tej sesji)');
+        $this->audit->log('REAUTH_FAILED', Lang::site('audit.reauth_failed', ['what' => $what, 'n' => $fails, 'max' => self::REAUTH_LIMIT]));
         \App\Support\AuthLog::reauthFailure(\App\Admin\AdminGuard::username());
         $this->refresh[] = 'audit';
 
         if ($fails >= self::REAUTH_LIMIT) {
-            $this->audit->log('REAUTH_LOCKOUT', 'Sesja zakończona po ' . self::REAUTH_LIMIT . ' błędnych hasłach w oknach potwierdzenia');
+            $this->audit->log('REAUTH_LOCKOUT', Lang::site('audit.reauth_lockout', ['max' => self::REAUTH_LIMIT]));
             $this->ended = true;
-            $this->error = 'Za dużo błędnych haseł administratora — sesja została zakończona. Zaloguj się ponownie.';
+            $this->error = t('msg.reauth.too_many');
         }
         return null;
     }
@@ -380,11 +455,11 @@ final class PanelController
 
         $this->values = $this->f2bFormValues();
         if (str_contains($msg, 'bez zmian')) {
-            $this->success = 'Konfiguracja Fail2Ban bez zmian — nic nie zapisano.';
+            $this->success = t('msg.f2b.unchanged');
             return;
         }
-        $this->audit->log('FAIL2BAN_UPDATE', 'Zapis konfiguracji Fail2Ban + reload (' . $msg . ')');
-        $this->success = 'Konfiguracja Fail2Ban została zapisana, sprawdzona (fail2ban-client -t) i przeładowana.';
+        $this->audit->log('FAIL2BAN_UPDATE', Lang::site('audit.fail2ban_update', ['result' => $msg]));
+        $this->success = t('msg.f2b.saved');
     }
 
     /**
@@ -430,7 +505,7 @@ final class PanelController
         $id    = (int) ($_POST['user_id'] ?? 0);
         $email = $this->users->emailById($id);
         if ($email === null) {
-            $this->error = 'Tego konta już nie ma (usunięte w innej karcie?) — lista została odświeżona.';
+            $this->error = t('msg.users.gone_refreshed');
             $this->refresh[] = 'users';
             return;
         }
@@ -445,11 +520,37 @@ final class PanelController
         $limit    = $limitRaw === '' ? null : max(0, (int) $limitRaw);
         $this->users->updateSendLimit($id, $limit);
 
-        $limitTxt = $limit === null ? 'globalny' : ($limit === 0 ? 'bez limitu' : $limit . '/dzień');
-        $this->audit->log('USER_QUOTA', "Konto $email (ID: $id): quota " . Quota::display($mb) . ", limit wysyłki: $limitTxt");
-        $this->success = "Konto $email: quota " . Quota::display($mb) . ", limit wysyłki: $limitTxt.";
+        $this->audit->log('USER_QUOTA', Lang::site('audit.user_quota', [
+            'email' => $email, 'id' => $id, 'quota' => Quota::display($mb), 'limit' => self::limitText($limit, true),
+        ]));
+        $this->success = t('msg.users.quota_updated', [
+            'email' => $email, 'quota' => Quota::display($mb), 'limit' => self::limitText($limit),
+        ]);
         $this->refresh[] = 'users';
         $this->data['id'] = $id;
+    }
+
+    /**
+     * Opis dziennego limitu wysyłki konta (null = globalny, 0 = bez limitu). $audit = język serwisu (dziennik audytowy),
+     * w przeciwnym razie język administratora.
+     */
+    private static function limitText(?int $limit, bool $audit = false): string
+    {
+        $code = $audit ? Lang::defaultLanguage() : null;
+        return match (true) {
+            $limit === null => Lang::t('msg.users.limit_global', [], $code),
+            $limit === 0    => Lang::t('msg.users.limit_none', [], $code),
+            default         => Lang::t('msg.users.limit_per_day', ['n' => $limit], $code),
+        };
+    }
+
+    /** Czas bana w dniach (od 2 dni) albo godzinach; $audit jak w limitText(). */
+    private static function durationText(int $seconds, bool $audit = false): string
+    {
+        $code = $audit ? Lang::defaultLanguage() : null;
+        return $seconds >= 172800
+            ? Lang::t('msg.bans.dur_days', ['n' => intdiv($seconds, 86400)], $code)
+            : Lang::t('msg.bans.dur_hours', ['n' => intdiv($seconds, 3600)], $code);
     }
 
     /** Reset hasła skrzynki przez administratora (modal na karcie Użytkownicy). */
@@ -462,22 +563,22 @@ final class PanelController
 
         $stored = $this->users->emailById($id);
         if ($stored === null || Accounts::normalize($stored) !== Accounts::normalize($email)) {
-            $this->error = 'Nieprawidłowe dane użytkownika.';
+            $this->error = t('msg.users.bad_data');
             return;
         }
         $email = Accounts::normalize($stored);
         if ($pass !== $pass2) {
-            $this->error = 'Hasła nie są identyczne.';
+            $this->error = t('msg.common.pass_mismatch');
             return;
         }
         if (!Password::meetsPolicy($pass)) {
-            $this->error = 'Hasło nie spełnia wymogów bezpieczeństwa (długość i wymagane klasy znaków).';
+            $this->error = t('msg.common.pass_policy');
             return;
         }
 
         $this->users->updatePassword($id, Password::dovecotHash($pass));
-        $this->audit->log('USER_PASS_RESET', "Reset hasła skrzynki: $email (ID: $id)");
-        $this->success = 'Hasło skrzynki ' . $email . ' zostało zmienione.';
+        $this->audit->log('USER_PASS_RESET', Lang::site('audit.user_pass_reset', ['email' => $email, 'id' => $id]));
+        $this->success = t('msg.users.pass_reset', ['email' => $email]);
         $this->values  = ['new_password' => '', 'new_password2' => ''];
     }
 
@@ -486,18 +587,18 @@ final class PanelController
         $ip    = trim((string) ($_POST['ban_ip'] ?? ''));
         $ipBin = Ip::toBin($ip);
         if ($ipBin === null) {
-            $this->error = 'Nieprawidłowy adres IP.';
+            $this->error = t('msg.common.bad_ip');
             return;
         }
         if ($this->isScanTrusted($ip)) {
-            $this->error = 'To IP jest na liście zaufanych (SCAN_TRUSTED_IPS) — nie można go zbanować.';
+            $this->error = t('msg.bans.trusted');
             return;
         }
-        $reason   = trim((string) ($_POST['ban_reason'] ?? 'Zbanowany przez admina'));
+        $reason   = trim((string) ($_POST['ban_reason'] ?? Lang::site('audit.ban_reason_default')));
         $note     = trim((string) ($_POST['ban_note'] ?? ''));
         $duration = (int) ($_POST['ban_duration'] ?? 60);
         if ($duration < 1 || $duration > 129600) {      // 1 minuta .. 90 dni
-            $this->error = 'Czas bana: od 1 do 129600 minut (90 dni).';
+            $this->error = t('msg.bans.duration_range');
             return;
         }
         if ($note !== '') {
@@ -515,11 +616,13 @@ final class PanelController
         }
         $this->bans->ban($ipBin, $duration, $reason . ($f2b ? BanRepository::F2B_MARK : ''));
         $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
-        $this->audit->log('BAN_IP', "IP $ip na $duration min" . ($f2b ? ' (portal + Fail2Ban panel-tempban)' : ' (tylko portal/panel)') . ". Powód: $reason");
-        $this->success = "Adres IP $ip został zbanowany na $duration min — "
-            . ($f2b
-                ? 'w portalu i panelu oraz w Fail2Ban (jail panel-tempban: webmail, IMAP, SMTP).'
-                : 'TYLKO w portalu i panelu (logowanie, rejestracja). Fail2Ban jest niedostępny, więc IMAP/SMTP/webmail nie są blokowane na firewallu.');
+        $banArgs = ['ip' => $ip, 'min' => $duration];
+        $this->audit->log('BAN_IP', $f2b
+            ? Lang::site('audit.ban_ip_f2b', $banArgs + ['reason' => $reason])
+            : Lang::site('audit.ban_ip_local', $banArgs + ['reason' => $reason]));
+        $this->success = $f2b
+            ? t('msg.bans.banned_f2b', $banArgs)
+            : t('msg.bans.banned_local', $banArgs);
     }
 
     private function deleteUser(): void
@@ -529,17 +632,19 @@ final class PanelController
         $pass  = (string) ($_POST['admin_confirm_password'] ?? '');
 
         $this->values = ['admin_confirm_password' => ''];
-        if ($this->reauth($pass, 'usuwanie konta ' . Accounts::normalize($email) . " (ID: $id)") === null) {
+        $what = Lang::site('audit.reauth_what_delete', ['email' => Accounts::normalize($email), 'id' => $id]);
+        if ($this->reauth($pass, $what) === null) {
             if (!$this->ended) {
                 $left = self::REAUTH_LIMIT - (int) ($_SESSION['reauth_fail'] ?? 0);
-                $this->error = 'Błędne hasło administratora — konto NIE zostało usunięte. Próba zapisana w dzienniku audytowym'
-                    . ($left > 0 ? " (po $left kolejnych błędach sesja się zakończy)." : '.');
+                $this->error = $left > 0
+                    ? t('msg.users.delete_bad_pass_left', ['left' => $left])
+                    : t('msg.users.delete_bad_pass');
             }
             return;
         }
         $stored = $this->users->emailById($id);
         if ($stored === null || Accounts::normalize($stored) !== Accounts::normalize($email)) {
-            $this->error = 'Tego konta już nie ma albo dane się nie zgadzają — lista została odświeżona.';
+            $this->error = t('msg.users.gone_mismatch');
             $this->refresh[] = 'users';
             return;
         }
@@ -552,13 +657,16 @@ final class PanelController
         $this->refresh = array_merge($this->refresh, ['users', 'stats']);
         $this->data['id'] = $id;
 
-        $extra = '';
+        $extra    = [];   // zdania dopisywane do komunikatu (język administratora)
+        $extraLog = [];   // te same zdania do dziennika audytowego (język serwisu)
         if ($r['aliases'] > 0) {
-            $extra .= " Usunięto aliasów kierujących na to konto: {$r['aliases']}.";
+            $extra[]    = t('msg.users.deleted_aliases', ['count' => $r['aliases']]);
+            $extraLog[] = Lang::site('msg.users.deleted_aliases', ['count' => $r['aliases']]);
         }
         if ($r['lists'] !== []) {
             $ids = implode(', ', array_map(static fn(array $a): string => '#' . $a['id'] . ' (' . $a['source'] . ')', $r['lists']));
-            $extra .= " UWAGA: aliasy z listą celów nadal wymieniają to konto: $ids — popraw je ręcznie.";
+            $extra[]    = t('msg.users.deleted_lists', ['ids' => $ids]);
+            $extraLog[] = Lang::site('msg.users.deleted_lists', ['ids' => $ids]);
         }
 
         $filesOk = true;
@@ -570,15 +678,16 @@ final class PanelController
             $files = ' ' . Commands::mailboxDeleteMessage($f['code']);
         } else {
             $filesOk = false;
-            $files = ' Uwaga: pliki poczty NIE zostały przeniesione do kwarantanny — zostały na dysku (brak konfiguracji sudo dla mailpanel-delete-user.sh).';
+            $files = ' ' . t('msg.users.delete_files_no_sudo');
         }
 
-        $this->audit->log('DELETE_USER', "Usunięto konto: $email (ID: $id)" . match (true) {
-            $code === 0 => ' — skrzynka przeniesiona do kwarantanny /var/mail/deleted',
-            $code === 4 => ' — na dysku nie było katalogu poczty',
-            default     => ' — pliki poczty NIE przeniesione do kwarantanny',
-        } . $extra);
-        $this->success = 'Konto ' . $email . ' zostało usunięte z bazy.' . $extra;
+        $delArgs = ['email' => $email, 'id' => $id];
+        $this->audit->log('DELETE_USER', match (true) {
+            $code === 0 => Lang::site('audit.delete_user_moved', $delArgs),
+            $code === 4 => Lang::site('audit.delete_user_nodir', $delArgs),
+            default     => Lang::site('audit.delete_user_kept', $delArgs),
+        } . ($extraLog === [] ? '' : ' ' . implode(' ', $extraLog)));
+        $this->success = t('msg.users.deleted', ['email' => $email]) . ($extra === [] ? '' : ' ' . implode(' ', $extra));
         if ($filesOk) {
             $this->success .= $files;
         } else {
@@ -601,22 +710,20 @@ final class PanelController
      *
      * @return array{status:string,msg:string,detail:string,override:bool,aliases:array<int,array{id:int,source:string,destination:string}>}
      */
-    private function classifyName(UserRepository $users, string $local, string $email): array
+    private function classifyName(UserRepository $users, string $local, string $email, ?string $code = null): array
     {
-        $out = ['status' => 'free', 'msg' => 'Wolne', 'detail' => '', 'override' => false, 'aliases' => []];
+        // $code = język tekstów (null = język administratora; kod języka serwisu dla wpisu w dzienniku audytowym)
+        $out = ['status' => 'free', 'msg' => Lang::t('msg.name.free', [], $code), 'detail' => '', 'override' => false, 'aliases' => []];
 
         if ($users->exists($email)) {
-            return ['status' => 'taken', 'msg' => 'Konto o tym adresie już istnieje',
-                    'detail' => 'Skrzynka ' . $email . ' jest już na liście kont.'] + $out;
+            return ['status' => 'taken', 'msg' => Lang::t('msg.name.taken', [], $code),
+                    'detail' => Lang::t('msg.name.taken_detail', ['email' => $email], $code)] + $out;
         }
         $from = $users->aliasesFrom($email);
         if ($from !== []) {
             $dest = implode('; ', array_map(static fn(array $a): string => $a['destination'], $from));
-            return ['status' => 'alias', 'msg' => 'To adres aliasu — tu nie da się założyć skrzynki',
-                    'detail' => "$email jest aliasem: poczta na ten adres trafia do $dest. Postfix rozwiązuje aliasy, zanim "
-                        . 'poczta dotrze do skrzynek, więc skrzynka o tej nazwie nie dostałaby ani jednej wiadomości — dlatego '
-                        . 'tej blokady nie zdejmuje żadna zgoda. Wyjście: zostaw alias (poczta już dochodzi do ' . $dest
-                        . ') albo usuń go poniżej i dopiero wtedy załóż skrzynkę.',
+            return ['status' => 'alias', 'msg' => Lang::t('msg.name.alias', [], $code),
+                    'detail' => Lang::t('msg.name.alias_detail', ['email' => $email, 'dest' => $dest], $code),
                     'aliases' => $from] + $out;
         }
 
@@ -625,14 +732,11 @@ final class PanelController
         if ($res !== null) {
             [$which, $pattern] = $res;
             $out['status'] = 'reserved';
-            $out['msg']    = $which === 'base' ? 'Nazwa zarezerwowana na stałe' : 'Nazwa z listy zarezerwowanych';
+            $out['msg']    = $which === 'base' ? Lang::t('msg.name.reserved_base', [], $code) : Lang::t('msg.name.reserved_list', [], $code);
             $reasons[] = match (true) {
-                $which === 'list' => "„{$pattern}” jest na liście zarezerwowanych nazw (Ustawienia → Rejestracja). Rejestracja publiczna jej nie odda.",
-                in_array($pattern, self::CA_NAMES, true) => "„{$local}” to adres roli: urzędy certyfikacji wysyłają na admin@, administrator@, hostmaster@, "
-                    . 'postmaster@ i webmaster@ linki potwierdzające domenę — kto czyta taką skrzynkę, może dostać certyfikat TLS '
-                    . 'dla domeny. Rejestracja publiczna nigdy jej nie odda.',
-                default => "„{$pattern}” to nazwa systemowa / roli (RFC 2142: abuse, noreply, mailer-daemon…), zaufana przez innych. "
-                    . 'Rejestracja publiczna nigdy jej nie odda.',
+                $which === 'list' => Lang::t('msg.name.why_list', ['pattern' => $pattern], $code),
+                in_array($pattern, self::CA_NAMES, true) => Lang::t('msg.name.why_ca', ['local' => $local], $code),
+                default => Lang::t('msg.name.why_system', ['pattern' => $pattern], $code),
             };
         }
         $days    = Settings::int('deleted_name_hold_days', 365);
@@ -640,20 +744,22 @@ final class PanelController
         $to      = $users->aliasesPointingTo($email);
         if ($deleted !== null) {
             $out['status'] = $out['status'] === 'free' ? 'held' : $out['status'];
-            $out['msg']    = $out['status'] === 'held' ? 'Konto o tej nazwie niedawno usunięto' : $out['msg'];
-            $reasons[] = 'Konto ' . $email . ' usunięto ' . substr($deleted, 0, 16) . "; przez $days dni nazwa nie wraca do puli "
-                . '(Ustawienia → Rejestracja), żeby nowy właściciel nie dostawał poczty adresowanej do poprzedniego.';
+            $out['msg']    = $out['status'] === 'held' ? Lang::t('msg.name.held_deleted', [], $code) : $out['msg'];
+            $reasons[] = Lang::t('msg.name.why_deleted', ['email' => $email, 'when' => substr($deleted, 0, 16), 'days' => $days], $code);
         }
         if ($to !== []) {
             $out['status'] = $out['status'] === 'free' ? 'held' : $out['status'];
-            $out['msg']    = $out['status'] === 'held' && $deleted === null ? 'Alias kieruje pocztę na ten adres' : $out['msg'];
-            $list = implode(', ', array_map(static fn(array $a): string => $a['source'] . ($a['exact'] ? '' : ' (lista)'), $to));
-            $reasons[] = "Alias $list → $email: po założeniu skrzynki poczta z tego aliasu zacznie do niej trafiać.";
+            $out['msg']    = $out['status'] === 'held' && $deleted === null ? Lang::t('msg.name.held_alias', [], $code) : $out['msg'];
+            $list = implode(', ', array_map(
+                static fn(array $a): string => $a['exact'] ? $a['source'] : Lang::t('msg.name.list_item', ['source' => $a['source']], $code),
+                $to
+            ));
+            $reasons[] = Lang::t('msg.name.why_alias_to', ['list' => $list, 'email' => $email], $code);
             $out['aliases'] = array_map(static fn(array $a): array => ['id' => $a['id'], 'source' => $a['source'], 'destination' => $a['destination']], $to);
         }
         if ($out['status'] !== 'free') {
             $out['override'] = true;
-            $out['detail']   = implode(' ', $reasons) . ' Możesz założyć tę skrzynkę świadomie — zaznacz zgodę (trafi do dziennika audytowego).';
+            $out['detail']   = implode(' ', $reasons) . ' ' . Lang::t('msg.name.override_hint', [], $code);
         }
         return $out;
     }
@@ -672,51 +778,53 @@ final class PanelController
         $users = new UserRepository($this->pdo);
 
         if (!Accounts::validLocal($local)) {
-            $this->error = 'Niedozwolone znaki w nazwie konta (litery, cyfry, . _ -; bez kropki/myślnika na brzegach).';
+            $this->error = t('msg.users.bad_local');
             return;
         }
         if (!in_array($domain, $users->domains(), true)) {
-            $this->error = 'Nieprawidłowa domena.';
+            $this->error = t('msg.users.bad_domain');
             return;
         }
         $email = $local . '@' . $domain;
         if (strlen($email) > Accounts::MAX_EMAIL || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $this->error = 'Nieprawidłowy adres e-mail.';
+            $this->error = t('msg.users.bad_email');
             return;
         }
         if ($pass !== (string) ($_POST['nu_password2'] ?? '')) {
-            $this->error = 'Hasła nie są identyczne.';
+            $this->error = t('msg.common.pass_mismatch');
             return;
         }
         if (!Password::meetsPolicy($pass)) {
-            $this->error = 'Hasło nie spełnia wymogów bezpieczeństwa (długość i wymagane klasy znaków).';
+            $this->error = t('msg.common.pass_policy');
             return;
         }
 
         $name     = $this->classifyName($users, $local, $email);
         $status   = $name['status'];
         $override = false;
+        $overrideWhy = '';
         $this->data['name'] = $name;     // modal pokazuje powód i (dla aliasu) przycisk usunięcia aliasu
         if ($status === 'taken') {
-            $this->error = "Konto $email już istnieje.";
+            $this->error = t('msg.users.exists', ['email' => $email]);
             return;
         }
         if ($status === 'alias') {
             $dest = implode('; ', array_map(static fn(array $a): string => $a['destination'], $name['aliases']));
-            $this->error = "$email to adres aliasu (→ $dest): skrzynka o tej nazwie nie dostawałaby poczty, więc zgoda tego nie "
-                . 'zmienia. Zostaw alias albo usuń go (przycisk pod polem adresu) i wtedy załóż skrzynkę.';
+            $this->error = t('msg.users.is_alias', ['email' => $email, 'dest' => $dest]);
             return;
         }
         if ($status !== 'free') {
             if (empty($_POST['nu_allow_reserved'])) {
-                $this->error = "$email: " . mb_strtolower($name['msg']) . ' — żeby założyć tę skrzynkę świadomie, zaznacz zgodę pod polem adresu.';
+                $this->error = t('msg.users.need_consent', ['email' => $email, 'why' => mb_strtolower($name['msg'])]);
                 return;
             }
             $override = true;
+            // powód do dziennika audytowego w języku serwisu — oceniany TERAZ, przed utworzeniem konta (potem nazwa byłaby "zajęta")
+            $overrideWhy = mb_strtolower($this->classifyName($users, $local, $email, Lang::defaultLanguage())['msg']);
         }
         $domainId = $users->domainIdForEmail($email);
         if ($domainId === null) {
-            $this->error = 'Błąd konfiguracji domeny.';
+            $this->error = t('msg.users.domain_config');
             return;
         }
 
@@ -724,7 +832,7 @@ final class PanelController
             $users->create($domainId, Password::dovecotHash($pass), $email, $quota);
         } catch (\PDOException $e) {
             if (($e->errorInfo[1] ?? 0) === 1062) {
-                $this->error = "Konto $email już istnieje (założone przed chwilą w innej karcie?).";
+                $this->error = t('msg.users.exists_race', ['email' => $email]);
                 $this->refresh[] = 'users';
                 return;
             }
@@ -734,16 +842,17 @@ final class PanelController
 
         // Indywidualny dzienny limit wysyłki (puste = globalny, 0 = bez limitu)
         $limitRaw = trim((string) ($_POST['nu_send_limit'] ?? ''));
-        $limitTxt = 'globalny';
+        $limit = null;
         if ($limitRaw !== '' && $newId > 0) {
             $limit = max(0, (int) $limitRaw);
             $this->users->updateSendLimit($newId, $limit);
-            $limitTxt = $limit === 0 ? 'bez limitu' : $limit . '/dzień';
         }
 
-        $this->audit->log('CREATE_USER', "Utworzono konto: $email (quota {$quota}MB, limit wysyłki: $limitTxt)"
-            . ($override ? ' — za zgodą administratora mimo: ' . mb_strtolower($name['msg']) : ''));
-        $this->success = 'Konto ' . $email . ' zostało utworzone (quota ' . Quota::display($quota) . ', limit wysyłki: ' . $limitTxt . ').';
+        $createArgs = ['email' => $email, 'quota' => $quota . 'MB', 'limit' => self::limitText($limit, true)];
+        $this->audit->log('CREATE_USER', $override
+            ? Lang::site('audit.create_user_override', $createArgs + ['why' => $overrideWhy])
+            : Lang::site('audit.create_user', $createArgs));
+        $this->success = t('msg.users.created', ['email' => $email, 'quota' => Quota::display($quota), 'limit' => self::limitText($limit)]);
         $this->refresh = array_merge($this->refresh, ['users', 'stats']);
         $this->data    = ['id' => $newId, 'email' => $email];
         $this->values  = ['nu_password' => '', 'nu_password2' => ''];
@@ -761,14 +870,14 @@ final class PanelController
         $users  = new UserRepository($this->pdo);
         $row    = $users->aliasById($id);
         if ($row === null || Accounts::normalize($row['source']) !== $source) {
-            $this->error = 'Tego aliasu już nie ma albo dane się nie zgadzają.';
+            $this->error = t('msg.alias.gone');
             $this->data['source'] = $source;
             return;
         }
         $users->deleteAlias($id);
-        $this->audit->log('DELETE_ALIAS', "Usunięto alias #{$row['id']}: {$row['source']} → {$row['destination']}");
-        $this->success = "Alias {$row['source']} → {$row['destination']} został usunięty. Poczta na {$row['source']} nie jest "
-            . 'już przekierowywana — załóż teraz skrzynkę albo ten adres będzie odrzucał pocztę.';
+        $aliasArgs = ['id' => $row['id'], 'source' => $row['source'], 'dest' => $row['destination']];
+        $this->audit->log('DELETE_ALIAS', Lang::site('audit.delete_alias', $aliasArgs));
+        $this->success = t('msg.alias.deleted', $aliasArgs);
         $this->data['source'] = $row['source'];
     }
 
@@ -779,20 +888,20 @@ final class PanelController
         $jail = (string) ($_POST['f2b_jail'] ?? '');
 
         if (Ip::toBin($ip) === null) {
-            $this->error = 'Nieprawidłowy adres IP.';
+            $this->error = t('msg.common.bad_ip');
             return;
         }
         if (!in_array($jail, Commands::fail2banJails(), true)) {
-            $this->error = 'Nieprawidłowy jail.';
+            $this->error = t('msg.f2b.bad_jail');
             return;
         }
 
         if (Commands::fail2banBan($jail, $ip)) {
-            $this->audit->log('F2B_BAN', "Ręczny ban IP: $ip (jail: $jail)");
-            $this->success = "IP $ip zostało zbanowane w Fail2Ban (jail: $jail).";
+            $this->audit->log('F2B_BAN', Lang::site('audit.f2b_ban', ['ip' => $ip, 'jail' => $jail]));
+            $this->success = t('msg.f2b.banned', ['ip' => $ip, 'jail' => $jail]);
             $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
         } else {
-            $this->error = 'Błąd komendy Fail2Ban — sprawdź regułę sudoers: fail2ban-client set <jail> banip <ip> (plik system/sudoers.d/mailpanel).';
+            $this->error = t('msg.f2b.ban_failed', ['cmd' => 'fail2ban-client set <jail> banip <ip>']);
         }
     }
 
@@ -804,16 +913,16 @@ final class PanelController
         $to   = (string) ($_POST['to_jail'] ?? '');
 
         if (Ip::toBin($ip) === null) {
-            $this->error = 'Nieprawidłowy adres IP.';
+            $this->error = t('msg.common.bad_ip');
             return;
         }
         $jails = Commands::fail2banJails();
         if (!in_array($to, $jails, true)) {
-            $this->error = 'Nieprawidłowy jail docelowy.';
+            $this->error = t('msg.f2b.bad_jail_to');
             return;
         }
         if ($from !== '' && !in_array($from, $jails, true)) {
-            $this->error = 'Nieprawidłowy jail źródłowy.';
+            $this->error = t('msg.f2b.bad_jail_from');
             return;
         }
         if ($from !== '') {
@@ -822,22 +931,29 @@ final class PanelController
 
         // Ban czasowy: przy przenoszeniu do panel-tempban można podać czas
         // (1h..3 miesiące) — ustawiany tak samo jak przy banie ze skanera.
-        $durTxt = '';
+        $durTxt = '';   // " na 3 dni" w języku administratora
+        $durLog = '';   // to samo w języku serwisu (dziennik audytowy)
         $dur    = (int) ($_POST['duration'] ?? 0);
         if ($to === 'panel-tempban' && $dur >= 3600 && $dur <= 7776000) {
             if (!Commands::fail2banSetBantime('panel-tempban', $dur)) {
-                $this->error = 'Błąd ustawiania czasu bana (sudoers: set panel-tempban bantime <sekundy>).';
+                $this->error = t('msg.f2b.bantime_failed', ['cmd' => 'set panel-tempban bantime <' . t('msg.f2b.seconds') . '>']);
                 return;
             }
-            $durTxt = $dur >= 172800 ? ' na ' . intdiv($dur, 86400) . ' dni' : ' na ' . intdiv($dur, 3600) . ' godz.';
+            $durTxt = t('msg.bans.for_dur', ['dur' => self::durationText($dur)]);
+            $durLog = Lang::site('msg.bans.for_dur', ['dur' => self::durationText($dur, true)]);
         }
 
         if (Commands::fail2banBan($to, $ip)) {
-            $this->audit->log('MOVE_BAN', "Przeniesiono IP: $ip ($from -> $to$durTxt)");
-            $this->success = "IP $ip przeniesione: $from → $to$durTxt.";
+            $move = ['ip' => $ip, 'from' => $from, 'to' => $to];
+            $this->audit->log('MOVE_BAN', $durLog === ''
+                ? Lang::site('audit.move_ban', $move)
+                : Lang::site('audit.move_ban_for', $move + ['dur' => $durLog]));
+            $this->success = $durTxt === ''
+                ? t('msg.bans.moved', $move)
+                : t('msg.bans.moved_for', $move + ['dur' => $durTxt]);
             $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
         } else {
-            $this->error = 'Błąd komendy Fail2Ban przy przenoszeniu.';
+            $this->error = t('msg.f2b.move_failed');
         }
     }
 
@@ -848,37 +964,43 @@ final class PanelController
 
         $ipBin = Ip::toBin($ip);
         if ($ipBin === null) {
-            $this->error = 'Nieprawidłowy adres IP.';
+            $this->error = t('msg.common.bad_ip');
             return;
         }
 
         if ($type === 'fail2ban' && !empty($_POST['jail'])) {
             $jail = (string) $_POST['jail'];
             if (!in_array($jail, Commands::fail2banJails(), true)) {
-                $this->error = 'Nieprawidłowy jail.';
+                $this->error = t('msg.f2b.bad_jail');
                 return;
             }
             if (Commands::fail2banUnban($jail, $ip)) {
-                $this->audit->log('UNBAN_IP', "Odblokowano IP: $ip (Fail2Ban: $jail)");
-                $this->success = "IP $ip zostało odblokowane w Fail2Ban.";
+                $this->audit->log('UNBAN_IP', Lang::site('audit.unban_f2b', ['ip' => $ip, 'jail' => $jail]));
+                $this->success = t('msg.bans.unbanned_f2b', ['ip' => $ip]);
                 $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
             } else {
-                $this->error = 'Błąd komendy Fail2Ban.';
+                $this->error = t('msg.f2b.cmd_failed');
             }
             return;
         }
 
         // Ban lokalny założony przez "Zbanuj" ma też wpis w jailu panel-tempban (znacznik w powodzie) — zdejmujemy oba.
         $reason = $this->bans->reasonFor($ipBin);
-        $also   = '';
+        $also   = '';   // '' | 'also' (zdjęto też wpis w Fail2Ban) | 'warn' (wpisu w Fail2Ban nie udało się zdjąć)
         if ($reason !== null && str_contains($reason, BanRepository::F2B_MARK)) {
-            $also = Commands::fail2banUnban('panel-tempban', $ip)
-                ? ' (oraz w Fail2Ban: panel-tempban)'
-                : ' (UWAGA: wpisu w Fail2Ban panel-tempban nie udało się zdjąć — zdejmij go w liście blokad)';
+            $also = Commands::fail2banUnban('panel-tempban', $ip) ? 'also' : 'warn';
         }
         $this->bans->unbanLocal($ipBin);
-        $this->audit->log('UNBAN_IP', "Odblokowano IP: $ip$also");
-        $this->success = "IP $ip zostało odblokowane$also.";
+        $this->audit->log('UNBAN_IP', match ($also) {
+            'also'  => Lang::site('audit.unban_ip_also', ['ip' => $ip]),
+            'warn'  => Lang::site('audit.unban_ip_warn', ['ip' => $ip]),
+            default => Lang::site('audit.unban_ip', ['ip' => $ip]),
+        });
+        $this->success = match ($also) {
+            'also'  => t('msg.bans.unbanned_also', ['ip' => $ip]),
+            'warn'  => t('msg.bans.unbanned_warn', ['ip' => $ip]),
+            default => t('msg.bans.unbanned', ['ip' => $ip]),
+        };
         $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
     }
 
@@ -919,6 +1041,8 @@ final class PanelController
             $this->ajaxScanSuspicious();
         } elseif (isset($_GET['ajax_stats'])) {
             $this->ajaxStats();
+        } elseif (isset($_GET['lang_export'])) {
+            LanguageAdmin::export((string) $_GET['lang_export']);
         } else {
             return false;
         }
@@ -951,10 +1075,10 @@ final class PanelController
         $users  = new UserRepository($this->pdo);
 
         if (!Accounts::validLocal($local)) {
-            Http::json(['ok' => false, 'msg' => 'Niedozwolone znaki (litery, cyfry, . _ -; bez kropki ani myślnika na brzegach)']);
+            Http::json(['ok' => false, 'msg' => t('msg.name.bad_chars')]);
         }
         if (!in_array($domain, $users->domains(), true)) {
-            Http::json(['ok' => false, 'msg' => 'Nieprawidłowa domena']);
+            Http::json(['ok' => false, 'msg' => t('msg.name.bad_domain')]);
         }
         $email = $local . '@' . $domain;
         Http::json(['ok' => true, 'email' => $email] + $this->classifyName($users, $local, $email));
@@ -1059,9 +1183,9 @@ final class PanelController
                 }
             };
             $addDb('SELECT INET6_NTOA(ip) ip, COUNT(*) c FROM admin_login_attempts WHERE success = 0 AND created_at >= ? AND created_at < ? GROUP BY ip', 'panel-admin');
-            $addDb("SELECT INET6_NTOA(ip) ip, COUNT(*) c FROM registration_events WHERE status IN ('failed','blocked') AND created_at >= ? AND created_at < ? GROUP BY ip", 'rejestracja');
+            $addDb("SELECT INET6_NTOA(ip) ip, COUNT(*) c FROM registration_events WHERE status IN ('failed','blocked') AND created_at >= ? AND created_at < ? GROUP BY ip", t('msg.scan.svc_registration'));
         } else {
-            Http::json(['error' => 'Nieznane źródło skanu.']);
+            Http::json(['error' => t('msg.scan.bad_source')]);
         }
 
         usort($pairs, static fn($a, $b) => $b['c'] <=> $a['c']);
@@ -1082,51 +1206,49 @@ final class PanelController
     private function ajaxScanBan(): never
     {
         if (!Csrf::check(Http::post('_csrf'))) {
-            Http::json(['ok' => false, 'error' => 'Sesja wygasła — odśwież stronę panelu.']);
+            Http::json(['ok' => false, 'error' => t('msg.scan.session_expired')]);
         }
 
         $ip   = trim((string) ($_POST['ip'] ?? ''));
         $mode = trim((string) ($_POST['mode'] ?? 'perma'));
 
         if (Ip::toBin($ip) === null) {
-            Http::json(['ok' => false, 'error' => 'Nieprawidłowy adres IP.']);
+            Http::json(['ok' => false, 'error' => t('msg.common.bad_ip')]);
         }
         if ($this->isScanTrusted($ip)) {
-            Http::json(['ok' => false, 'error' => 'To IP jest na liście zaufanych.']);
+            Http::json(['ok' => false, 'error' => t('msg.scan.trusted')]);
         }
 
         $jails = Commands::fail2banJails();
 
         if ($mode === 'perma') {
             if (!in_array('panel-permaban', $jails, true)) {
-                Http::json(['ok' => false, 'error' => 'Brak jaila panel-permaban w Fail2Ban.']);
+                Http::json(['ok' => false, 'error' => t('msg.scan.no_permaban')]);
             }
             if (!Commands::fail2banBan('panel-permaban', $ip)) {
-                Http::json(['ok' => false, 'error' => 'Błąd fail2ban-client (sudoers: set <jail> banip <ip>).']);
+                Http::json(['ok' => false, 'error' => t('msg.scan.cmd_failed', ['cmd' => 'set <jail> banip <ip>'])]);
             }
-            $this->audit->log('F2B_BAN', "Ban ze skanera: $ip (na stałe, jail: panel-permaban)");
-            Http::json(['ok' => true, 'label' => 'na stałe']);
+            $this->audit->log('F2B_BAN', Lang::site('audit.scan_ban_perma', ['ip' => $ip]));
+            Http::json(['ok' => true, 'label' => t('msg.scan.label_perma')]);
         }
 
         // Ban czasowy: 1h..3 miesiące
         $seconds = (int) $mode;
         if ($seconds < 3600 || $seconds > 7776000) {
-            Http::json(['ok' => false, 'error' => 'Nieprawidłowy czas bana.']);
+            Http::json(['ok' => false, 'error' => t('msg.scan.bad_duration')]);
         }
         if (!in_array('panel-tempban', $jails, true)) {
-            Http::json(['ok' => false, 'error' => 'Brak jaila panel-tempban w Fail2Ban (dodaj sekcję w jail.local).']);
+            Http::json(['ok' => false, 'error' => t('msg.scan.no_tempban')]);
         }
         if (!Commands::fail2banSetBantime('panel-tempban', $seconds)) {
-            Http::json(['ok' => false, 'error' => 'Błąd ustawiania bantime (sudoers: set panel-tempban bantime <sekundy>).']);
+            Http::json(['ok' => false, 'error' => t('msg.scan.bantime_failed', ['cmd' => 'set panel-tempban bantime <' . t('msg.f2b.seconds') . '>'])]);
         }
         if (!Commands::fail2banBan('panel-tempban', $ip)) {
-            Http::json(['ok' => false, 'error' => 'Błąd fail2ban-client przy banowaniu.']);
+            Http::json(['ok' => false, 'error' => t('msg.scan.ban_failed')]);
         }
 
-        $label = $seconds >= 172800
-            ? intdiv($seconds, 86400) . ' dni'
-            : intdiv($seconds, 3600) . ' godz.';
-        $this->audit->log('F2B_BAN', "Ban ze skanera: $ip (czasowy $label, jail: panel-tempban)");
+        $label = self::durationText($seconds);
+        $this->audit->log('F2B_BAN', Lang::site('audit.scan_ban_temp', ['ip' => $ip, 'label' => self::durationText($seconds, true)]));
         Http::json(['ok' => true, 'label' => $label]);
     }
 
@@ -1182,7 +1304,7 @@ final class PanelController
 
         Http::json([
             'html'       => View::render(self::TPL . '/partials/' . $partial, ['rows' => $pager($per, $off, $sort, $search)]),
-            'pagination' => Pagination::render($page, $per, $total, $nav, 'Wyświetlanie'),
+            'pagination' => Pagination::render($page, $per, $total, $nav, t('pager.showing')),
             'total'      => $total,
         ]);
     }
@@ -1204,11 +1326,11 @@ final class PanelController
                 $bans[] = [
                     'type' => 'fail2ban', 'ip_address' => $b['ip'],
                     'reason' => $isPerma
-                        ? 'Blokada stała (panel)'
-                        : ($isTemp ? 'Blokada czasowa (panel)' : "Auto-Ban: $jail"),
+                        ? t('msg.bans.reason_perma')
+                        : ($isTemp ? t('msg.bans.reason_temp') : t('msg.bans.reason_auto', ['jail' => $jail])),
                     'jail' => $jail,
-                    'service' => $isPerma ? 'PERMANENTNY' : $jail,
-                    'until' => $perm ? 'Na stałe' : 'Dynamicznie',
+                    'service' => $isPerma ? t('msg.bans.service_perma') : $jail,
+                    'until' => $perm ? t('msg.bans.until_perma') : t('msg.bans.until_dynamic'),
                     'until_epoch' => $perm ? null : $b['end'],
                 ];
             }
@@ -1246,7 +1368,7 @@ final class PanelController
             $total = $this->logs->$count('');
             $lists[$nav] = [
                 'rows'  => View::render(self::TPL . '/partials/' . $partial, ['rows' => $this->logs->$page(20, 0, [], '')]),
-                'pages' => Pagination::render(1, 20, $total, $nav, 'Wyświetlanie'),
+                'pages' => Pagination::render(1, 20, $total, $nav, t('pager.showing')),
                 'total' => $total,
             ];
         }
@@ -1283,9 +1405,8 @@ final class PanelController
                 'ip_window_hours'           => Settings::int('ip_window_hours', 24),
                 'ip_total_limit'            => Settings::int('ip_total_limit', 999),
                 'registration_enabled'      => Settings::get('registration_enabled', Settings::get('allow_registration', '1')),
-                'recaptcha_enabled'         => Settings::get('recaptcha_enabled', '0'),
-                'recaptcha_site_key'        => Settings::get('recaptcha_site_key', ''),
-                'recaptcha_secret_set'      => (string) Settings::get('recaptcha_secret', '') !== '',   // sam sekret nie trafia do HTML
+                'captcha'                   => Captcha::panelState(),   // sekrety nie trafiają do HTML (tylko "zapisany")
+                'languages'                 => LanguageAdmin::listing(),
                 'reserved_local_parts'      => (string) Settings::get('reserved_local_parts', Accounts::DEFAULT_EXTRA),
                 'reserved_base'             => Accounts::BASE_RESERVED,
                 'deleted_name_hold_days'    => Settings::int('deleted_name_hold_days', 365),

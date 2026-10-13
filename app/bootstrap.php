@@ -9,8 +9,8 @@ declare(strict_types=1);
  * punkty wejścia, które potrzebują IMAP, robią to samodzielnie.
  */
 
-/** Wersja TryHackX RoundControl (pokazywana tylko zalogowanemu administratorowi w nagłówku panelu). */
-define('APP_VERSION', '1.2.0');
+/** Wersja TryHackX RoundControl (pokazywana WYŁĄCZNIE zalogowanemu administratorowi — w stopce panelu). */
+define('APP_VERSION', '1.3.0');
 define('APP_ROOT', __DIR__);
 define('PROJECT_ROOT', dirname(__DIR__));
 
@@ -25,6 +25,9 @@ spl_autoload_register(static function (string $class): void {
         require $file;
     }
 });
+
+// Funkcje tłumaczeń t() / h() / html() w przestrzeni nazw App\I18n (autoloader nie ładuje funkcji).
+require APP_ROOT . '/src/I18n/functions.php';
 
 \App\Support\Env::load(\App\Support\Env::defaultPath(PROJECT_ROOT));
 

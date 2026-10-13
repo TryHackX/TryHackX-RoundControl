@@ -20,3 +20,7 @@ if (Env::isDev()) {
 }
 
 Session::start();
+
+// Język strony (1.3.0): ?lang= → ciasteczko `lang` → Accept-Language → domyślny z ustawień. Ustalany przed pierwszym
+// bajtem odpowiedzi, więc strona od razu jest w wybranym języku.
+\App\I18n\Lang::init();

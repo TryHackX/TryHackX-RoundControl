@@ -6,6 +6,8 @@ namespace App\Panel;
 use App\Support\Ip;
 use PDO;
 
+use function App\I18n\t;
+
 /** Lokalne blokady IP (tabela ip_blocks). */
 final class BanRepository
 {
@@ -20,9 +22,9 @@ final class BanRepository
             $out[] = [
                 'type'        => 'local',
                 'ip_address'  => Ip::toStr($row['ip']),
-                'reason'      => $row['reason'] ?: 'Brak powodu',
-                'jail'        => 'Panel',
-                'service'     => 'Panel',
+                'reason'      => $row['reason'] ?: t('rows.no_reason'),
+                'jail'        => t('rows.panel_jail'),
+                'service'     => t('rows.panel_jail'),
                 'until'       => (string) $row['until_ts'],
                 'until_epoch' => $row['until_epoch'] !== null ? (int) $row['until_epoch'] : null,
             ];

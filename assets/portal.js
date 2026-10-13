@@ -1,16 +1,37 @@
 /* =========================================================================
    Portal — logika front-endu (bez inline-JS; obsługa zdarzeń przez delegację).
-   Konfiguracja przekazywana przez data-* na <body> (CSP: script-src 'self').
+   Konfiguracja przekazywana przez data-* na <body> (CSP: script-src 'self'), teksty przez blok #i18n-data.
 
-   1.2.0 — logowanie: adres -> hasło -> (tylko administrator ze skrzynką) kafelki Webmail / Panel Admina.
+   Logowanie: adres -> hasło -> (tylko administrator ze skrzynką) kafelki Webmail / Panel Admina.
    Serwer odpowiada na złe hasło tak samo dla każdego adresu; front niczego nie zgaduje o koncie.
    ========================================================================= */
 (function () {
     'use strict';
 
+    /* Teksty interfejsu z pliku języka (app/lang/<kod>/js.php, klucze js.<obszar>.*) — blok #i18n-data drukuje PHP. */
+    var I18N = (function () {
+        try { return JSON.parse(document.getElementById('i18n-data').textContent) || {}; } catch (e) { return {}; }
+    })();
+    var LANG = I18N.lang || document.documentElement.lang || 'pl';
+    /* t(klucz, {nazwa: wartość}) — parametry :nazwa podstawiane (najdłuższe nazwy najpierw); brak klucza = sam klucz. */
+    function t(key, params) {
+        var dict = I18N.strings || {};
+        var s = Object.prototype.hasOwnProperty.call(dict, key) ? String(dict[key]) : key;
+        if (params) {
+            Object.keys(params).sort(function (a, b) { return b.length - a.length; }).forEach(function (k) {
+                s = s.split(':' + k).join(String(params[k]));
+            });
+        }
+        return s;
+    }
+
     var cfg = document.body.dataset;
     var CSRF = cfg.csrf || '';
-    var RC_ON = cfg.recaptcha === '1';
+    /* CAPTCHA: recaptcha | recaptcha_v3 | turnstile | hcaptcha, pusty = wyłączona. Widżet (wszystko poza v3) daje token
+       jednorazowy w polu formularza; v3 nie ma widżetu — token pobieramy sami przed każdym sprawdzanym żądaniem. */
+    var CAPTCHA = cfg.captcha || '';
+    var CAPTCHA_KEY = cfg.captchaKey || '';
+    var CAPTCHA_WIDGET = CAPTCHA !== '' && CAPTCHA !== 'recaptcha_v3';
     var PWD = {
         len:   parseInt(cfg.pwdMin, 10) || 0,
         upper: parseInt(cfg.pwdUpper, 10) || 0,
@@ -49,10 +70,68 @@
         }).then(function (r) { return r.json(); });
     }
 
-    function resetCaptcha() {
-        if (window.grecaptcha) {
-            try { grecaptcha.reset(); } catch (e) { /* instancja niegotowa */ }
+    /* Nowy widżet CAPTCHA w danym formularzu (token widżetu jest jednorazowy). Render niejawny: reCAPTCHA numeruje
+       widżety w kolejności w dokumencie, Turnstile przyjmuje kontener, hCaptcha zapisuje swój numer na ramce iframe.
+       v3 i brak CAPTCHA: nic do zrobienia. */
+    function resetCaptcha(form) {
+        if (!CAPTCHA_WIDGET || !form) return;
+        var box = form.querySelector('.captcha-box');
+        if (!box) return;
+        if (CAPTCHA === 'recaptcha') {
+            try {
+                var i = Array.prototype.indexOf.call(document.querySelectorAll('.g-recaptcha'), box.querySelector('.g-recaptcha'));
+                if (window.grecaptcha && i > -1) grecaptcha.reset(i);
+            } catch (e) { /* instancja niegotowa */ }
+        } else if (CAPTCHA === 'turnstile') {
+            try {
+                var el = box.querySelector('.cf-turnstile');
+                if (window.turnstile && el) turnstile.reset(el);
+            } catch (e) { /* instancja niegotowa */ }
+        } else if (CAPTCHA === 'hcaptcha') {
+            try {
+                var frame = box.querySelector('iframe[data-hcaptcha-widget-id]');
+                if (window.hcaptcha && frame) hcaptcha.reset(frame.getAttribute('data-hcaptcha-widget-id'));
+            } catch (e) { /* instancja niegotowa */ }
         }
+    }
+
+    /* reCAPTCHA v3: świeży token dla akcji ('login' | 'register'); dla pozostałych dostawców '' (token jest w formularzu).
+       Brak skryptu Google'a, błąd albo brak odpowiedzi w 15 s = odrzucenie z flagą .captcha (żądanie nie idzie). */
+    function captchaToken(action) {
+        if (CAPTCHA !== 'recaptcha_v3') return Promise.resolve('');
+        return new Promise(function (res, rej) {
+            if (!window.grecaptcha || typeof grecaptcha.ready !== 'function') { rej(new Error('no grecaptcha')); return; }
+            var timer = setTimeout(function () { rej(new Error('timeout')); }, 15000);
+            grecaptcha.ready(function () {
+                try {
+                    grecaptcha.execute(CAPTCHA_KEY, { action: action }).then(function (tok) { clearTimeout(timer); res(tok); },
+                        function (e) { clearTimeout(timer); rej(e); });
+                } catch (e) { clearTimeout(timer); rej(e); }
+            });
+        }).then(function (tok) {
+            if (!tok) throw new Error('empty token');
+            return tok;
+        }).catch(function () {
+            var err = new Error('captcha');
+            err.captcha = true;
+            throw err;
+        });
+    }
+
+    /* POST akcji, którą serwer sprawdza CAPTCHĄ (check_identity, register): z v3 dokłada pole captcha_token. */
+    function postChecked(data, action) {
+        return captchaToken(action).then(function (token) {
+            if (token) {
+                if (data instanceof FormData) data.set('captcha_token', token);
+                else data.captcha_token = token;
+            }
+            return post(data);
+        });
+    }
+
+    /* Komunikat dla nieudanego żądania: CAPTCHA v3 nie dała tokenu albo brak połączenia. */
+    function failText(err) {
+        return err && err.captcha ? t('captcha.failed') : t('net.offline');
     }
 
     /* Komunikat w karcie: miejsce rozwija się płynnie (bez skoku), treść czyta czytnik ekranu (aria-live). */
@@ -174,10 +253,10 @@
         clearMessage();
         var btn = form.querySelector('button[type="submit"]');
         var email = ($('inpEmail').value || '').trim();
-        if (!email) { showMessage('Podaj adres e-mail', 'error'); $('inpEmail').focus(); return; }
-        busy(btn, true, 'Sprawdzanie…');
+        if (!email) { showMessage(t('login.email_required'), 'error'); $('inpEmail').focus(); return; }
+        busy(btn, true, t('checking'));
 
-        post(new FormData(form)).then(function (data) {
+        postChecked(new FormData(form), 'login').then(function (data) {
             if (data.ok) {
                 flow.email = email.toLowerCase();
                 var dyn = $('step-dynamic');
@@ -185,28 +264,53 @@
                 animateStep('step-identity', 'step-dynamic', 'forward').then(function () { focusLater(data.focus_id); });
             } else {
                 showMessage(data.msg, 'error');
-                resetCaptcha();
+                resetCaptcha(form);
                 if (data.reload) setTimeout(function () { location.reload(); }, 1500);
             }
-        }).catch(function () {
-            showMessage('Brak połączenia z serwerem — spróbuj ponownie.', 'error');
+        }).catch(function (err) {
+            showMessage(failText(err), 'error');
         }).finally(function () { busy(btn, false); });
     }
 
     /* ---------- Krok 2: hasło ---------- */
+
+    /* Krótka, STAŁA chwila "sprawdzania" po stronie przeglądarki: ten sam czas dla dobrego i złego hasła, żeby
+       odpowiedź nie mignęła. Żadnego opóźniania na serwerze — sleep() w PHP trzymał wspólne procesy php-fpm,
+       a przed zgadywaniem chronią limity prób i CAPTCHA. */
+    function atLeast(ms, promise) {
+        return Promise.all([promise, new Promise(function (r) { setTimeout(r, REDUCED ? 0 : ms); })])
+            .then(function (all) { return all[0]; });
+    }
+
+    /* Wejście do webmaila / panelu: przycisk przechodzi w zielony stan "otwieram…", pola przygasają, a przeglądarka od
+       razu ładuje docelową stronę (karta zostaje widoczna do chwili, gdy nowa strona się narysuje — bez pustego tła). */
+    function handOff(btn, url) {
+        var label = url.indexOf('panel/') === 0 ? t('open.panel') : t('open.mail');
+        if (btn) {
+            btn.classList.add('is-success');
+            btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> ' + label;
+            var form = btn.closest('form');
+            if (form) {
+                form.classList.add('is-leaving');
+                form.querySelectorAll('input, button').forEach(function (el) { el.disabled = true; });
+            }
+        }
+        hint('choiceLive', label);
+        window.location.href = url;
+    }
 
     function handleLogin(form) {
         clearMessage();
         hint('loginHint', '');
         var btn = form.querySelector('button[type="submit"]');
         var pass = form.querySelector('[name="password"]');
-        if (!pass.value) { hint('loginHint', 'Podaj hasło'); pass.focus(); return; }
-        busy(btn, true, 'Logowanie…');
+        if (!pass.value) { hint('loginHint', t('login.password_required')); pass.focus(); return; }
+        busy(btn, true, t('checking'));
 
-        post(new FormData(form)).then(function (data) {
+        atLeast(450, post(new FormData(form))).then(function (data) {
             if (data.ok && data.redirect) {
-                window.location.href = data.redirect;
-                return;   // przycisk zostaje "w toku" aż do przejścia
+                handOff(btn, data.redirect);
+                return;   // przycisk zostaje w stanie "otwieram…" aż do przejścia
             }
             if (data.ok && data.step === 'choose') {
                 flow.choiceKey = data.choice_key || '';
@@ -226,18 +330,19 @@
             }
         }).catch(function () {
             busy(btn, false);
-            hint('loginHint', 'Brak połączenia z serwerem — spróbuj ponownie.');
+            hint('loginHint', t('net.offline'));
         });
     }
 
-    /* Złe hasło: serwer zapomniał rozpoczęte logowanie (tak samo dla każdego adresu). Bez reCAPTCHA zaczynamy je od
-       nowa w tle i zostajemy na ekranie hasła; z reCAPTCHA trzeba wrócić do adresu (nowy token). */
+    /* Złe hasło: serwer zapomniał rozpoczęte logowanie (tak samo dla każdego adresu). Bez widżetu CAPTCHA (CAPTCHA
+       wyłączona albo reCAPTCHA v3 — świeży token pobieramy sami) zaczynamy je od nowa w tle i zostajemy na ekranie hasła;
+       z widżetem trzeba wrócić do adresu (token widżetu jest jednorazowy, a nowy rozwiązuje człowiek). */
     function retryOrBack(msg, pass) {
-        if (RC_ON || !flow.email) {
+        if (CAPTCHA_WIDGET || !flow.email) {
             goBack(true).then(function () { showMessage(msg, 'error'); });
             return;
         }
-        post({ ajax_action: 'check_identity', email: flow.email }).then(function (data) {
+        postChecked({ ajax_action: 'check_identity', email: flow.email }, 'login').then(function (data) {
             if (!data.ok) {
                 goBack(true).then(function () { showMessage(data.msg || msg, 'error'); });
                 return;
@@ -253,42 +358,49 @@
 
     /* ---------- Krok 3: kafelki (administrator) ---------- */
 
+    /* Wybrany kafelek: spinner w miejscu ikony + pasek postępu, drugi przygasa (CSS .is-choosing / .is-busy);
+       stan trwa aż do załadowania docelowej strony. Komunikat "otwieram…" tylko dla czytników ekranu. */
     function chooseTarget(tile) {
         var target = tile.dataset.target;
+        var grid = tile.closest('.service-choices');
         var tiles = document.querySelectorAll('#step-choice .service-card');
-        tiles.forEach(function (t) { t.disabled = true; });
-        tile.classList.add('is-busy');
-        tile.setAttribute('aria-busy', 'true');
-        hint('choiceHint', target === 'admin' ? 'Otwieram panel…' : 'Otwieram webmail…');
-
-        post({ ajax_action: 'choose_target', target: target, key: target === 'webmail' ? flow.choiceKey : '' }).then(function (data) {
-            if (data.ok && data.redirect) {
-                flow.choiceKey = '';
-                window.location.href = data.redirect;
-                return;
-            }
-            flow.choiceKey = '';
-            if (data.reset) {
-                goBack(true, true).then(function () { showMessage(data.msg, 'error'); });
-            } else {
-                tiles.forEach(function (t) { t.disabled = t.dataset.disabled === '1'; });
-                tile.classList.remove('is-busy');
-                tile.removeAttribute('aria-busy');
-                hint('choiceHint', data.msg || 'Błąd');
-                if (data.reload) setTimeout(function () { location.reload(); }, 2000);
-            }
-        }).catch(function () {
+        var undo = function (msg) {
+            grid.classList.remove('is-choosing');
             tiles.forEach(function (t) { t.disabled = t.dataset.disabled === '1'; });
             tile.classList.remove('is-busy');
             tile.removeAttribute('aria-busy');
-            hint('choiceHint', 'Brak połączenia z serwerem — spróbuj ponownie.');
+            hint('choiceLive', '');
+            hint('choiceHint', msg);
+            tile.focus({ preventScroll: true });
+        };
+        hint('choiceHint', '');
+        grid.classList.add('is-choosing');
+        tiles.forEach(function (t) { t.disabled = true; });
+        tile.classList.add('is-busy');
+        tile.setAttribute('aria-busy', 'true');
+        hint('choiceLive', target === 'admin' ? t('open.panel') : t('open.mail'));
+
+        atLeast(450, post({ ajax_action: 'choose_target', target: target, key: target === 'webmail' ? flow.choiceKey : '' })).then(function (data) {
+            flow.choiceKey = '';
+            if (data.ok && data.redirect) {
+                window.location.href = data.redirect;
+                return;
+            }
+            if (data.reset) {
+                goBack(true, true).then(function () { showMessage(data.msg, 'error'); });
+            } else {
+                undo(data.msg || t('error'));
+                if (data.reload) setTimeout(function () { location.reload(); }, 2000);
+            }
+        }).catch(function () {
+            undo(t('net.offline'));
         });
     }
 
     /* Wróć do kroku "adres". Serwer zapomina rozpoczęte logowanie (także zaszyfrowane hasło dla kafelka). */
     function goBack(keepMessage, serverForgot) {
         if (!keepMessage) clearMessage();
-        resetCaptcha();
+        resetCaptcha($('form-identity'));
         flow.choiceKey = '';
         if (!serverForgot) post({ ajax_action: 'cancel_login' }).catch(function () {});
         var from = visibleStep();
@@ -319,25 +431,25 @@
         clearMessage('register-message');
         clearMessage();
         var btn = form.querySelector('button[type="submit"]');
-        busy(btn, true, 'Tworzenie konta…');
+        busy(btn, true, t('register.creating'));
 
         var fd = new FormData(form);
         fd.append('ajax_action', 'register');
         var made = ((form.querySelector('[name="local"]').value || '') + '@' + (form.querySelector('[name="domain"]').value || '')).toLowerCase();
 
-        post(fd).then(function (data) {
+        postChecked(fd, 'register').then(function (data) {
             if (data.ok) {
                 form.reset();
                 resetRegistrationUI();
-                showMessage(data.msg + ' Zaloguj się nowym adresem.', 'success');
+                showMessage(t('register.done', { msg: data.msg }), 'success');
                 if ($('inpEmail')) $('inpEmail').value = made;
                 setTimeout(function () { switchView('login'); }, 1200);
             } else {
                 showMessage(data.msg, 'error', 'register-message');
-                resetCaptcha();
+                resetCaptcha(form);
             }
-        }).catch(function () {
-            showMessage('Brak połączenia z serwerem — spróbuj ponownie.', 'error', 'register-message');
+        }).catch(function (err) {
+            showMessage(failText(err), 'error', 'register-message');
         }).finally(function () { busy(btn, false); });
     }
 
@@ -376,11 +488,11 @@
                 var local = fieldLocal.value.trim();
                 if (!local) { statusDiv.textContent = ''; statusDiv.className = ''; return; }
                 if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(local)) {
-                    statusDiv.textContent = 'Niedozwolone znaki (litery, cyfry, . _ -; bez znaku na brzegach)';
+                    statusDiv.textContent = t('register.invalid_chars');
                     statusDiv.className = 'status-bad show';
                     return;
                 }
-                statusDiv.textContent = 'Sprawdzanie…';
+                statusDiv.textContent = t('checking');
                 statusDiv.className = 'status-load show';
                 var my = ++seq;
                 post({ ajax_action: 'check_availability', local: local, domain: fieldDomain.value })
@@ -390,13 +502,13 @@
                             statusDiv.textContent = data.msg;
                             statusDiv.className = (data.status === 'free' ? 'status-ok' : 'status-bad') + ' show';
                         } else {
-                            statusDiv.textContent = data.msg || 'Błąd';
+                            statusDiv.textContent = data.msg || t('error');
                             statusDiv.className = 'status-bad show';
                         }
                     })
                     .catch(function () {
                         if (my !== seq) return;
-                        statusDiv.textContent = 'Brak połączenia';
+                        statusDiv.textContent = t('net.offline_short');
                         statusDiv.className = 'status-bad show';
                     });
             };
@@ -435,10 +547,10 @@
             var checkMatch = function () {
                 if (!fieldPass2.value) { matchStatus.textContent = ''; matchStatus.className = ''; return; }
                 if (fieldPass.value === fieldPass2.value) {
-                    matchStatus.textContent = 'Hasła są zgodne';
+                    matchStatus.textContent = t('pwd.match');
                     matchStatus.className = 'status-ok show';
                 } else {
-                    matchStatus.textContent = 'Hasła różnią się';
+                    matchStatus.textContent = t('pwd.mismatch');
                     matchStatus.className = 'status-bad show';
                 }
             };
@@ -455,7 +567,7 @@
         var show = inp.type === 'password';
         inp.type = show ? 'text' : 'password';
         btn.setAttribute('aria-pressed', show ? 'true' : 'false');
-        btn.setAttribute('aria-label', show ? 'Ukryj hasło' : 'Pokaż hasło');
+        btn.setAttribute('aria-label', show ? t('pwd.hide') : t('pwd.show'));
         btn.classList.toggle('is-on', show);
         inp.focus({ preventScroll: true });
     }
@@ -465,17 +577,17 @@
         var on = e.getModifierState('CapsLock');
         var el = $('loginHint');
         if (!el) return;
-        if (on && !el.textContent) { hint('loginHint', 'Caps Lock jest włączony'); el.dataset.caps = '1'; }
+        if (on && !el.textContent) { hint('loginHint', t('login.caps_lock')); el.dataset.caps = '1'; }
         else if (!on && el.dataset.caps === '1') { hint('loginHint', ''); delete el.dataset.caps; }
     }
 
     /* ---------- Delegacja zdarzeń ---------- */
 
     document.addEventListener('submit', function (e) {
-        var t = e.target;
-        if (t.id === 'form-identity') { e.preventDefault(); checkIdentity(t); }
-        else if (t.id === 'form-register') { e.preventDefault(); handleRegister(t); }
-        else if (t.matches('[data-form="login"]')) { e.preventDefault(); handleLogin(t); }
+        var f = e.target;
+        if (f.id === 'form-identity') { e.preventDefault(); checkIdentity(f); }
+        else if (f.id === 'form-register') { e.preventDefault(); handleRegister(f); }
+        else if (f.matches('[data-form="login"]')) { e.preventDefault(); handleLogin(f); }
     });
 
     document.addEventListener('click', function (e) {
@@ -505,6 +617,31 @@
     });
     document.addEventListener('keyup', capsLock);
 
+    /* Widżet CAPTCHA ma stały rozmiar (data-w: szerokość u danego dostawcy, np. 302 px); na wąskiej karcie (telefon)
+       zmniejszamy go proporcjonalnie zamiast pozwolić, by wystawał poza kartę albo był ucięty. */
+    function fitCaptcha() {
+        document.querySelectorAll('.captcha-box').forEach(function (box) {
+            var w = parseInt(box.dataset.w, 10) || 302;
+            var avail = box.parentElement ? box.parentElement.clientWidth : w;
+            var s = avail > 0 ? Math.min(1, avail / w) : 1;
+            box.style.setProperty('--rc-scale', s.toFixed(3));
+        });
+    }
+    if (CAPTCHA_WIDGET) {
+        fitCaptcha();
+        window.addEventListener('resize', fitCaptcha);
+    }
+
     $('card-register').inert = true;
     initRegistrationValidators();
+
+    /* Przełącznik języka (<details>): zamyka się klawiszem Esc (fokus wraca na przycisk) i kliknięciem poza nim. */
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var open = document.querySelector('.lang-switch[open]');
+        if (open) { open.open = false; open.querySelector('summary').focus(); }
+    });
+    document.addEventListener('click', function (e) {
+        document.querySelectorAll('.lang-switch[open]').forEach(function (d) { if (!d.contains(e.target)) d.open = false; });
+    });
 })();
