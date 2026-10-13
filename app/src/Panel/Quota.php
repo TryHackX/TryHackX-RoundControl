@@ -13,6 +13,9 @@ namespace App\Panel;
  */
 final class Quota
 {
+    /** Górna granica quoty w MiB (1 PiB): mieści się w kolumnie INT i w liczbach doveadm. */
+    public const MAX_MB = 1073741824;
+
     /** Aliasy jednostek formularza -> jednostka kanoniczna (dwójkowa). */
     private const ALIASES = [
         'B'   => 'B',
@@ -28,13 +31,19 @@ final class Quota
 
     public static function toMb(float $value, string $unit): int
     {
+        // Obliczenia na float i przycięcie PRZED rzutem na int: ogromna wartość przepełniała int (na PHP 8.5 do
+        // wartości ujemnej/0), a quota 0 oznacza "bez limitu". NaN / INF / wartość ujemna daje 0 tylko wtedy,
+        // gdy pole było puste — nigdy przez przepełnienie.
         $mb = match (self::normalizeUnit($unit)) {
-            'B'   => (int) round($value / 1048576),
-            'KiB' => (int) round($value / 1024),
-            'GiB' => (int) ($value * 1024),
-            default => (int) $value,
+            'B'   => $value / 1048576,
+            'KiB' => $value / 1024,
+            'GiB' => $value * 1024,
+            default => $value,
         };
-        return max(0, $mb);
+        if (is_nan($mb) || $mb < 0) {
+            return 0;
+        }
+        return (int) min(round($mb), (float) self::MAX_MB);
     }
 
     /** MiB -> [wartość, jednostka] do formularza (preferuje GiB, gdy podzielne). */

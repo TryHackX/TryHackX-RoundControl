@@ -7,6 +7,17 @@
     var ENDPOINT = 'index.php';
     var $ = function (id) { return document.getElementById(id); };
 
+    // fetch z limitem czasu (domyślnie 30 s): zawieszone żądanie kończy się błędem (obsługuje go istniejący .catch)
+    // zamiast wisieć w nieskończoność. Dłuższe limity tylko dla skanera logów i odczytu quoty (wiele wywołań doveadm).
+    function tfetch(url, opts, ms) {
+        opts = opts || {};
+        if (typeof AbortController === 'undefined') return fetch(url, opts);
+        var ctl = new AbortController();
+        var timer = setTimeout(function () { ctl.abort(); }, ms || 30000);
+        opts.signal = ctl.signal;
+        return fetch(url, opts).then(function (r) { clearTimeout(timer); return r; }, function (e) { clearTimeout(timer); throw e; });
+    }
+
     // Sort: users/reg/admin/audit = serwerowo (SQL); users.usage = klientowo
     // w obrębie strony (dane quoty doczytywane z Dovecot po renderze tabeli).
     // users.crit = JEDNA uporządkowana lista kryteriów sortowania w kolejności
@@ -100,7 +111,7 @@
         var url = ENDPOINT + '?ajax_fetch_users=1&page=' + st.page + '&per=' + st.per
             + (srv ? '&sort=' + encodeURIComponent(srv) : '');
         if (parsed.server) url += '&search=' + encodeURIComponent(parsed.server);
-        fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+        tfetch(url).then(function (r) { return r.json(); }).then(function (d) {
             $('users-tbody').innerHTML = d.html;
             $('users-pagination').innerHTML = d.pagination;
             $('total-results-text').innerHTML = 'Łącznie wyników: <b>' + d.total + '</b>';
@@ -193,7 +204,7 @@
         if (!cells.length) return;
         var emails = [];
         cells.forEach(function (c) { emails.push(c.dataset.email); });
-        fetch(ENDPOINT + '?ajax_quota_usage=1&emails=' + encodeURIComponent(emails.join(',')))
+        tfetch(ENDPOINT + '?ajax_quota_usage=1&emails=' + encodeURIComponent(emails.join(',')), null, 120000)
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 var u = d.usage || {};
@@ -281,7 +292,7 @@
             var map = { reg: 'ajax_fetch_reg_logs', admin: 'ajax_fetch_admin_logs', audit: 'ajax_fetch_audit_logs' };
             var url = ENDPOINT + '?' + map[nav] + '=1&page=' + st.page + '&per=' + st.per + sortParam(st);
             if (st.search) url += '&search=' + encodeURIComponent(st.search);
-            fetch(url)
+            tfetch(url)
                 .then(function (r) { return r.json(); })
                 .then(function (d) {
                     $(tbodyId).innerHTML = d.html;
@@ -572,7 +583,7 @@
         var box = $('quota_sent_today');
         if (!box) return;
         box.innerHTML = '<i class="ri-loader-4-line spin"></i> Ładowanie…';
-        fetch(ENDPOINT + '?ajax_sent_today=1&id=' + encodeURIComponent(id))
+        tfetch(ENDPOINT + '?ajax_sent_today=1&id=' + encodeURIComponent(id))
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 if (!d.ok) { box.innerHTML = '<span class="usage-na">—</span>'; return; }
@@ -589,7 +600,7 @@
         $('ban_user_email').value = email;
         var sel = $('ban_ip_select');
         sel.innerHTML = '<option value="">Ładowanie IP...</option>';
-        fetch('user_ips.php?email=' + encodeURIComponent(email))
+        tfetch('user_ips.php?email=' + encodeURIComponent(email))
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 sel.innerHTML = '<option value="">-- Wybierz IP --</option>';
@@ -640,7 +651,7 @@
         fields._csrf = document.body.dataset.csrf || '';
         fields._ajax = '1';
         Object.keys(fields).forEach(function (k) { fd.append(k, fields[k]); });
-        fetch(ENDPOINT, { method: 'POST', body: fd })
+        tfetch(ENDPOINT, { method: 'POST', body: fd })
             .then(function (r) { return r.json(); })
             .then(function (d) { if (cb) cb(d); })
             .catch(function () { if (cb) cb({ ok: false, error: 'Błąd połączenia z serwerem.' }); });
@@ -656,7 +667,7 @@
 
     // Przeładowanie samej tabeli blokad + licznika w statystykach.
     function refreshBans() {
-        fetch(ENDPOINT + '?ajax_fetch_bans=1')
+        tfetch(ENDPOINT + '?ajax_fetch_bans=1')
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 var tb = $('bans-tbody');
@@ -793,7 +804,7 @@
         $('scan_status_label').innerHTML = '<i class="ri-loader-4-line spin"></i> Skanuję: <b>' + src.label + '</b> (' + (i + 1) + '/' + SCAN_SOURCES.length + ')';
         $('scan_progress_fill').style.width = Math.round(i / SCAN_SOURCES.length * 100) + '%';
         renderScanSteps(i);
-        fetch(ENDPOINT + '?ajax_scan=1&source=' + src.key + '&from=' + encodeURIComponent(scan.from) + '&to=' + encodeURIComponent(scan.to))
+        tfetch(ENDPOINT + '?ajax_scan=1&source=' + src.key + '&from=' + encodeURIComponent(scan.from) + '&to=' + encodeURIComponent(scan.to), null, 120000)
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 (d.pairs || []).forEach(function (p) {
@@ -877,7 +888,7 @@
         body.set('ip', ip);
         body.set('mode', mode);
         body.set('_csrf', document.body.dataset.csrf || '');
-        fetch(ENDPOINT, { method: 'POST', body: body })
+        tfetch(ENDPOINT, { method: 'POST', body: body })
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 var msg = $('scan_ban_msg');
@@ -908,9 +919,9 @@
         digit: parseInt(document.body.dataset.pwdDigit, 10) || 0,
         spec:  parseInt(document.body.dataset.pwdSpec, 10) || 0
     };
-    var NU_LOCAL_RE = /^[a-z0-9._-]+$/i;
+    var NU_LOCAL_RE = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i;
     var nuAvailTimer = null;
-    var nuAvailState = ''; // '' | 'free' | 'taken' | 'invalid'
+    var nuAvailState = ''; // '' | 'free' | 'taken' | 'alias' | 'reserved' | 'held' | 'invalid'
 
     function nuFormMsg(text) {
         var box = $('nu_form_msg');
@@ -937,7 +948,7 @@
             return;
         }
         nuSetAvail('', 'Sprawdzanie...');
-        fetch(ENDPOINT + '?ajax_check_user=1&local=' + encodeURIComponent(local) + '&domain=' + encodeURIComponent(domain))
+        tfetch(ENDPOINT + '?ajax_check_user=1&local=' + encodeURIComponent(local) + '&domain=' + encodeURIComponent(domain))
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 if (d.ok) {
@@ -999,6 +1010,10 @@
         if (!local) return 'Podaj nazwę konta.';
         if (!NU_LOCAL_RE.test(local)) return 'Niedozwolone znaki w nazwie konta (dozwolone: litery, cyfry, . _ -).';
         if (nuAvailState === 'taken') return 'Ten adres jest już zajęty.';
+        if (nuAvailState === 'alias') return 'Ta nazwa jest źródłem aliasu — usuń alias, żeby założyć skrzynkę.';
+        if ((nuAvailState === 'reserved' || nuAvailState === 'held') && !($('nu_allow_reserved') && $('nu_allow_reserved').checked)) {
+            return 'Nazwa zarezerwowana lub niedawno usunięta — zaznacz zgodę pod polem adresu, jeśli to zamierzone.';
+        }
         if (!nuPwdValid($('nu_password').value)) return 'Hasło nie spełnia wymogów bezpieczeństwa.';
         if ($('nu_password2') && $('nu_password').value !== $('nu_password2').value) return 'Hasła nie są identyczne.';
         return '';
@@ -1008,6 +1023,7 @@
         nuAvailState = '';
         nuSetAvail('', '');
         nuFormMsg('');
+        if ($('nu_allow_reserved')) $('nu_allow_reserved').checked = false;
         var bar = $('nu_pwd_bar');
         if (bar) { bar.style.width = '0%'; bar.style.backgroundColor = ''; }
         document.querySelectorAll('#nu_pwd_reqs li').forEach(function (li) { li.classList.remove('valid'); });

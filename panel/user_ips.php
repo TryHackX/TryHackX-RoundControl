@@ -5,16 +5,16 @@ declare(strict_types=1);
 
 require __DIR__ . '/../app/web.php';
 
+use App\Admin\AdminGuard;
 use App\Panel\UserAdminRepository;
 use App\Support\Database;
 use App\Support\Http;
 
-if (empty($_SESSION['admin_id'])) {
-    http_response_code(403);
-    Http::json(['error' => 'forbidden']);
-}
+// Te same reguły sesji co panel (bezczynność, czas życia, istnienie konta) — odpowiedź JSON 403 zamiast przekierowania.
+AdminGuard::ensure(true);
+session_write_close();   // endpoint tylko do odczytu: nie trzymamy blokady sesji
 
-$email = trim((string) Http::get('email', ''));
+$email = strtolower(trim((string) Http::get('email', '')));
 if ($email === '') {
     Http::json(['error' => 'no_email']);
 }
@@ -22,6 +22,7 @@ if ($email === '') {
 try {
     Http::json((new UserAdminRepository(Database::pdo()))->ipsForEmail($email));
 } catch (Throwable $e) {
+    error_log('panel/user_ips: ' . $e->getMessage());
     http_response_code(500);
     Http::json(['error' => 'server']);
 }

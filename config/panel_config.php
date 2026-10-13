@@ -12,7 +12,18 @@
  */
 
 require_once dirname(__DIR__) . '/app/src/Support/Env.php';
-\App\Support\Env::load(dirname(__DIR__) . '/.env');
+\App\Support\Env::load(\App\Support\Env::defaultPath(dirname(__DIR__)));
+
+// 1.1.0: only these keys are imported (rc_<key> in app_settings -> $config['<key>']), each as a bounded integer.
+// Importing "any rc_* key" meant that write access to app_settings could set e.g. rc_imap_host / rc_smtp_host
+// and capture every webmail password.
+$panelAllowedKeys = [
+    'max_recipients'           => [0, 100000],
+    'sendmail_delay'           => [0, 86400],
+    'login_rate_limit'         => [0, 1000],
+    'max_disclosed_recipients' => [0, 1000],
+    'max_group_members'        => [0, 1000],
+];
 
 try {
     $pdo_rc = new PDO(
@@ -22,20 +33,14 @@ try {
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
 
-    $stmt = $pdo_rc->query("SELECT k, v FROM app_settings WHERE k LIKE 'rc_%'");
+    $stmt = $pdo_rc->query("SELECT k, v FROM app_settings WHERE k LIKE 'rc\\_%'");
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $key = substr($row['k'], 3); // zdejmij prefiks rc_
-        $val = $row['v'];
-
-        if (is_numeric($val)) {
-            $val = (int) $val;
-        } elseif ($val === 'true') {
-            $val = true;
-        } elseif ($val === 'false') {
-            $val = false;
+        if (!isset($panelAllowedKeys[$key]) || !is_numeric($row['v'])) {
+            continue;
         }
-
-        $config[$key] = $val;
+        [$min, $max] = $panelAllowedKeys[$key];
+        $config[$key] = max($min, min($max, (int) $row['v']));
     }
 
     $pdo_rc = null;

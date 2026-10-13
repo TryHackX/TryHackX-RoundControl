@@ -19,6 +19,11 @@ final class Session
         }
 
         ini_set('session.use_strict_mode', '1');
+        ini_set('session.use_only_cookies', '1');
+        ini_set('session.use_trans_sid', '0');
+        ini_set('session.cookie_httponly', '1');
+        // Debian czyści sesje własnym cronem (phpsessionclean) wg php.ini — tu tylko spójna wartość dla wewnętrznego GC.
+        ini_set('session.gc_maxlifetime', '7200');
         session_name(self::NAME);
         session_set_cookie_params([
             'lifetime' => 0,
@@ -33,7 +38,9 @@ final class Session
 
     public static function regenerate(): void
     {
-        session_regenerate_id(true);
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_regenerate_id(true);
+        }
     }
 
     public static function destroy(): void
@@ -43,6 +50,8 @@ final class Session
             $p = session_get_cookie_params();
             setcookie(session_name(), '', time() - 42000, $p['path'], $p['domain'], $p['secure'], $p['httponly']);
         }
-        session_destroy();
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_destroy();
+        }
     }
 }

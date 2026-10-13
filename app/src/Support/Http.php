@@ -35,9 +35,6 @@ final class Http
         exit;
     }
 
-    /** Losowe opóźnienie utrudniające timing/enumerację (dawne secure_sleep). */
-    public static function secureSleep(): void
-    {
-        usleep(random_int(300000, 600000));
-    }
+    // 1.1.0: secureSleep() (usleep 0.3-0.6 s po każdym błędzie) usunięte — trzymało wątek FPM, a na serwerze jedna
+    // pula obsługuje wszystkie strony. Zamiast tego: szybka odmowa (RateLimiter) i stały czas weryfikacji hasła admina.
 }

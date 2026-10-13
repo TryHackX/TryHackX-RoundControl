@@ -24,6 +24,6 @@ spl_autoload_register(static function (string $class): void {
     }
 });
 
-\App\Support\Env::load(PROJECT_ROOT . '/.env');
+\App\Support\Env::load(\App\Support\Env::defaultPath(PROJECT_ROOT));
 
 date_default_timezone_set(\App\Support\Env::get('APP_TIMEZONE', 'Europe/Warsaw'));

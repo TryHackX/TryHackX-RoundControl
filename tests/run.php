@@ -7,9 +7,23 @@ declare(strict_types=1);
  *
  * Testy integracyjne używają lokalnej bazy (mailserver) i sprzątają po sobie
  * oraz przywracają zmienione ustawienia. Wymaga APP_ENV=dev.
+ *
+ * 1.1.0: odmawia pracy poza CLI i poza APP_ENV=dev (zapisuje do bazy z .env — na produkcji tego nie wolno).
+ * Samowystarczalne testy 1.1.0 (własna, tymczasowa baza): tests/db_test.php; bez bazy: security_test.php,
+ * scripts_test.php, sudoers_test.php.
  */
 
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/../app/bootstrap.php';
+
+if (!\App\Support\Env::isDev()) {
+    fwrite(STDERR, "tests/run.php pisze do bazy z konfiguracji — uruchamiaj tylko z APP_ENV=dev (dev, nie produkcja).\n");
+    exit(2);
+}
 
 use App\Panel\Pagination;
 use App\Panel\Quota;
@@ -69,7 +83,7 @@ eq(Quota::toMb(50, 'MB'), 50, 'toMb MB');
 eq(Quota::toBest(2048), [2, 'GB'], 'toBest GB');
 eq(Quota::toBest(50), [50, 'MB'], 'toBest MB');
 eq(Quota::display(1536), '1.5 GB', 'display GB');
-eq(Quota::normalizeUnit('XX'), 'MB', 'normalizeUnit fallback');
+eq(Quota::normalizeUnit('XX'), 'MiB', 'normalizeUnit fallback');
 
 group('Pagination');
 $p = Pagination::render(2, 20, 100, 'users');
@@ -147,7 +161,7 @@ try {
     ok(empty($r['ok']) && !empty($r['reset']), 'login webmail złe hasło -> reset');
 
     $r = $call('check_identity', ['email' => 'niema_' . time() . '@' . $TEST_DOMAIN]);
-    ok(empty($r['ok']) && str_contains($r['msg'], 'Nieprawidłowe'), 'identity nieznany');
+    ok(!empty($r['ok']) && ($r['focus_id'] ?? '') === 'inpPassword', 'identity nieznany: ten sam ekran co dla istniejącego (brak enumeracji)');
 
     $_POST = ['email' => $email]; // brak _csrf
     $r = (new PortalController())->handle('check_identity');

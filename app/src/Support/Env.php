@@ -14,6 +14,25 @@ final class Env
     private static array $vars = [];
     private static bool $loaded = false;
 
+    /**
+     * Where the configuration lives. Preferred: /etc/mailpanel/panel.env (outside every web tree and outside the
+     * code directory); fallback: <project>/.env. From the CLI only, MAILPANEL_ENV_FILE overrides both (tests).
+     */
+    public static function defaultPath(string $projectRoot): string
+    {
+        if (PHP_SAPI === 'cli') {
+            $override = getenv('MAILPANEL_ENV_FILE');
+            if (is_string($override) && $override !== '' && is_file($override)) {
+                return $override;
+            }
+        }
+        $outside = '/etc/mailpanel/panel.env';
+        if (@is_file($outside) && @is_readable($outside)) {
+            return $outside;
+        }
+        return $projectRoot . '/.env';
+    }
+
     public static function load(string $path): void
     {
         if (self::$loaded) {

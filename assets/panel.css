@@ -66,6 +66,7 @@ button { font-family: inherit; }
 .header-actions { display: flex; align-items: center; gap: 18px; }
 .admin-info { font-size: 13.5px; color: var(--text-muted); }
 .admin-info b { color: var(--text-main); }
+.logout-form { margin: 0; display: inline; }
 .logout-link {
     color: var(--status-error);
     text-decoration: none;
@@ -74,6 +75,11 @@ button { font-family: inherit; }
     padding: 6px 10px;
     border-radius: 8px;
     transition: background 0.15s;
+    /* przycisk wyglądający jak dawny link (wylogowanie jest teraz POST + CSRF) */
+    background: none;
+    border: 0;
+    cursor: pointer;
+    font-family: inherit;
 }
 .logout-link:hover { background: var(--status-error-bg); }
 .theme-toggle-btn {

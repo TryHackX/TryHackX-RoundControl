@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace App\Panel;
 
+use App\Users\Accounts;
+use App\Users\UserRepository;
 use PDO;
 
 /**
@@ -214,6 +216,50 @@ final class UserAdminRepository
     public function delete(int $id): void
     {
         $this->pdo->prepare('DELETE FROM virtual_users WHERE id = ?')->execute([$id]);
+    }
+
+    /**
+     * Usuwa konto razem ze wszystkim, co wisi na jego adresie, w jednej transakcji — żeby nowy właściciel tej samej
+     * nazwy nie odziedziczył cudzej poczty ani historii:
+     *  - aliasy, których celem jest dokładnie ten adres (aliasy z LISTĄ celów zostają nietknięte i są zwracane),
+     *  - zdarzenia logowania i dzisiejszy licznik wysyłki,
+     *  - sam wiersz konta; zostaje "nagrobek" w deleted_accounts (rejestracja publiczna nie odda tej nazwy
+     *    przez deleted_name_hold_days dni).
+     *
+     * @return array{aliases:int,lists:array<int,array{id:int,source:string,destination:string,exact:bool}>}
+     */
+    public function deleteAccount(int $id, string $email): array
+    {
+        $email   = Accounts::normalize($email);
+        $removed = 0;
+        $lists   = [];
+
+        $this->pdo->beginTransaction();
+        try {
+            foreach ((new UserRepository($this->pdo))->aliasesPointingTo($email) as $alias) {
+                if ($alias['exact']) {
+                    $this->pdo->prepare('DELETE FROM virtual_aliases WHERE id = ?')->execute([$alias['id']]);
+                    $removed++;
+                } else {
+                    $lists[] = $alias;
+                }
+            }
+            $this->pdo->prepare('DELETE FROM user_login_events WHERE email = ?')->execute([$email]);
+            $this->pdo->prepare('DELETE FROM send_counters WHERE email = ?')->execute([$email]);
+            $this->pdo->prepare('DELETE FROM virtual_users WHERE id = ?')->execute([$id]);
+            $this->pdo->prepare(
+                'INSERT INTO deleted_accounts (email, deleted_at) VALUES (?, NOW())
+                 ON DUPLICATE KEY UPDATE deleted_at = NOW()'
+            )->execute([$email]);
+            $this->pdo->commit();
+        } catch (\Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        return ['aliases' => $removed, 'lists' => $lists];
     }
 
     /** Zestaw IP powiązanych z kontem: flagi (rej/pierwsze/poprz/ostatnie) + ostatnie 30. */

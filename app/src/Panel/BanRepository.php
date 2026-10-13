@@ -39,8 +39,20 @@ final class BanRepository
         )->execute([$ipBin, $minutes, $reason]);
     }
 
+    /** Powód aktywnej blokady lokalnej (null = brak) — zawiera znacznik F2B_MARK, gdy ban poszedł też do Fail2Ban. */
+    public function reasonFor(string $ipBin): ?string
+    {
+        $s = $this->pdo->prepare('SELECT reason FROM ip_blocks WHERE ip = ? AND until_ts > NOW()');
+        $s->execute([$ipBin]);
+        $v = $s->fetchColumn();
+        return $v === false ? null : (string) $v;
+    }
+
     public function unbanLocal(string $ipBin): void
     {
         $this->pdo->prepare('DELETE FROM ip_blocks WHERE ip = ?')->execute([$ipBin]);
     }
+
+    /** Znacznik w powodzie bana lokalnego: ten ban ma też wpis w jailu panel-tempban (webmail / IMAP / SMTP). */
+    public const F2B_MARK = ' [F2B]';
 }

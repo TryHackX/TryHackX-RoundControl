@@ -6,23 +6,23 @@ namespace App\Auth;
 use App\Support\Ip;
 
 /**
- * Stan wieloetapowego logowania trzymany w sesji:
- * identyfikacja (email) -> wybór usługi -> hasło.
+ * Stan wieloetapowego logowania trzymany w sesji: identyfikacja (email) -> hasło (+ wybór usługi).
  * Wiązany z IP i wygasający po AUTH_TIMEOUT sekundach bezczynności.
+ *
+ * 1.1.0: flow NIE wie, czy konto istnieje ani czy jest administratorem — serwer odpowiada na każdy poprawnie
+ * zapisany adres tak samo, żeby nie dało się wyliczać kont ani ról.
  */
 final class AuthFlow
 {
     private const KEY     = 'portal_auth_flow';
     private const TIMEOUT = 120;
 
-    public function start(string $email, bool $isAdmin, bool $isUser): void
+    public function start(string $email): void
     {
         $_SESSION[self::KEY] = [
-            'email'    => $email,
-            'ip'       => Ip::raw(),
-            'is_admin' => $isAdmin,
-            'is_user'  => $isUser,
-            'expires'  => time() + self::TIMEOUT,
+            'email'   => $email,
+            'ip'      => Ip::raw(),
+            'expires' => time() + self::TIMEOUT,
         ];
     }
 
@@ -43,11 +43,6 @@ final class AuthFlow
     public function email(): string
     {
         return $_SESSION[self::KEY]['email'] ?? '';
-    }
-
-    public function isAdmin(): bool
-    {
-        return !empty($_SESSION[self::KEY]['is_admin']);
     }
 
     public function clear(): void

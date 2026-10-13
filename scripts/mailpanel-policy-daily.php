@@ -1,4 +1,4 @@
-#!/usr/bin/env php
+#!/usr/bin/php
 <?php
 declare(strict_types=1);
 
@@ -8,7 +8,12 @@ declare(strict_types=1);
  * Wpięty w smtpd_data_restrictions usług submission/submissions (master.cf,
  * przez zmienną $mua_data_restrictions w main.cf), uruchamiany przez spawn(8)
  * jako użytkownik "nobody". Jedno zapytanie polityki = jedna wiadomość (etap
- * DATA), więc licznik zlicza wiadomości, nie odbiorców.
+ * DATA).
+ *
+ * 1.1.0: licznik zlicza ODBIORCÓW, nie wiadomości. Na etapie DATA Postfix podaje atrybut recipient_count
+ * (liczba zaakceptowanych RCPT TO); wiadomość do 20 adresów zużywa 20 jednostek limitu. Wcześniej jedna wiadomość
+ * = 1, więc konto z limitem 50 mogło wysłać 50 wiadomości × smtpd_recipient_limit (domyślnie 1000) odbiorców.
+ * Zwiększenie licznika jest jedną atomową instrukcją SQL (równoległe sesje nie przekroczą limitu).
  *
  * Limit: virtual_users.daily_send_limit (NULL = globalny z app_settings
  * 'daily_send_limit'; 0 = bez limitu). Licznik: send_counters (email, day).
@@ -24,7 +29,12 @@ declare(strict_types=1);
  *     | sudo -u nobody php /usr/local/bin/mailpanel-policy-daily.php
  */
 
-const CONFIG_FILE = '/etc/mailpanel-policy.cf';
+if (PHP_SAPI !== 'cli') {      // nigdy nie przez HTTP, nawet gdyby serwer wydał ten plik
+    http_response_code(404);
+    exit;
+}
+
+defined('CONFIG_FILE') || define('CONFIG_FILE', '/etc/mailpanel-policy.cf');   // testy nadpisują przez auto_prepend_file
 
 $cfg = @parse_ini_file(CONFIG_FILE);
 if (!is_array($cfg)) {
@@ -70,7 +80,7 @@ function sendLimitNotice(string $user, int $limit, int $sent): void
     $domain  = substr((string) strrchr($user, '@'), 1) ?: 'localhost';
     $subject = '=?UTF-8?B?' . base64_encode('Wiadomość nie została wysłana — dzienny limit wyczerpany') . '?=';
     $body    = "Twoja ostatnia wiadomość NIE została wysłana.\n\n"
-        . "Wykorzystano dzienny limit wysyłki: $sent z $limit wiadomości.\n"
+        . "Wykorzystano dzienny limit wysyłki: $sent z $limit odbiorców (każdy adresat wiadomości liczy się osobno).\n"
         . "Licznik wyzeruje się o północy — wtedy wysyłka znów będzie możliwa.\n"
         . "Kolejne próby wysyłki dzisiaj również zostaną odrzucone (ta informacja\n"
         . "wysyłana jest tylko raz dziennie).\n\n"
@@ -106,6 +116,8 @@ while (($line = fgets(STDIN)) !== false) {
     // Pusta linia kończy zapytanie — odpowiadamy i czekamy na następne.
     $request = $attrs['request'] ?? '';
     $user    = strtolower(trim($attrs['sasl_username'] ?? ''));
+    // Liczba odbiorców tej wiadomości (etap DATA); brak atrybutu = 1. Górna granica chroni przed absurdalną liczbą.
+    $rcpt    = max(1, min(1000000, (int) ($attrs['recipient_count'] ?? 1)));
     $attrs   = [];
 
     if ($request !== 'smtpd_access_policy' || $user === '') {
@@ -138,12 +150,26 @@ while (($line = fgets(STDIN)) !== false) {
         }
 
         $day = date('Y-m-d');
-        $st  = $dbh->prepare('SELECT cnt FROM send_counters WHERE email = ? AND day = ?');
-        $st->execute([$user, $day]);
-        $cnt = (int) ($st->fetchColumn() ?: 0);
 
-        if ($cnt >= $limit) {
-            error_log("mailpanel-policy: REJECT $user ($cnt/$limit)");
+        if ($rcpt > $limit) {   // jedna wiadomość większa niż cały dzienny limit — nigdy nie przejdzie
+            error_log("mailpanel-policy: REJECT $user ($rcpt odbiorcow w jednej wiadomosci, limit $limit)");
+            respond("REJECT Za wiele odbiorcow w jednej wiadomosci wzgledem dziennego limitu ($limit odbiorcow/dzien)");
+            continue;
+        }
+
+        // Jedna atomowa instrukcja: zwiększ licznik o liczbę odbiorców tylko, gdy mieści się w limicie.
+        // Zmienione wiersze: 1 = nowy wiersz dnia, 2 = zwiększony, 0 = bez zmiany (limit by został przekroczony).
+        $inc = $dbh->prepare(
+            'INSERT INTO send_counters (email, day, cnt) VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE cnt = IF(cnt + VALUES(cnt) <= ?, cnt + VALUES(cnt), cnt)'
+        );
+        $inc->execute([$user, $day, $rcpt, $limit]);
+
+        if ($inc->rowCount() === 0) {
+            $st = $dbh->prepare('SELECT cnt FROM send_counters WHERE email = ? AND day = ?');
+            $st->execute([$user, $day]);
+            $cnt = (int) ($st->fetchColumn() ?: 0);
+            error_log("mailpanel-policy: REJECT $user ($cnt + $rcpt > $limit)");
             if ((string) ($cfg['notify'] ?? '1') === '1') {
                 try {
                     $up = $dbh->prepare('UPDATE send_counters SET notified = 1 WHERE email = ? AND day = ? AND notified = 0');
@@ -155,14 +181,9 @@ while (($line = fgets(STDIN)) !== false) {
                     error_log('mailpanel-policy: powiadomienie nieudane: ' . $e->getMessage());
                 }
             }
-            respond("REJECT Dzienny limit wysylki wyczerpany ($limit wiadomosci/dzien)");
+            respond("REJECT Dzienny limit wysylki wyczerpany ($limit odbiorcow/dzien)");
             continue;
         }
-
-        $dbh->prepare(
-            'INSERT INTO send_counters (email, day, cnt) VALUES (?, ?, 1)
-             ON DUPLICATE KEY UPDATE cnt = cnt + 1'
-        )->execute([$user, $day]);
         respond('DUNNO');
     } catch (Throwable $e) {
         error_log('mailpanel-policy: ' . $e->getMessage());

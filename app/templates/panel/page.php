@@ -44,7 +44,10 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
         <h1><i class="ri-shield-keyhole-line"></i> Panel Administratora</h1>
         <div class="header-actions">
             <span class="admin-info">Zalogowany: <b><?= Html::e($admin) ?></b></span>
-            <a href="logout.php" class="logout-link">Wyloguj</a>
+            <form method="post" action="logout.php" class="logout-form">
+                <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
+                <button type="submit" class="logout-link">Wyloguj</button>
+            </form>
             <button class="theme-toggle-btn" id="themeToggle" title="Przełącz motyw"><i class="ri-sun-line" id="themeIcon"></i></button>
         </div>
     </div>
@@ -96,9 +99,9 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                             </div>
                         </div>
                         <div class="form-group">
-                            <label>Limit wysyłki (na dzień)</label>
+                            <label>Limit wysyłki (odbiorców na dzień)</label>
                             <input type="number" name="daily_send_limit" min="0" value="<?= (int) $s['daily_send_limit'] ?>">
-                            <div class="help-text">Egzekwowany przy wysyłce SMTP (587/465, także webmail). <code>0</code> = bez limitu. Limit indywidualny ustawisz w edycji quoty użytkownika.</div>
+                            <div class="help-text">Liczy ODBIORCÓW (wiadomość do 20 adresów = 20), egzekwowany przy wysyłce SMTP (587/465, także webmail). <code>0</code> = bez limitu. Limit indywidualny ustawisz w edycji quoty użytkownika.</div>
                         </div>
                     </div>
                 </div>
@@ -122,6 +125,21 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                         <div class="form-group">
                             <label>Całkowity limit kont dla IP</label>
                             <input type="number" name="ip_total_limit" min="1" value="<?= (int) $s['ip_total_limit'] ?>">
+                            <div class="help-text">Limity liczone na adres IPv4 albo na prefiks /64 dla IPv6.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Zarezerwowane nazwy kont</label>
+                            <textarea name="reserved_local_parts" rows="3" spellcheck="false"><?= Html::e((string) $s['reserved_local_parts']) ?></textarea>
+                            <div class="help-text">
+                                Rejestracja publiczna nie odda tych nazw (po przecinku, <code>*</code> = dowolny ciąg). Zawsze zarezerwowane, niezależnie od listy:
+                                <code><?= Html::e(implode(', ', $s['reserved_base'])) ?></code>.
+                                Administrator może założyć taką skrzynkę ręcznie (Użytkownicy → Dodaj, ze zgodą).
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Blokada usuniętych nazw (dni)</label>
+                            <input type="number" name="deleted_name_hold_days" min="0" max="3650" value="<?= (int) $s['deleted_name_hold_days'] ?>">
+                            <div class="help-text">Po usunięciu konta jego nazwa nie wróci do rejestracji publicznej przez tyle dni (nowy właściciel nie odziedziczy cudzej korespondencji). <code>0</code> = bez blokady.</div>
                         </div>
                     </div>
                 </div>
@@ -139,7 +157,9 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                         </div>
                         <div class="form-group">
                             <label>Secret Key</label>
-                            <input type="text" name="recaptcha_secret_key" value="<?= Html::e((string) $s['recaptcha_secret_key']) ?>">
+                            <input type="password" name="recaptcha_secret_key" value="" autocomplete="new-password"
+                                   placeholder="<?= $s['recaptcha_secret_set'] ? '•••••••• zapisany — zostaw puste, aby nie zmieniać' : 'wklej Secret Key' ?>">
+                            <div class="help-text">Sekret nie jest wyświetlany po zapisaniu. Puste pole zostawia zapisany klucz.</div>
                         </div>
                     </div>
                 </div>
@@ -413,8 +433,9 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                     <form method="POST">
                         <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                         <input type="hidden" name="_tab" value="security">
-                        <div class="form-group"><label>Max. prób logowania</label><input type="number" name="max_login_attempts" value="<?= (int) $s['max_login_attempts'] ?>"></div>
-                        <div class="form-group"><label>Czas blokady (min)</label><input type="number" name="ban_duration_minutes" value="<?= (int) $s['ban_duration_minutes'] ?>"></div>
+                        <div class="form-group"><label>Max. nieudanych prób logowania</label><input type="number" name="max_login_attempts" min="1" value="<?= (int) $s['max_login_attempts'] ?>"></div>
+                        <div class="form-group"><label>Okno / czas blokady (min)</label><input type="number" name="ban_duration_minutes" min="1" value="<?= (int) $s['ban_duration_minutes'] ?>">
+                            <div class="help-text">Limit dotyczy pary (konto, adres klienta) oraz — na poziomie 4× większym — samego adresu klienta (IPv4 albo prefiks /64 IPv6). Konto nigdy nie jest blokowane globalnie, więc obcy nie zablokuje Ci panelu; adresy z <code>SCAN_TRUSTED_IPS</code> nie podlegają limitom.</div></div>
                         <div class="mt-4"><button type="submit" name="update_security" class="btn"><i class="ri-save-line"></i> Zapisz</button></div>
                     </form>
                 </div>
@@ -427,7 +448,7 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                         <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                         <input type="hidden" name="_tab" value="security">
                         <div class="form-group"><label>Obecne hasło</label><input type="password" name="current_password" required></div>
-                        <div class="form-group"><label>Nowe hasło</label><input type="password" name="new_password" required></div>
+                        <div class="form-group"><label>Nowe hasło</label><input type="password" name="new_password" required minlength="12" autocomplete="new-password"><div class="help-text">Min. 12 znaków i klasy znaków jak dla skrzynek. Zmiana wylogowuje inne sesje tego konta.</div></div>
                         <div class="form-group"><label>Powtórz nowe hasło</label><input type="password" name="confirm_password" required></div>
                         <div class="mt-4"><button type="submit" name="change_password" class="btn"><i class="ri-refresh-line"></i> Zmień hasło</button></div>
                     </form>
@@ -455,9 +476,9 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                 </div>
             </div>
             <div class="form-group">
-                <label>Indywidualny limit wysyłki (wiadomości / dzień)</label>
+                <label>Indywidualny limit wysyłki (odbiorców / dzień)</label>
                 <input type="number" name="user_send_limit" id="quota_send_limit" min="0" step="1" placeholder="puste = globalny (<?= (int) $s['daily_send_limit'] ?>)">
-                <div class="help-text">Puste = limit globalny (<b><?= (int) $s['daily_send_limit'] ?></b>/dzień). <code>0</code> = bez limitu.</div>
+                <div class="help-text">Puste = limit globalny (<b><?= (int) $s['daily_send_limit'] ?></b> odbiorców/dzień). <code>0</code> = bez limitu.</div>
             </div>
             <div class="form-group">
                 <label>Wysłane dzisiaj</label>
@@ -527,7 +548,7 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
             </div>
             <div class="form-group" id="custom_reason_group" style="display:none"><label>Własny powód</label><input type="text" id="ban_custom_reason" placeholder="Wpisz powód..."></div>
             <div class="form-group"><label>Dodatkowa uwaga</label><textarea name="ban_note" rows="2" placeholder="Opcjonalnie..."></textarea></div>
-            <div class="form-group"><label>Czas bana (minuty)</label><input type="number" name="ban_duration" value="60" min="1"><div class="help-text">1440 = 1 dzień, 10080 = 1 tydzień</div></div>
+            <div class="form-group"><label>Czas bana (minuty)</label><input type="number" name="ban_duration" value="60" min="1" max="129600"><div class="help-text">1440 = 1 dzień, 10080 = 1 tydzień, maks. 129600 (90 dni).<br>Zakres: blokuje IP w portalu i panelu oraz — gdy Fail2Ban jest dostępny — w jailu <code>panel-tempban</code> na firewallu (webmail, IMAP, SMTP). Komunikat po zapisie mówi, które warstwy zadziałały.</div></div>
             <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="banModal">Anuluj</button><button type="submit" class="btn btn-danger"><i class="ri-forbid-line"></i> Zbanuj IP</button></div>
         </form>
     </div>
@@ -570,7 +591,7 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
             <div class="form-group">
                 <label>Adres e-mail</label>
                 <div class="email-compose">
-                    <input type="text" name="nu_local" id="nu_local" required placeholder="nazwa" autocomplete="off" pattern="[a-zA-Z0-9._-]+">
+                    <input type="text" name="nu_local" id="nu_local" required placeholder="nazwa" autocomplete="off" maxlength="64" pattern="[A-Za-z0-9]([A-Za-z0-9._\-]*[A-Za-z0-9])?">
                     <span>@</span>
                     <select name="nu_domain" id="nu_domain">
                         <?php foreach ($domains as $dm): ?>
@@ -579,6 +600,10 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                     </select>
                 </div>
                 <div id="nu_availability" class="avail-status"></div>
+                <div class="checkbox-warning-wrapper">
+                    <input type="checkbox" name="nu_allow_reserved" id="nu_allow_reserved" value="1">
+                    <label for="nu_allow_reserved">Pozwól na nazwę zarezerwowaną lub niedawno usuniętą</label>
+                </div>
             </div>
             <div class="form-group">
                 <label>Hasło</label>
@@ -606,9 +631,9 @@ $av = static fn(string $f): string => '../assets/' . $f . '?v=' . (@filemtime(di
                 </div>
             </div>
             <div class="form-group">
-                <label>Limit wysyłki (wiadomości / dzień)</label>
+                <label>Limit wysyłki (odbiorców / dzień)</label>
                 <input type="number" name="nu_send_limit" id="nu_send_limit" min="0" step="1" placeholder="puste = globalny (<?= (int) $s['daily_send_limit'] ?>)">
-                <div class="help-text">Puste = limit globalny (<b><?= (int) $s['daily_send_limit'] ?></b>/dzień). <code>0</code> = bez limitu.</div>
+                <div class="help-text">Puste = limit globalny (<b><?= (int) $s['daily_send_limit'] ?></b> odbiorców/dzień). <code>0</code> = bez limitu.</div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="addUserModal">Anuluj</button>

@@ -104,21 +104,18 @@ final class Commands
         return $bans;
     }
 
-    /** Przeładowanie Fail2Ban po zapisie konfiguracji (wymaga wpisu sudoers). */
-    public static function fail2banReload(): bool
+    // 1.1.0: fail2banReload() usunięte — reload robi helper mailpanel-f2b-apply po `fail2ban-client -t` i zapisie,
+    // a reguła sudoers `fail2ban-client reload` przestała być potrzebna (mniej uprawnień dla www-data).
+
+    /** Nazwa jaila i adres IP w postaci, którą przepuszcza reguła sudoers (to samo sprawdza sudo — tu wcześniej i czytelniej). */
+    private static function jailArgsOk(string $jail, string $ip): bool
     {
-        if (!self::enabled()) {
-            return false;
-        }
-        $out = [];
-        $ret = 0;
-        exec('sudo -n fail2ban-client reload 2>&1', $out, $ret);
-        return $ret === 0;
+        return preg_match('/^[A-Za-z0-9_-]+$/', $jail) === 1 && filter_var($ip, FILTER_VALIDATE_IP) !== false;
     }
 
     public static function fail2banUnban(string $jail, string $ip): bool
     {
-        if (!self::enabled()) {
+        if (!self::enabled() || !self::jailArgsOk($jail, $ip)) {
             return false;
         }
         $out = [];
@@ -127,10 +124,10 @@ final class Commands
         return $ret === 0;
     }
 
-    /** Ręczne zablokowanie IP w wybranym jailu (wymaga sudoers: set * banip *). */
+    /** Ręczne zablokowanie IP w wybranym jailu (reguła sudoers: set <jail> banip <ip>, dokładne argumenty). */
     public static function fail2banBan(string $jail, string $ip): bool
     {
-        if (!self::enabled()) {
+        if (!self::enabled() || !self::jailArgsOk($jail, $ip)) {
             return false;
         }
         $out = [];
@@ -140,19 +137,44 @@ final class Commands
     }
 
     /**
-     * Zmiana bieżącego bantime jaila (wymaga sudoers: set * bantime *).
-     * Ban czasowy z panelu = ustaw bantime, potem banip — f2b przypisuje
-     * czas obowiązujący w momencie bana, więc każdy ban ma własny okres.
+     * Zmiana bieżącego bantime jaila panelu `panel-tempban` (reguła sudoers: set panel-tempban bantime <sekundy>).
+     * Ban czasowy z panelu = ustaw bantime, potem banip — f2b przypisuje czas obowiązujący w momencie bana, więc każdy
+     * ban ma własny okres. Wyłącznie ten jail: reguła sudoers nie pozwala zmieniać bantime sshd / recidive itd.
      */
     public static function fail2banSetBantime(string $jail, int $seconds): bool
     {
-        if (!self::enabled() || $seconds < 60) {
+        if (!self::enabled() || $jail !== 'panel-tempban' || $seconds < 60 || $seconds > 7776000) {
             return false;
         }
         $out = [];
         $ret = 0;
-        exec('sudo -n fail2ban-client set ' . escapeshellarg($jail) . ' bantime ' . $seconds . ' 2>/dev/null', $out, $ret);
+        exec('sudo -n fail2ban-client set panel-tempban bantime ' . $seconds . ' 2>/dev/null', $out, $ret);
         return $ret === 0;
+    }
+
+    /**
+     * Uruchamia polecenie i podaje $stdin na jego standardowe wejście (dane nie przechodzą przez plik ani przez
+     * linię poleceń). Polecenie jest STAŁE — nigdy nie zawiera danych użytkownika. stderr dołącz sam w poleceniu
+     * (`2>&1`); wyjście jest czytane po zamknięciu wejścia, a proponowany plik jest mniejszy niż bufor potoku,
+     * więc zapis nie blokuje się na dziecku, które jeszcze czyta.
+     *
+     * @return array{code:int,out:string}  code = -1, gdy nie udało się uruchomić
+     */
+    public static function pipeTo(string $cmd, string $stdin): array
+    {
+        $proc = @proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w']], $pipes);
+        if (!is_resource($proc)) {
+            return ['code' => -1, 'out' => 'proc_open nie powiodło się'];
+        }
+        $written = @fwrite($pipes[0], $stdin);
+        fclose($pipes[0]);
+        $out = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $code = proc_close($proc);
+        if ($written === false || $written < strlen($stdin)) {
+            return ['code' => $code === 0 ? -1 : $code, 'out' => trim($out . ' (nie przekazano całej propozycji)')];
+        }
+        return ['code' => $code, 'out' => $out];
     }
 
     /**
@@ -265,8 +287,11 @@ final class Commands
         return ['available' => true, 'values' => $sections];
     }
 
-    /** @throws \RuntimeException gdy plik nie jest zapisywalny */
-    public static function fail2banSaveConfig(array $post): void
+    /**
+     * @return string komunikat helpera ("bez zmian" albo "zapisane i przeładowane (N zmian)")
+     * @throws \RuntimeException gdy helper odrzucił propozycję albo nie udało się zapisać / sprawdzić / przeładować
+     */
+    public static function fail2banSaveConfig(array $post): string
     {
         $file = self::jailFile();
 
@@ -307,16 +332,16 @@ final class Commands
         // 2026-10-13: jail.local belongs to root. www-data writing it was a way to root (fail2ban runs as root and a
         // jail may name any action). The panel PROPOSES the file; mailpanel-f2b-apply (root, through sudo) checks that
         // only the values of the options edited here changed, each well-formed, installs it, tests it and reloads fail2ban.
-        $proposed = '/var/lib/mailpanel-f2b/jail.local.proposed';
-        if (file_put_contents($proposed, implode(PHP_EOL, $lines) . PHP_EOL, LOCK_EX) === false) {
-            throw new \RuntimeException('Nie mogę zapisać ' . $proposed);
+        //
+        // 1.1.0: the proposal travels on the helper's STANDARD INPUT (no proposal file, no /var/lib/mailpanel-f2b
+        // directory that www-data could swap under the helper), and the helper writes jail.local IN PLACE — see the
+        // header of scripts/mailpanel-f2b-apply.php. Exit 0 = installed (or nothing to change); non-zero = the helper's
+        // own message says what it refused or what failed; it never reports success it did not verify.
+        $r = self::pipeTo('sudo -n /usr/local/sbin/mailpanel-f2b-apply 2>&1', implode("\n", $lines) . "\n");
+        if ($r['code'] !== 0) {
+            throw new \RuntimeException('Fail2Ban: ' . trim($r['out']) . ($r['code'] > 0 ? " (kod {$r['code']})" : ''));
         }
-        $out = [];
-        $ret = 0;
-        exec('sudo -n /usr/local/sbin/mailpanel-f2b-apply 2>&1', $out, $ret);
-        if ($ret !== 0) {
-            throw new \RuntimeException('Fail2Ban: ' . implode(' ', $out));
-        }
+        return trim($r['out']);
     }
 
     /** @return array<string,string> */
@@ -335,7 +360,7 @@ final class Commands
         $value = trim(str_replace(["\r", "\n"], '', $value));
 
         return match ($type) {
-            'int'   => (string) (int) $value,
+            'int'   => (string) max(0, min(999999, (int) $value)),
             'float' => (string) min(10.0, max(1.0, (float) $value)),
             'time'  => self::sanitizeTime($value),
             'ip_list' => self::sanitizeIpList($value),
@@ -403,16 +428,36 @@ final class Commands
         });
     }
 
-    /** @return array{ok:bool,code:int} */
+    /**
+     * Kody wyjścia skryptu mailpanel-delete-user.sh:
+     * 0 = przeniesiono do kwarantanny, 1 = zły format argumentu, 2 = niedozwolone znaki, 3 = ścieżka poza katalogiem
+     * poczty, 4 = nie ma takiego katalogu poczty, 5 = przeniesienie się nie powiodło, 6 = konto nadal istnieje
+     * w Dovecot (odmowa), 7 = nie można tego sprawdzić (odmowa), 8 = nie można przygotować kwarantanny.
+     *
+     * @return array{ok:bool,code:int,out:string}
+     */
     public static function mailboxDelete(string $email): array
     {
         if (!self::enabled()) {
-            return ['ok' => false, 'code' => -1];
+            return ['ok' => false, 'code' => -1, 'out' => ''];
         }
         $out = [];
         $ret = 0;
-        exec('sudo -n /usr/local/bin/mailpanel-delete-user.sh ' . escapeshellarg($email), $out, $ret);
-        return ['ok' => $ret === 0, 'code' => $ret];
+        exec('sudo -n /usr/local/bin/mailpanel-delete-user.sh ' . escapeshellarg(strtolower(trim($email))) . ' 2>&1', $out, $ret);
+        return ['ok' => $ret === 0, 'code' => $ret, 'out' => implode(' ', $out)];
+    }
+
+    /** Czytelny opis kodu wyjścia mailboxDelete() dla administratora. */
+    public static function mailboxDeleteMessage(int $code): string
+    {
+        return match ($code) {
+            0       => 'Katalog poczty przeniesiony do kwarantanny (/var/mail/deleted, domyślnie 30 dni).',
+            4       => 'Uwaga: na dysku nie było katalogu poczty tego konta (nic do usunięcia).',
+            6       => 'Uwaga: konto nadal istnieje w Dovecot — pliki NIE zostały ruszone.',
+            7       => 'Uwaga: nie można potwierdzić w Dovecot, że konto nie istnieje (doveadm) — pliki NIE zostały ruszone.',
+            -1      => 'Pliki nie zostały usunięte (brak konfiguracji sudo lub tryb dev).',
+            default => "Uwaga: NIE usunięto plików poczty (kod $code) — sprawdź /var/mail/vhosts i dziennik, usuń ręcznie.",
+        };
     }
 
     /* ---------------- Cache prób (5 min w sesji) ---------------- */

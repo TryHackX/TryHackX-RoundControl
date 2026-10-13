@@ -20,6 +20,16 @@
 
     function $(id) { return document.getElementById(id); }
 
+    // fetch z limitem czasu (30 s): zawieszone żądanie kończy się błędem zamiast wisieć w nieskończoność.
+    function tfetch(url, opts) {
+        opts = opts || {};
+        if (typeof AbortController === 'undefined') return fetch(url, opts);
+        var ctl = new AbortController();
+        var timer = setTimeout(function () { ctl.abort(); }, 30000);
+        opts.signal = ctl.signal;
+        return fetch(url, opts).then(function (r) { clearTimeout(timer); return r; }, function (e) { clearTimeout(timer); throw e; });
+    }
+
     function resetCaptcha() {
         if (window.grecaptcha) {
             try { grecaptcha.reset(); } catch (e) { /* instancja niegotowa */ }
@@ -45,7 +55,7 @@
             Object.keys(data).forEach(function (k) { fd.append(k, data[k]); });
         }
         fd.append('_csrf', CSRF);
-        return fetch(ENDPOINT, { method: 'POST', body: fd }).then(function (r) { return r.json(); });
+        return tfetch(ENDPOINT, { method: 'POST', body: fd }).then(function (r) { return r.json(); });
     }
 
     /* ---------- Animacje kroków ---------- */
@@ -151,49 +161,6 @@
             btn.disabled = false;
             btn.textContent = label;
         });
-    }
-
-    /* ---------- Wybór usługi ---------- */
-
-    function selectTarget(target) {
-        var container = $('step-dynamic');
-        var card = container.closest('.card');
-        var flow = $('auth-flow');
-
-        post({ ajax_action: 'select_target', target: target }).then(function (data) {
-            if (data.ok) {
-                freezeCardHeight(card);
-
-                // duch starej treści odpływa nad nową (ten sam morph co kroki)
-                var old = container.firstElementChild;
-                if (old && flow) {
-                    var ghost = old.cloneNode(true);
-                    ghost.classList.add('step-ghost');
-                    flow.appendChild(ghost);
-                    void ghost.offsetWidth;
-                    ghost.classList.add('step-leaving');
-                    setTimeout(function () {
-                        if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
-                    }, 440);
-                }
-
-                container.innerHTML = data.html;
-                if (container.firstElementChild) container.firstElementChild.classList.remove('fade-in');
-                container.classList.add('step-enter');
-                animateCardHeight(card);
-                void container.offsetWidth;
-                container.classList.remove('step-enter');
-                setTimeout(function () { clearCardHeight(card); }, 420);
-
-                if (data.focus_id) {
-                    setTimeout(function () {
-                        if ($(data.focus_id)) $(data.focus_id).focus({ preventScroll: true });
-                    }, 430);
-                }
-            } else if (data.reload) {
-                location.reload();
-            }
-        }).catch(function () { location.reload(); });
     }
 
     /* ---------- Logowanie (hasło) ---------- */
@@ -310,7 +277,7 @@
             var check = function () {
                 var local = fieldLocal.value.trim();
                 if (!local) { statusDiv.textContent = ''; statusDiv.className = ''; return; }
-                if (!/^[a-z0-9._-]+$/i.test(local)) {
+                if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(local)) {
                     statusDiv.textContent = 'Niedozwolone znaki';
                     statusDiv.className = 'status-bad show';
                     return;
@@ -393,7 +360,6 @@
         if (!el) return;
         var action = el.dataset.action;
         if (action === 'back') { e.preventDefault(); goBack(false); }
-        else if (action === 'select-target') { e.preventDefault(); selectTarget(el.dataset.target); }
         else if (action === 'switch') { e.preventDefault(); switchView(el.dataset.view); }
     });
 

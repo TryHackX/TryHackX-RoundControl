@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS virtual_domains (
 CREATE TABLE IF NOT EXISTS virtual_users (
   id INT NOT NULL AUTO_INCREMENT,
   domain_id INT NOT NULL,
-  password VARCHAR(106) NOT NULL,
+  password VARCHAR(255) NOT NULL,
   email VARCHAR(100) NOT NULL,
   quota_mb INT NOT NULL DEFAULT 0,
   -- indywidualny dzienny limit wysyłki: NULL = globalny (app_settings
@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS virtual_users (
 
 -- Migracja istniejących instalacji (MariaDB: bezpieczne przy ponownym imporcie)
 ALTER TABLE virtual_users ADD COLUMN IF NOT EXISTS daily_send_limit INT NULL DEFAULT NULL AFTER quota_mb;
+
+-- 1.1.0: VARCHAR(106) nie mieści hashy "$6$rounds=N$..." (120 znaków) — ustawienie rounds w pluginie password
+-- obcinałoby hashe i blokowało użytkowników. Poszerzenie nie zmienia danych; bezpieczne przy ponownym imporcie.
+ALTER TABLE virtual_users MODIFY COLUMN password VARCHAR(255) NOT NULL;
 
 -- Liczniki dziennej wysyłki (zapisuje policy service Postfiksa,
 -- czyta panel w modalu "Zmiana Quota"); notified = czy wysłano już dziś
@@ -144,15 +148,40 @@ CREATE TABLE IF NOT EXISTS user_login_events (
   KEY idx_email_created (email, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 1.1.0: zdarzenia do limitowania prób (nieudane logowania admin / webmail, zapytania o dostępność nazwy).
+-- Osobno od user_login_events, bo sp_register_login przycina tamtą tabelę przy każdym udanym logowaniu z nowego IP
+-- (udane logowanie ofiary zerowałoby licznik atakującego). ip = klucz klienta: IPv4 albo prefiks /64 IPv6
+-- (uzupełniony zerami do 16 bajtów). Wiersze starsze niż doba są sprzątane przez aplikację.
+CREATE TABLE IF NOT EXISTS throttle_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  kind VARCHAR(10) NOT NULL,              -- admin | webmail | probe
+  email VARCHAR(190) NOT NULL DEFAULT '',
+  ip VARBINARY(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_kind_ip_created (kind, ip, created_at),
+  KEY idx_kind_email_ip_created (kind, email, ip, created_at),
+  KEY idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 1.1.0: "nagrobki" usuniętych kont — rejestracja publiczna nie odda nazwy przez app_settings.deleted_name_hold_days
+-- dni (nowy właściciel nie odziedziczy poczty i resetów haseł wysyłanych na dawny adres).
+CREATE TABLE IF NOT EXISTS deleted_accounts (
+  email VARCHAR(100) NOT NULL,
+  deleted_at DATETIME NOT NULL,
+  PRIMARY KEY (email),
+  KEY idx_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---------------------------------------------------------------
 -- Procedura: rejestracja logowania użytkownika (deduplikacja IP,
 -- trzyma pierwsze + 2 ostatnie zdarzenia per konto)
+-- 1.1.0: CREATE OR REPLACE zamiast DROP + CREATE — MariaDB zachowuje przy tym uprawnienia EXECUTE nadane
+-- kontom (mailpanel, mailpostlogin); po DROP przepadały i rejestracja logowań cicho przestawała działać.
 -- ---------------------------------------------------------------
 
-DROP PROCEDURE IF EXISTS sp_register_login;
-
 DELIMITER $$
-CREATE PROCEDURE sp_register_login (IN p_email VARCHAR(190), IN p_ip_str VARCHAR(45))
+CREATE OR REPLACE PROCEDURE sp_register_login (IN p_email VARCHAR(190), IN p_ip_str VARCHAR(45))
 BEGIN
     DECLARE v_ip VARBINARY(16);
     DECLARE v_last_id BIGINT DEFAULT NULL;
@@ -218,7 +247,9 @@ INSERT IGNORE INTO app_settings (k, v) VALUES
 ('pf_connection_rate_limit', '10'),
 ('pf_connection_count_limit', '10'),
 ('smtp_max_per_hour', '200'),
-('smtp_max_rcpt_per_msg', '50');
+('smtp_max_rcpt_per_msg', '50'),
+('reserved_local_parts', 'info,support,contact,sales,marketing,billing,privacy,legal,press,jobs,help,office,mail,team,service,services,staff,owner,moderator'),
+('deleted_name_hold_days', '365');
 
 -- ---------------------------------------------------------------
 -- PO IMPORCIE zrób ręcznie (patrz README.md):

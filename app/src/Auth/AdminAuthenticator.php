@@ -6,7 +6,7 @@ namespace App\Auth;
 use App\Admin\AdminRepository;
 use App\Security\Password;
 use App\Security\RateLimiter;
-use App\Settings\Settings;
+use App\Support\AuthLog;
 use App\Support\Ip;
 
 /** Wynik próby logowania administratora. */
@@ -15,16 +15,22 @@ final class AdminResult
     public function __construct(
         public readonly bool $ok,
         public readonly ?int $id = null,
-        public readonly string $error = ''
+        public readonly string $error = '',
+        public readonly string $pwdHash = ''
     ) {}
 }
 
 /**
- * Logowanie administratora z ochroną brute-force opartą na ip_blocks
- * i licznikiem nieudanych prób z admin_login_attempts.
+ * Logowanie administratora. Limity (RateLimiter): para (konto, klient) i sam klient — nigdy samo konto, więc
+ * obcy atakujący nie zablokuje administratora. Dla konta, które nie istnieje, hasło jest weryfikowane względem
+ * stałego "atrapy" hasha, więc czas odpowiedzi nie zdradza, czy takie konto admina istnieje. Nieudane próby
+ * prawdziwych kont admina zostają w admin_login_attempts (nigdy nie są kasowane).
  */
 final class AdminAuthenticator
 {
+    /** Argon2id (te same parametry co prawdziwe hashe) hasła, którego nikt nie zna. */
+    private const DUMMY_HASH = '$argon2id$v=19$m=65536,t=4,p=1$MzhGbDhMZVVya0F6NDh0NQ$m17wfOCv9qhOCRhWdzyw5LNGQtaF2PFSNfLBnXCcHKo';
+
     public function __construct(
         private AdminRepository $admins,
         private RateLimiter $limiter
@@ -34,27 +40,25 @@ final class AdminAuthenticator
     {
         $ipBin = Ip::bin();
 
-        if ($this->limiter->ipBlockedUntil($ipBin) !== null) {
-            return new AdminResult(false, null, 'IP zablokowane.');
+        $blocked = $this->limiter->loginBlocked($email, $ipBin);
+        if ($blocked !== null) {
+            return new AdminResult(false, null, $blocked);
         }
 
-        $threshold = Settings::int('admin_lock_threshold', 5);
-        $minutes   = Settings::int('admin_lock_minutes', 15);
+        $row   = $this->admins->findByEmail($email);
+        $valid = Password::verifyAdmin($password, $row['pwd_hash'] ?? self::DUMMY_HASH) && $row !== null;
 
-        if ($this->limiter->adminFailCount($ipBin, $minutes) >= $threshold) {
-            $this->limiter->banIp($ipBin, $minutes, 'Brute-force admin panel');
-            $this->limiter->clearAdminFails($ipBin);
-            return new AdminResult(false, null, "Zbyt wiele prób. IP zablokowane na $minutes minut.");
-        }
-
-        $row = $this->admins->findByEmail($email);
-        if ($row && Password::verifyAdmin($password, $row['pwd_hash'])) {
+        if ($valid) {
             $this->admins->logAttempt($email, true, 'Portal login success', $ipBin);
             $this->admins->markLogin((int) $row['id']);
-            return new AdminResult(true, (int) $row['id']);
+            return new AdminResult(true, (int) $row['id'], '', (string) $row['pwd_hash']);
         }
 
-        $this->admins->logAttempt($email, false, 'Invalid password', $ipBin);
+        if ($row !== null) {
+            $this->admins->logAttempt($email, false, 'Invalid password', $ipBin);
+        }
+        $this->limiter->recordLoginFailure('admin', $email, $ipBin);
+        AuthLog::failure('admin', $email);
         return new AdminResult(false, null, 'Nieprawidłowe dane logowania');
     }
 }
