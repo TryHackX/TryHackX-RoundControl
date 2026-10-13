@@ -17,10 +17,12 @@ final class Env
     /**
      * Where the configuration lives. Preferred: /etc/mailpanel/panel.env (outside every web tree and outside the
      * code directory); fallback: <project>/.env. From the CLI only, MAILPANEL_ENV_FILE overrides both (tests).
+     * 1.2.0: also PHP's built-in development server (SAPI cli-server, started by tests/http_test.php — never used in
+     * production, where PHP runs as php-fpm), so the HTTP tests run the real entry points against a scratch database.
      */
     public static function defaultPath(string $projectRoot): string
     {
-        if (PHP_SAPI === 'cli') {
+        if (PHP_SAPI === 'cli' || PHP_SAPI === 'cli-server') {
             $override = getenv('MAILPANEL_ENV_FILE');
             if (is_string($override) && $override !== '' && is_file($override)) {
                 return $override;

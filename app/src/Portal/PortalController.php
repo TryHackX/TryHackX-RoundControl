@@ -30,6 +30,12 @@ use Throwable;
  *
  * 1.1.0: serwer nie zdradza, czy konto istnieje ani czy jest administratorem (krok "identyfikacja" odpowiada tak samo
  * na każdy poprawnie zapisany adres); limity są szybkie (odmowa zamiast sleep()) — patrz RateLimiter.
+ *
+ * 1.2.0 — logowanie: adres -> hasło -> (administrator) kafelki. Hasło sprawdzane jest NAJPIERW jako hasło do panelu
+ * (zawsze jedno Argon2id, dla nie-administratora względem atrapy), a gdy nim nie jest — jako hasło skrzynki (logowanie
+ * IMAP przez Roundcube). Każde złe hasło przechodzi więc tę samą drogę (Argon2id + IMAP) i dostaje tę samą odpowiedź,
+ * niezależnie od tego, czy adres nie istnieje, jest zwykłym kontem czy kontem administratora. Kto zna hasło do panelu,
+ * a ma też skrzynkę, wybiera kafelek (Panel / Webmail); kto zna tylko hasło skrzynki — wchodzi prosto do webmaila.
  */
 final class PortalController
 {
@@ -63,13 +69,16 @@ final class PortalController
                 throw new PortalException('Dostęp z tego adresu IP jest zablokowany.');
             }
 
-            if ($action === 'perform_login' && !$this->flow->valid()) {
-                throw new PortalException('Sesja wygasła. Odśwież stronę.', PortalException::RELOAD);
+            if ($action === 'perform_login' && !$this->flow->valid('password')) {
+                // ten sam komunikat dla każdego adresu; front wraca do kroku "adres e-mail"
+                throw PortalException::withReset('Sesja logowania wygasła — podaj adres jeszcze raz.');
             }
 
             $resp = match ($action) {
                 'check_identity'     => $this->checkIdentity($resp),
                 'perform_login'      => $this->performLogin($resp),
+                'choose_target'      => $this->chooseTarget($resp),
+                'cancel_login'       => $this->cancelLogin($resp),
                 'check_availability' => $this->checkAvailability($resp),
                 'register'           => $this->register($resp),
                 default              => throw new PortalException('Nieznana akcja'),
@@ -118,17 +127,17 @@ final class PortalController
         // Żadnego zapytania o konto: ten sam ekran dla istniejących i nieistniejących adresów, dla adminów i reszty.
         $this->flow->start($email);
 
-        $resp['html']     = Screens::password($email, $this->preferredTarget());
+        $resp['html']     = Screens::password($email);
         $resp['focus_id'] = 'inpPassword';
         $resp['ok']       = true;
 
         return $resp;
     }
 
-    /** Ostatnio wybrana usługa (ciasteczko ustawiane przez przeglądarkę użytkownika — to nie jest wiedza serwera o koncie). */
+    /** Ostatnio wybrana usługa (ciasteczko tej przeglądarki) — tylko do podświetlenia kafelka po poprawnym haśle admina. */
     private function preferredTarget(): string
     {
-        return ($_COOKIE['mp_target'] ?? '') === 'admin' ? 'admin' : 'webmail';
+        return ($_COOKIE['mp_target'] ?? '') === 'webmail' ? 'webmail' : 'admin';
     }
 
     private function rememberTarget(string $target): void
@@ -145,35 +154,123 @@ final class PortalController
         ]);
     }
 
+    /**
+     * Krok 2: hasło. Najpierw jako hasło do panelu, potem jako hasło skrzynki — patrz opis klasy. Do chwili poprawnego
+     * hasła odpowiedź nie zależy od tego, czy adres istnieje i czy należy do administratora.
+     */
     private function performLogin(array $resp): array
     {
         $password = (string) Http::post('password', '');
-        $target   = Http::post('target', 'webmail') === 'admin' ? 'admin' : 'webmail';
         $email    = $this->flow->email();
+        $ipBin    = Ip::bin();
 
         if ($password === '') {
             throw new PortalException('Podaj hasło');
         }
-
-        return $target === 'admin'
-            ? $this->loginAdmin($resp, $email, $password)
-            : $this->loginWebmail($resp, $email, $password);
-    }
-
-    private function loginAdmin(array $resp, string $email, string $password): array
-    {
-        $result = (new AdminAuthenticator($this->admins, $this->limiter))->attempt($email, $password);
-
-        if (!$result->ok) {
+        $blocked = $this->limiter->loginBlocked($email, $ipBin);
+        if ($blocked !== null) {
             $this->flow->clear();
-            throw PortalException::withReset($result->error ?: 'Nieprawidłowe dane logowania');
+            throw PortalException::withReset($blocked);
         }
 
+        $isAdmin = false;
+        $admin   = (new AdminAuthenticator($this->admins))->verify($email, $password, $isAdmin);
+        if ($admin !== null) {
+            return $this->adminPasswordOk($resp, $email, $password, $admin);
+        }
+
+        // Nie hasło do panelu: decyduje skrzynka. Flow czyścimy PRZED logowaniem — w produkcji authenticator zamyka
+        // sesję portalu (przekazanie do Roundcube), więc po tym momencie nic do niej nie zapisujemy.
+        $this->flow->clear();
+        if (!AuthenticatorFactory::make($this->users)->authenticate($email, $password)) {
+            // Zapisy po stronie serwera (nie trafiają do odpowiedzi): limit, syslog dla Fail2Ban, dziennik prób admina.
+            $this->limiter->recordLoginFailure($isAdmin ? 'admin' : 'webmail', $email, $ipBin);
+            AuthLog::failure($isAdmin ? 'admin' : 'webmail', $email);
+            if ($isAdmin) {
+                $this->admins->logAttempt($email, false, 'Invalid password', $ipBin);
+            }
+            throw PortalException::withReset('Nieprawidłowe dane logowania');
+        }
+
+        return $this->webmailEntered($resp, $email);
+    }
+
+    /**
+     * Poprawne hasło do panelu. Administrator bez skrzynki pod tym adresem wchodzi prosto do panelu; ze skrzynką —
+     * wybiera kafelek (Webmail jest aktywny, gdy to samo hasło pasuje do skrzynki albo nie da się tego sprawdzić z hasha).
+     *
+     * @param array{id:int,pwd_hash:string} $admin
+     */
+    private function adminPasswordOk(array $resp, string $email, string $password, array $admin): array
+    {
+        if (!$this->users->exists($email)) {
+            return $this->panelEntered($resp, $email, $admin);
+        }
+        $same      = $this->users->passwordMatches($email, $password);   // true | false | null (nie wiadomo)
+        $preferred = $this->preferredTarget();
+        $key       = $this->flow->offerChoice($admin['id'], $admin['pwd_hash'], $same === false ? null : $password);
+        $webmail   = $key !== '';
+
+        $resp['ok']         = true;
+        $resp['html']       = Screens::choice($email, $preferred, $webmail, in_array($_COOKIE['mp_target'] ?? '', ['admin', 'webmail'], true));
+        $resp['focus_id']   = Screens::choiceFocus($preferred, $webmail);
+        $resp['choice_key'] = $key;
+        $resp['step']       = 'choose';
+
+        return $resp;
+    }
+
+    /** Krok 3 (kafelki): wejście do wybranej usługi. */
+    private function chooseTarget(array $resp): array
+    {
+        if (!$this->flow->valid('choose')) {
+            $this->flow->clear();
+            throw PortalException::withReset('Wybór wygasł — zaloguj się jeszcze raz.');
+        }
+        $email = $this->flow->email();
+
+        if (Http::post('target') !== 'webmail') {
+            // hasło administratora zmienione albo konto usunięte w międzyczasie: wybór nieważny
+            $row = $this->admins->findById($this->flow->adminId());
+            if ($row === null || !hash_equals($this->flow->adminFp(), hash('sha256', (string) $row['pwd_hash']))) {
+                $this->flow->clear();
+                throw PortalException::withReset('Wybór wygasł — zaloguj się jeszcze raz.');
+            }
+            return $this->panelEntered($resp, $email, ['id' => (int) $row['id'], 'pwd_hash' => (string) $row['pwd_hash']]);
+        }
+
+        $password = $this->flow->takePassword((string) Http::post('key', ''));
+        $this->flow->clear();
+        if ($password === null) {
+            throw PortalException::withReset('Wybór wygasł — zaloguj się jeszcze raz.');
+        }
+        // Hasło zostało sprawdzone przed chwilą (administrator). Skrzynka może je mimo to odrzucić (konto zablokowane
+        // w Dovecot, chwilowa awaria IMAP) — to nie jest zgadywanie hasła, więc bez zapisu porażki do limitów.
+        if (!AuthenticatorFactory::make($this->users)->authenticate($email, $password)) {
+            throw PortalException::withReset('Webmail nie przyjął tego hasła (skrzynka może być zablokowana albo mieć inne hasło). Zaloguj się hasłem skrzynki.');
+        }
+        return $this->webmailEntered($resp, $email);
+    }
+
+    /** "Wróć" z ekranu hasła / kafelków: zapomnij rozpoczęte logowanie (także zaszyfrowane hasło dla kafelka). */
+    private function cancelLogin(array $resp): array
+    {
+        $this->flow->clear();
+        $resp['ok'] = true;
+        return $resp;
+    }
+
+    /** @param array{id:int,pwd_hash:string} $admin */
+    private function panelEntered(array $resp, string $email, array $admin): array
+    {
+        $this->admins->logAttempt($email, true, 'Portal login success', Ip::bin());
+        $this->admins->markLogin($admin['id']);
+
         Session::regenerate();
-        $_SESSION['admin_id']       = $result->id;
+        $_SESSION['admin_id']       = $admin['id'];
         $_SESSION['admin_username'] = $email;
         $_SESSION['admin_login_at'] = time();
-        $_SESSION['admin_fp']       = hash('sha256', $result->pwdHash);
+        $_SESSION['admin_fp']       = hash('sha256', $admin['pwd_hash']);
         $this->flow->clear();
         $this->rememberTarget('admin');
 
@@ -183,27 +280,8 @@ final class PortalController
         return $resp;
     }
 
-    private function loginWebmail(array $resp, string $email, string $password): array
+    private function webmailEntered(array $resp, string $email): array
     {
-        $ipBin = Ip::bin();
-
-        $blocked = $this->limiter->loginBlocked($email, $ipBin);
-        if ($blocked !== null) {
-            $this->flow->clear();
-            throw PortalException::withReset($blocked);
-        }
-
-        // Czyścimy flow przed uwierzytelnianiem — w prod authenticator zamyka
-        // naszą sesję, więc nie zapisujemy do niej po tym momencie.
-        $this->flow->clear();
-
-        $authenticator = AuthenticatorFactory::make($this->users);
-        if (!$authenticator->authenticate($email, $password)) {
-            $this->limiter->recordLoginFailure('webmail', $email, $ipBin);
-            AuthLog::failure('webmail', $email);
-            throw PortalException::withReset('Nieprawidłowe dane logowania');
-        }
-
         try {
             $this->pdo->prepare('CALL sp_register_login(?, ?)')->execute([$email, Ip::raw()]);
         } catch (Throwable $e) {

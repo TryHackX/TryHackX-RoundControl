@@ -66,22 +66,32 @@ final class Accounts
     /** Is the (lower-case) local part reserved — by the built-in list or by the configurable one? */
     public static function isReserved(string $local, ?string $configured): bool
     {
-        $patterns = self::BASE_RESERVED;
-        foreach (self::parseList($configured ?? self::DEFAULT_EXTRA) as $p) {
-            $patterns[] = $p;
-        }
-        foreach ($patterns as $p) {
-            if ($p === $local) {
-                return true;
-            }
-            if (str_contains($p, '*')) {
-                $re = '/^' . str_replace('\*', '.*', preg_quote($p, '/')) . '$/D';
-                if (preg_match($re, $local) === 1) {
-                    return true;
+        return self::reservedBy($local, $configured) !== null;
+    }
+
+    /**
+     * Which list reserves the name, and by which entry: ['base'|'list', pattern] or null (1.2.0: the panel tells the
+     * administrator WHY a name is reserved — a built-in role address or an entry of the editable list).
+     *
+     * @return array{0:string,1:string}|null
+     */
+    public static function reservedBy(string $local, ?string $configured): ?array
+    {
+        $lists = ['base' => self::BASE_RESERVED, 'list' => self::parseList($configured ?? self::DEFAULT_EXTRA)];
+        foreach ($lists as $which => $patterns) {
+            foreach ($patterns as $p) {
+                if ($p === $local) {
+                    return [$which, $p];
+                }
+                if (str_contains($p, '*')) {
+                    $re = '/^' . str_replace('\*', '.*', preg_quote($p, '/')) . '$/D';
+                    if (preg_match($re, $local) === 1) {
+                        return [$which, $p];
+                    }
                 }
             }
         }
-        return false;
+        return null;
     }
 
     /** Is $token one entry of an alias destination list ("a@x, b@x" / "a@x b@x")? Comparison in lower case. */

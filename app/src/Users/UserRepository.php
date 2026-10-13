@@ -26,6 +26,66 @@ final class UserRepository
         return $value === false ? null : (string) $value;
     }
 
+    /**
+     * Czy $password jest hasłem tej skrzynki według hasha w virtual_users? (1.2.0: logowanie administratora — czy kafelek
+     * "Webmail" ma szansę zadziałać tym samym hasłem; o samym wejściu decyduje i tak logowanie IMAP.)
+     *
+     * @return ?bool true / false; null = nie da się tego ustalić z hasha (schemat inny niż *-CRYPT, np. ARGON2ID)
+     */
+    public function passwordMatches(string $email, string $password): ?bool
+    {
+        $hash = $this->passwordHash($email);
+        if ($hash === null || $hash === '') {
+            return false;
+        }
+        if (preg_match('/^\{([A-Z0-9.-]+)\}(.*)$/s', $hash, $m) === 1) {
+            if (!in_array($m[1], ['SHA512-CRYPT', 'SHA256-CRYPT', 'BLF-CRYPT', 'MD5-CRYPT', 'CRYPT'], true)) {
+                return null;
+            }
+            $hash = $m[2];
+        }
+        if (preg_match('/^\$(?:1|2[abxy]|5|6)\$/', $hash) !== 1) {
+            return null;
+        }
+        return hash_equals($hash, crypt($password, $hash));
+    }
+
+    /** Wiersze aliasów, których ŹRÓDŁEM jest ten adres (zwykle jeden). @return array<int,array{id:int,source:string,destination:string}> */
+    public function aliasesFrom(string $email): array
+    {
+        $s = $this->pdo->prepare('SELECT id, source, destination FROM virtual_aliases WHERE source = ? ORDER BY id');
+        $s->execute([Accounts::normalize($email)]);
+        return array_map(static fn(array $r): array => [
+            'id' => (int) $r['id'], 'source' => (string) $r['source'], 'destination' => (string) $r['destination'],
+        ], $s->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /** @return array{id:int,source:string,destination:string}|null */
+    public function aliasById(int $id): ?array
+    {
+        $s = $this->pdo->prepare('SELECT id, source, destination FROM virtual_aliases WHERE id = ?');
+        $s->execute([$id]);
+        $r = $s->fetch(PDO::FETCH_ASSOC);
+        return $r ? ['id' => (int) $r['id'], 'source' => (string) $r['source'], 'destination' => (string) $r['destination']] : null;
+    }
+
+    public function deleteAlias(int $id): void
+    {
+        $this->pdo->prepare('DELETE FROM virtual_aliases WHERE id = ?')->execute([$id]);
+    }
+
+    /** Kiedy usunięto to konto (nagrobek), jeśli w ciągu ostatnich $days dni; null = nie usunięto / blokada wyłączona. */
+    public function deletedAt(string $email, int $days): ?string
+    {
+        if ($days <= 0) {
+            return null;
+        }
+        $s = $this->pdo->prepare('SELECT deleted_at FROM deleted_accounts WHERE email = ? AND deleted_at > NOW() - INTERVAL ? DAY');
+        $s->execute([Accounts::normalize($email), $days]);
+        $v = $s->fetchColumn();
+        return $v === false ? null : (string) $v;
+    }
+
     /** @return string[] nazwy domen (lower case) */
     public function domains(): array
     {

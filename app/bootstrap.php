@@ -9,6 +9,8 @@ declare(strict_types=1);
  * punkty wejścia, które potrzebują IMAP, robią to samodzielnie.
  */
 
+/** Wersja TryHackX RoundControl (pokazywana tylko zalogowanemu administratorowi w nagłówku panelu). */
+define('APP_VERSION', '1.2.0');
 define('APP_ROOT', __DIR__);
 define('PROJECT_ROOT', dirname(__DIR__));
 

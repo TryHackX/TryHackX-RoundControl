@@ -53,7 +53,7 @@ body {
     margin: clamp(24px, 10vh, 64px) auto 32px;
 	justify-content: center;
 }
-main {
+main:not(.scene) {
     width: 100%;
     max-width: 480px;
     padding: 30px;
@@ -225,6 +225,24 @@ button[type="submit"]:disabled {
     cursor: not-allowed;
     opacity: 0.6;
 }
+/* w trakcie żądania: przycisk nie "gaśnie", tylko pokazuje spinner (busy() w portal.js trzyma jego szerokość) */
+button[aria-busy="true"],
+button[type="submit"][aria-busy="true"]:disabled {
+    background: var(--primary);
+    opacity: 0.88;
+    cursor: progress;
+}
+/* przyciski wyglądające jak łącza (prawdziwe <button>: klawiatura, czytniki ekranu) */
+.link-btn {
+    background: none;
+    border: 0;
+    padding: 4px 2px;
+    margin: 0;
+    font: inherit;
+    width: auto;
+    border-radius: 6px;
+}
+.switch-link, .back-link { width: 100%; }
 .switch-link {
     display: block;
     text-align: center;
@@ -250,19 +268,33 @@ button[type="submit"]:disabled {
 .back-link:hover {
     color: var(--primary);
 }
+/* Komunikat w karcie (1.2.0): zawsze w DOM, rozwija się płynnie (grid 0fr -> 1fr) zamiast wskakiwać — bez skoku treści. */
 .msg-box {
-    padding: 12px;
-    border-radius: 8px;
-    margin-bottom: 20px;
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    margin-bottom: 0;
     text-align: center;
     font-size: 14px;
+    transition: grid-template-rows 0.25s ease, opacity 0.2s ease, margin-bottom 0.25s ease;
 }
-.msg-err {
+.msg-box > .msg-inner {
+    overflow: hidden;
+    min-height: 0;
+    border-radius: 8px;
+}
+.msg-box.is-open {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    margin-bottom: 20px;
+}
+.msg-box.is-open > .msg-inner { padding: 12px; }
+.msg-err > .msg-inner {
     background: var(--status-error-bg);
     color: var(--status-error);
     border: 1px solid var(--status-error-border);
 }
-.msg-ok {
+.msg-ok > .msg-inner {
     background: var(--status-success-bg);
     color: var(--status-success);
     border: 1px solid var(--status-success-border);
@@ -329,13 +361,17 @@ button[type="submit"]:disabled {
     font-weight: bold;
     font-size: 18px;
 }
-.user-info { flex: 1; }
-.email { font-weight: 600; margin-bottom: 4px; }
+.avatar { flex: 0 0 auto; }
+.user-info { flex: 1; min-width: 0; }
+.email { font-weight: 600; margin-bottom: 2px; overflow-wrap: anywhere; }
 .change-user {
-    color: var(--primary);
+    color: #7ea6ff;
     cursor: pointer;
     font-size: 14px;
+    padding: 2px 0;
+    text-align: left;
 }
+.change-user:hover { color: #fff; }
 .service-badge {
     background: var(--primary-light);
     color: var(--primary);
@@ -344,31 +380,121 @@ button[type="submit"]:disabled {
     font-size: 12px;
     font-weight: 600;
 }
+/* Kafelki wyboru usługi (1.2.0: dopiero po poprawnym haśle administratora) — prawdziwe <button>. */
+.choice-lead { margin-bottom: 4px; }
 .service-choices {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 15px;
-    margin: 20px 0;
+    margin: 16px 0 6px;
 }
 .service-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    margin: 0;
     background: var(--bg-hover);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 12px;
-    padding: 20px;
+    padding: 22px 14px 18px;
     text-align: center;
+    color: var(--text-main);
+    font: inherit;
     cursor: pointer;
-    transition: all 0.2s;
-	user-select: none;
+    transition: border-color 0.2s, background 0.2s, transform 0.2s, opacity 0.2s;
+    user-select: none;
     -webkit-tap-highlight-color: transparent;
 }
-.service-card:hover {
+.service-card:hover:not(:disabled) {
     border-color: var(--primary);
     background: rgba(47, 111, 237, 0.1);
     transform: translateY(-2px);
 }
-.service-icon { font-size: 32px; margin-bottom: 10px; }
-.service-name { font-weight: 600; margin-bottom: 5px; }
+.service-card:disabled { cursor: not-allowed; opacity: 0.45; }
+.service-card.is-busy { opacity: 1; border-color: var(--primary); cursor: progress; }
+.service-card.is-busy .service-icon { animation: tilePulse 0.9s ease-in-out infinite alternate; }
+.service-icon { color: #7ea6ff; line-height: 0; margin-bottom: 8px; }
+.service-name { font-weight: 600; }
 .service-desc { font-size: 12px; color: #94a3b8; }
+.service-last {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    color: #9bbcff;
+    background: var(--primary-light);
+    border-radius: 999px;
+    padding: 1px 7px;
+}
+.choice-note {
+    font-size: 13px;
+    color: var(--text-muted);
+    background: var(--bg-hover);
+    border: 1px dashed rgba(255,255,255,0.14);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 12px 0 0;
+    line-height: 1.45;
+}
+@keyframes tilePulse { from { opacity: 0.45; } to { opacity: 1; } }
+
+/* Pole hasła z przyciskiem "pokaż" */
+.pwd-field { position: relative; }
+.pwd-field input { padding-right: 46px; }
+.pwd-toggle {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+}
+.pwd-toggle:hover, .pwd-toggle.is-on { color: var(--text-main); background: var(--bg-hover); }
+/* Podpowiedź pod polem: miejsce zarezerwowane (jedna linia), więc komunikat nie przesuwa przycisku */
+.field-hint {
+    min-height: 1.4em;
+    margin-top: 6px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--status-error);
+}
+#choiceHint { text-align: center; color: var(--status-load); }
+.shake { animation: shake 0.36s ease; }
+@keyframes shake {
+    20%, 60% { transform: translateX(-6px); }
+    40%, 80% { transform: translateX(6px); }
+}
+.spinner {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.15em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Widoczny fokus z klawiatury (bez obwódek po kliknięciu myszą) */
+button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
+    outline: 2px solid #7ea6ff;
+    outline-offset: 2px;
+}
+.service-card:focus-visible { border-color: var(--primary); }
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
@@ -457,4 +583,21 @@ button[type="submit"]:disabled {
 .card.card-h-anim {
     transition: height 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
     overflow: hidden;
+}
+#step-identity, #step-dynamic, #step-choice { position: relative; }
+[hidden] { display: none !important; }
+
+@media (max-width: 420px) {
+    .service-choices { gap: 10px; }
+    .service-card { padding: 18px 8px 14px; }
+    .card { padding: 24px 18px; }
+}
+/* Ograniczony ruch: bez rozmyć, skalowania i drgania — tylko natychmiastowa zmiana */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+    .card, .card.active, .card.leaving { filter: none !important; transform: none !important; }
 }
