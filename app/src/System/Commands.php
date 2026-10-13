@@ -290,7 +290,7 @@ final class Commands
     }
 
     /**
-     * @return string komunikat helpera ("bez zmian" albo "zapisane i przeładowane (N zmian)")
+     * @return string komunikat helpera ("unchanged" albo "saved and reloaded (N changes)")
      * @throws \RuntimeException gdy helper odrzucił propozycję albo nie udało się zapisać / sprawdzić / przeładować
      */
     public static function fail2banSaveConfig(array $post): string
@@ -341,9 +341,13 @@ final class Commands
         // own message says what it refused or what failed; it never reports success it did not verify.
         $r = self::pipeTo('sudo -n /usr/local/sbin/mailpanel-f2b-apply 2>&1', implode("\n", $lines) . "\n");
         if ($r['code'] !== 0) {
-            throw new \RuntimeException($r['code'] > 0
-                ? t('cmd.f2b_failed', ['out' => trim($r['out']), 'code' => $r['code']])
-                : t('cmd.f2b_failed_nocode', ['out' => trim($r['out'])]));
+            // kod wyjścia helpera -> przetłumaczony opis; szczegół techniczny helpera (po angielsku) dołączony
+            $key = match ($r['code']) { 1 => 'cmd.f2b_refused', 2 => 'cmd.f2b_reload_failed', 3 => 'cmd.f2b_write_failed', default => '' };
+            throw new \RuntimeException($key !== ''
+                ? t($key, ['out' => trim($r['out'])])
+                : ($r['code'] > 0
+                    ? t('cmd.f2b_failed', ['out' => trim($r['out']), 'code' => $r['code']])
+                    : t('cmd.f2b_failed_nocode', ['out' => trim($r['out'])])));
         }
         return trim($r['out']);
     }

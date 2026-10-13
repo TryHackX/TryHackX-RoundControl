@@ -38,7 +38,7 @@ sudo php -l "$PCFG"
 
 # 3) Dopisz 'password' do listy pluginów w config.inc.php (ręcznie, jeśli brak):
 #    $config['plugins'] = ['archive', 'zipdownload', 'newmail_notifier', 'custom_auth', 'password'];
-sudo grep -q "'password'" "$CFG" || echo "!!! Dodaj 'password' do \$config['plugins'] w $CFG"
+sudo grep -q "'password'" "$CFG" || echo "!!! Add 'password' to \$config['plugins'] in $CFG"
 
 sudo rm -rf "$RC/temp/"* 2>/dev/null || true
-echo "OK — Ustawienia → Hasło dostępne w webmailu."
+echo "OK — Settings → Password is now available in webmail."

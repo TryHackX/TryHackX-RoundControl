@@ -21,7 +21,8 @@ declare(strict_types=1);
  * własnym błędem. Dzień liczony wg strefy z configu (domyślnie Europe/Warsaw),
  * spójnie z panelem administracyjnym.
  *
- * Język odmów i powiadomienia: app_settings 'default_language' (pl = polski, każdy inny = angielski; brak = pl) —
+ * Język odmów i powiadomienia: app_settings 'default_language' (pl = polski, każdy inny = angielski; brak = angielski,
+ * jak w panelu od 1.3.1) —
  * ten sam język domyślny, który ustawia panel. Skrypt działa jako "nobody" poza kodem aplikacji, więc teksty ma u siebie.
  *
  * Konfiguracja: /etc/mailpanel-policy.cf (INI: dsn, user, password, timezone),
@@ -104,7 +105,7 @@ function texts(string $lang): array
     ];
 }
 
-/** Język z ustawień panelu (pl | en); błąd bazy = pl. */
+/** Język z ustawień panelu: 'pl' tylko przy jawnym default_language = pl; brak ustawienia / błąd bazy = angielski. */
 function siteLanguage(PDO $dbh): string
 {
     try {
@@ -112,7 +113,7 @@ function siteLanguage(PDO $dbh): string
     } catch (Throwable) {
         $v = false;
     }
-    return $v === false || $v === null || $v === '' || $v === 'pl' ? 'pl' : 'en';
+    return $v === 'pl' ? 'pl' : 'en';
 }
 
 function respond(string $action): void

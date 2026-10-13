@@ -1,27 +1,27 @@
 #!/bin/bash
 # =====================================================================
-# Instalator integracji systemowych panelu Roundcube (uruchom jako root).
-# Cel: Debian 13 (trixie) — Dovecot 2.4, Postfix 3.10, Fail2Ban 1.1.
-# Idempotentny, z bramką potwierdzenia per sekcja i kopiami zapasowymi.
-# Ponowne uruchomienie NIE rotuje istniejących sekretów (konta DB, które już istnieją, nie dostają nowego hasła),
-# NIE duplikuje konfiguracji (jaile w /etc/fail2ban/jail.d/, sekcje wykrywane) i niczego nie nadpisuje bez pytania.
+# Installer for the system integrations of the Roundcube panel (run as root).
+# Target: Debian 13 (trixie) — Dovecot 2.4, Postfix 3.10, Fail2Ban 1.1.
+# Idempotent, with a confirmation gate per section and backups.
+# Running it again does NOT rotate existing secrets (DB accounts that already exist do not get a new password),
+# does NOT duplicate configuration (jails live in /etc/fail2ban/jail.d/, sections are detected) and overwrites nothing without asking.
 #
-# 1.1.0 — zasady bezpieczeństwa tego pliku:
-#  * sekrety odczytane Z PLIKÓW (hasła z map Postfixa, z mailpanel-policy.cf, z konfiguracji pluginu) są danymi, nie
-#    kodem: czytane ściśle (file_kv), sprawdzane regexem ^[A-Za-z0-9._~+-]{16,128}$ i wstawiane do szablonów awk-iem
-#    przez zmienne środowiskowe (bez sed, bez interpretacji znaków specjalnych). Plik .env aplikacji NIE jest czytany
-#    w ogóle — w 1.0.x jego zawartość trafiała do SQL-a i do sed-a uruchamianych jako root, a plik jest zapisywalny
-#    dla www-data, gdy kod należy do www-data. Nigdy `source` takiego pliku.
-#  * sekcja 0 nie zmienia haseł istniejących kont DB (wcześniej ALTER USER przy każdym uruchomieniu mógł zabrać
-#    Postfixowi i Dovecotowi dostęp do bazy);
-#  * kod aplikacji należy do roota; dla użytkownika PHP panelu zapisywalne są wyłącznie temp/ i logs/ Roundcube
-#    (oraz jego log_dir, jeśli leży poza drzewem).
-#  * Roundcube i panel dostają WŁASNĄ pulę PHP-FPM i własnego użytkownika (sekcja 1b, PANEL_USER, domyślnie mailweb):
-#    inne strony serwera (pula [www], www-data) nie czytają sekretów panelu i nie mają jego reguł sudo.
+# 1.1.0 — security rules of this file:
+#  * secrets read FROM FILES (passwords from Postfix maps, from mailpanel-policy.cf, from the plugin configuration) are data,
+#    not code: read strictly (file_kv), checked with the regex ^[A-Za-z0-9._~+-]{16,128}$ and inserted into templates by awk
+#    through environment variables (no sed, no interpretation of special characters). The application's .env file is NOT read
+#    at all — in 1.0.x its contents ended up in SQL and in sed run as root, and that file is writable by www-data when the
+#    code belongs to www-data. Never `source` such a file.
+#  * section 0 does not change the passwords of existing DB accounts (previously ALTER USER on every run could cut Postfix
+#    and Dovecot off from the database);
+#  * the application code belongs to root; the panel's PHP user can write only Roundcube's temp/ and logs/
+#    (and its log_dir, if that lies outside the tree).
+#  * Roundcube and the panel get THEIR OWN PHP-FPM pool and their own user (section 1b, PANEL_USER, default mailweb):
+#    other sites on the server (the [www] pool, www-data) cannot read the panel's secrets and do not have its sudo rules.
 #
-# Zmienne (opcjonalne):  RC_DIR=/var/www/roundcube   PANEL_USER=mailweb   APACHE_USER=www-data   PHP_VER=8.5
-#   PANEL_USER=www-data (albo dawne WEB_USER=www-data) = bez osobnej puli: Roundcube zostaje we wspólnej puli [www].
-# Warstwę aplikacji (.env, schemat, admin) instaluje osobno: php install.php
+# Variables (optional):  RC_DIR=/var/www/roundcube   PANEL_USER=mailweb   APACHE_USER=www-data   PHP_VER=8.5
+#   PANEL_USER=www-data (or the old WEB_USER=www-data) = no separate pool: Roundcube stays in the shared [www] pool.
+# The application layer (.env, schema, admin) is installed separately: php install.php
 # =====================================================================
 set -uo pipefail
 
@@ -37,7 +37,8 @@ ok()   { echo -e "${c_grn}✓${c_rst} $*"; }
 warn() { echo -e "${c_yel}!${c_rst} $*"; }
 die()  { echo -e "${c_red}✗ $*${c_rst}"; exit 1; }
 hr()   { printf '%.0s─' {1..60}; echo; }
-ask()  { local a; read -rp "$1 (t/N): " a; [[ "$a" =~ ^[tTyY] ]]; }
+# y/Y/yes confirm; t/T/tak (the old Polish habit) are still accepted. Anything else = no.
+ask()  { local a; read -rp "$1 [y/N]: " a; [[ "$a" =~ ^[tTyY] ]]; }
 
 # --- helpers begin (tests/install_helpers_test.sh sources exactly this block) -------------------------------------
 
@@ -75,7 +76,7 @@ render_template() {
 run_sql() {
   local out
   if ! out=$(mysql 2>&1 <<<"$1"); then
-    warn "Błąd MySQL: ${out:-nieznany} — sekcja niedokończona."
+    warn "MySQL error: ${out:-unknown} — section not completed."
     return 1
   fi
 }
@@ -93,16 +94,16 @@ gen_pw() { openssl rand -hex 24; }
 # edytowanych z panelu, zapisuje plik W MIEJSCU (pod ProtectSystem=full w php-fpm nie da się utworzyć pliku obok ani
 # zrobić rename), czyta go z powrotem, robi fail2ban-client -t i przeładowuje Fail2Ban. Idempotentne.
 install_f2b_helper() {
-  command -v php >/dev/null || warn "Brak php w PATH — helper Fail2Ban wymaga php-cli (apt install php-cli)."
+  command -v php >/dev/null || warn "php not found in PATH — the Fail2Ban helper needs php-cli (apt install php-cli)."
   install -o root -g root -m 755 "$SRC/scripts/mailpanel-f2b-apply.php" /usr/local/sbin/mailpanel-f2b-apply || return 1
   if command -v php >/dev/null && ! php -l /usr/local/sbin/mailpanel-f2b-apply >/dev/null 2>&1; then
-    warn "helper mailpanel-f2b-apply nie przechodzi php -l — sprawdź plik"
+    warn "helper mailpanel-f2b-apply fails php -l — check the file"
     return 1
   fi
   # 1.0.x zostawiało propozycję w pliku w katalogu www-data; od 1.1.0 propozycja idzie na stdin
   if [ -d /var/lib/mailpanel-f2b ]; then
     rm -f /var/lib/mailpanel-f2b/jail.local.proposed
-    rmdir /var/lib/mailpanel-f2b 2>/dev/null && ok "usunięto nieużywany katalog /var/lib/mailpanel-f2b"
+    rmdir /var/lib/mailpanel-f2b 2>/dev/null && ok "removed the unused directory /var/lib/mailpanel-f2b"
   fi
   ok "helper /usr/local/sbin/mailpanel-f2b-apply (755 root)"
 }
@@ -120,7 +121,7 @@ secure_secret_copies() {
       chown root:root "$f" && chmod 600 "$f" && n=$((n + 1))
     done < <(find "$d" -maxdepth 1 -type f \( "${SECRET_COPY_NAMES[@]}" \) -print0 2>/dev/null)
   done
-  ok "kopie plików z sekretami (config.inc.php.bak*, config.old.php, .env.*): $n szt. — root:root 600"
+  ok "copies of files with secrets (config.inc.php.bak*, config.old.php, .env.*): $n file(s) — root:root 600"
 }
 
 # --- pool helpers begin (tests/scripts_test.php sources exactly this block) ----------------------------------------
@@ -182,7 +183,7 @@ rc_log_dir() {
   [[ "$v" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$v" != *..* ]] || return 0
   case "$v" in "$RC_DIR" | "$RC_DIR"/*) return 0 ;; esac      # w drzewie: logs/ obsługuje runtime_ownership
   if [[ ! "${v##*/}" =~ ^(roundcube|rcube|webmail) ]]; then
-    warn "log_dir Roundcube ($v) nie wygląda na jego własny katalog — nadaj go ręcznie użytkownikowi PHP: chown -R <user>: $v" >&2
+    warn "Roundcube's log_dir ($v) does not look like its own directory — give it to the PHP user manually: chown -R <user>: $v" >&2
     return 0
   fi
   printf '%s' "$v"
@@ -202,9 +203,9 @@ logrotate_user() {
     rm -f "$tmp"
     if command -v logrotate >/dev/null && ! logrotate -d "$f" >/dev/null 2>&1; then
       cp -p "$bdir/$(basename "$f")" "$f"
-      warn "logrotate -d odrzuca zmieniony $f — przywrócono (zmień ręcznie linię create na: create 0640 $u $u)"
+      warn "logrotate -d rejects the modified $f — restored (change the create line manually to: create 0640 $u $u)"
     else
-      ok "$f: logi odtwarzane dla $u (create … $u $u; kopia w $bdir)"
+      ok "$f: logs are recreated for $u (create … $u $u; backup in $bdir)"
     fi
   done
 }
@@ -225,7 +226,7 @@ runtime_ownership() {
     [ -f "$f" ] && [ ! -L "$f" ] && { chown root:"$u" "$f"; chmod 640 "$f"; }
   done
   [ -d /etc/mailpanel ] && { chown root:"$u" /etc/mailpanel; chmod 750 /etc/mailpanel; }
-  ok "zapisywalne dla $u: temp/ logs/${ld:+ $ld}; sekrety (config.inc.php, password/config.inc.php, .env) root:$u 640"
+  ok "writable by $u: temp/ logs/${ld:+ $ld}; secrets (config.inc.php, password/config.inc.php, .env) root:$u 640"
 }
 
 # Wstawia blok SetHandler (gniazdo puli) do każdego <VirtualHost> z DocumentRoot = RC_DIR(/public_html), sprawdza
@@ -234,7 +235,7 @@ switch_vhosts() {
   local sock=$1 f tmp block bdir rc changed=() files=()
   mapfile -t files < <(rc_vhost_files)
   if [ "${#files[@]}" -eq 0 ]; then
-    warn "nie znalazłem vhosta Apache z DocumentRoot $RC_DIR(/public_html) w $APACHE_SITES — dopisz ręcznie blok z system/apache/roundcontrol-fpm-handler.conf"
+    warn "no Apache vhost with DocumentRoot $RC_DIR(/public_html) found in $APACHE_SITES — add the block from system/apache/roundcontrol-fpm-handler.conf by hand"
     return 1
   fi
   block=$(render_template "$SRC/system/apache/roundcontrol-fpm-handler.conf" @SOCKET@ "$sock" | render_template - @PANEL_USER@ "$PANEL_USER" | render_template - @RC_DIR@ "$RC_DIR")
@@ -253,21 +254,21 @@ switch_vhosts() {
     if [ "$rc" -eq 0 ]; then
       mkdir -p "$bdir" && cp -p "$f" "$bdir/" && cat "$tmp" > "$f" && changed+=("$f")
     elif [ "$rc" -ne 3 ]; then
-      warn "awk nie przetworzył $f"
+      warn "awk did not process $f"
     fi
     rm -f "$tmp"
   done
   if [ "${#changed[@]}" -eq 0 ]; then
-    ok "vhosty Roundcube już kierują PHP do puli $PANEL_USER ($sock)"
+    ok "the Roundcube vhosts already send PHP to the $PANEL_USER pool ($sock)"
     return 0
   fi
   if ! apache2ctl configtest >/dev/null 2>&1 || ! systemctl reload apache2; then
     for f in "${changed[@]}"; do cp -p "$bdir/$(basename "$f")" "$f"; done
     systemctl reload apache2 >/dev/null 2>&1
-    warn "apache2ctl configtest / reload nie przeszedł z nowym handlerem — vhosty przywrócone z $bdir"
+    warn "apache2ctl configtest / reload failed with the new handler — vhosts restored from $bdir"
     return 1
   fi
-  ok "vhosty (${changed[*]}): PHP -> $sock (kopie w $bdir); Apache przeładowany"
+  ok "vhosts (${changed[*]}): PHP -> $sock (backups in $bdir); Apache reloaded"
 }
 
 # Sekcja 1b: użytkownik systemowy, katalog sesji, plik puli (php-fpm -t), reload php-fpm, własność plików dla puli,
@@ -275,18 +276,18 @@ switch_vhosts() {
 setup_pool() {
   local svc="php$PHP_VER-fpm" conf sock sess tmp bdir i
   conf=$(pool_conf); sock=$(pool_sock); sess="/var/lib/php/sessions-$PANEL_USER"
-  command -v "php-fpm$PHP_VER" >/dev/null || { warn "brak php-fpm$PHP_VER w PATH"; return 1; }
+  command -v "php-fpm$PHP_VER" >/dev/null || { warn "php-fpm$PHP_VER not found in PATH"; return 1; }
   if ! id -u "$PANEL_USER" >/dev/null 2>&1; then
     useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$PANEL_USER" \
-      || { warn "useradd $PANEL_USER nie powiódł się"; return 1; }
-    ok "użytkownik systemowy $PANEL_USER (bez powłoki, bez katalogu domowego)"
+      || { warn "useradd $PANEL_USER failed"; return 1; }
+    ok "system user $PANEL_USER (no shell, no home directory)"
   fi
   install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 700 "$sess" || return 1
   tmp=$(mktemp)
   render_template "$SRC/system/php-fpm/roundcontrol-pool.conf" @POOL@ "$PANEL_USER" | render_template - @PANEL_USER@ "$PANEL_USER" \
     | render_template - @APACHE_USER@ "$APACHE_USER" | render_template - @SOCKET@ "$sock" | render_template - @SESSION_DIR@ "$sess" > "$tmp"
   if [ -f "$conf" ] && cmp -s "$tmp" "$conf"; then
-    ok "pula $conf bez zmian"
+    ok "pool $conf unchanged"
   else
     bdir="$RC_BACKUP_ROOT/roundcontrol-pool-backup-$(date +%Y%m%d%H%M%S)"
     mkdir -p "$bdir"; [ -f "$conf" ] && cp -p "$conf" "$bdir/"
@@ -295,18 +296,18 @@ setup_pool() {
       if [ -f "$bdir/$(basename "$conf")" ]; then cp -p "$bdir/$(basename "$conf")" "$conf"; else rm -f "$conf"; fi
       systemctl reload "$svc" >/dev/null 2>&1
       rm -f "$tmp"
-      warn "php-fpm$PHP_VER -t / reload odrzuca nową pulę — przywrócono poprzedni stan ($("php-fpm$PHP_VER" -t 2>&1 | tail -1))"
+      warn "php-fpm$PHP_VER -t / reload rejects the new pool — previous state restored ($("php-fpm$PHP_VER" -t 2>&1 | tail -1))"
       return 1
     fi
-    ok "pula [$PANEL_USER]: $conf (gniazdo $sock, sesje $sess)"
+    ok "pool [$PANEL_USER]: $conf (socket $sock, sessions $sess)"
   fi
   rm -f "$tmp"
   for i in $(seq 1 20); do [ -S "$sock" ] && break; sleep 0.5; done
-  [ -S "$sock" ] || { warn "gniazdo $sock nie powstało po przeładowaniu $svc"; return 1; }
+  [ -S "$sock" ] || { warn "socket $sock did not appear after reloading $svc"; return 1; }
   runtime_ownership "$PANEL_USER"
   if ! switch_vhosts "$sock"; then
     runtime_ownership "$APACHE_USER"
-    warn "własność plików wróciła do $APACHE_USER (Roundcube działa dalej we wspólnej puli)"
+    warn "file ownership went back to $APACHE_USER (Roundcube keeps running in the shared pool)"
     return 1
   fi
   return 0
@@ -320,10 +321,10 @@ setup_pool() {
 install_sudoers_file() {
   local src=$1 dst=/etc/sudoers.d/mailpanel stage=/etc/sudoers.d/mailpanel.rc-new prev="" why
   if ! visudo -c >/dev/null 2>&1; then
-    warn "visudo -c zgłasza błąd JUŻ PRZED zmianą — nie ruszam sudoers, najpierw napraw: visudo -c"
+    warn "visudo -c reports an error BEFORE any change — not touching sudoers, fix it first: visudo -c"
     return 1
   fi
-  visudo -cf "$src" >/dev/null 2>&1 || { warn "visudo -cf odrzuca plik reguł ($src)"; return 1; }
+  visudo -cf "$src" >/dev/null 2>&1 || { warn "visudo -cf rejects the rules file ($src)"; return 1; }
   install -o root -g root -m 440 "$src" "$stage" || { rm -f "$stage"; return 1; }
   if [ -f "$dst" ]; then
     prev=$(mktemp /root/sudoers-mailpanel.prev.XXXXXX) && cp -p "$dst" "$prev" || { rm -f "$stage"; return 1; }
@@ -335,45 +336,45 @@ install_sudoers_file() {
   fi
   why=$(visudo -c 2>&1 | grep -v -E 'parsed OK$' | head -3 | tr '\n' ' ')
   if [ -n "$prev" ]; then cp -p "$prev" "$dst" && rm -f "$prev"; else rm -f "$dst"; fi
-  warn "z nowym plikiem CAŁA konfiguracja sudo nie przechodzi visudo -c — przywrócono poprzedni stan. Powód: $why"
-  visudo -c >/dev/null 2>&1 || warn "UWAGA: visudo -c nadal zgłasza błąd — napraw to TERAZ, zanim zamkniesz powłokę roota"
+  warn "with the new file the WHOLE sudo configuration fails visudo -c — previous state restored. Reason: $why"
+  visudo -c >/dev/null 2>&1 || warn "WARNING: visudo -c still reports an error — fix it NOW, before you close the root shell"
   return 1
 }
 
-[ "$(id -u)" -eq 0 ] || die "Uruchom jako root (sudo bash install.sh)."
-[[ "$PANEL_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "PANEL_USER='$PANEL_USER' to nie jest zwykła nazwa użytkownika."
-[[ "$APACHE_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "APACHE_USER='$APACHE_USER' to nie jest zwykła nazwa użytkownika."
-id -u "$APACHE_USER" >/dev/null 2>&1 || die "Użytkownik Apache '$APACHE_USER' nie istnieje (ustaw APACHE_USER=...)."
-case "$PANEL_USER" in root|daemon|nobody|bin|sys|vmail|dovecot|postfix|mysql) die "PANEL_USER=$PANEL_USER — wybierz osobnego użytkownika (np. mailweb).";; esac
+[ "$(id -u)" -eq 0 ] || die "Run as root (sudo bash install.sh)."
+[[ "$PANEL_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "PANEL_USER='$PANEL_USER' is not a plain user name."
+[[ "$APACHE_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "APACHE_USER='$APACHE_USER' is not a plain user name."
+id -u "$APACHE_USER" >/dev/null 2>&1 || die "The Apache user '$APACHE_USER' does not exist (set APACHE_USER=...)."
+case "$PANEL_USER" in root|daemon|nobody|bin|sys|vmail|dovecot|postfix|mysql) die "PANEL_USER=$PANEL_USER — choose a separate user (e.g. mailweb).";; esac
 [ -n "$PHP_VER" ] || PHP_VER=$(detect_php_ver || true)
-[ -z "$PHP_VER" ] || [[ "$PHP_VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "PHP_VER='$PHP_VER' — oczekiwane np. 8.5"
-[[ "$RC_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "RC_DIR='$RC_DIR' musi być ścieżką bezwzględną bez spacji i znaków specjalnych."
-[ -d "$RC_DIR" ] || die "Nie znaleziono $RC_DIR (ustaw RC_DIR=... jeśli inna ścieżka)."
-command -v mysql >/dev/null || warn "Brak klienta mysql w PATH — sekcje 0/4/5/6 wymagają MariaDB/MySQL."
+[ -z "$PHP_VER" ] || [[ "$PHP_VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "PHP_VER='$PHP_VER' — expected e.g. 8.5"
+[[ "$RC_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "RC_DIR='$RC_DIR' must be an absolute path without spaces or special characters."
+[ -d "$RC_DIR" ] || die "$RC_DIR not found (set RC_DIR=... if the path is different)."
+command -v mysql >/dev/null || warn "mysql client not found in PATH — sections 0/4/5/6 need MariaDB/MySQL."
 
 # Skrypt celuje w Debiana 13 (składnia Dovecot 2.4 itd.) — na innym systemie
 # tylko ostrzegamy, decyzja należy do operatora.
 if [ -r /etc/os-release ]; then
   . /etc/os-release
   if [ "${ID:-}" != "debian" ] || [ "${VERSION_ID:-}" != "13" ]; then
-    warn "Wykryto: ${PRETTY_NAME:-nieznany system}. Instalator jest testowany na Debianie 13."
-    ask "Kontynuować mimo to" || die "Przerwano."
+    warn "Detected: ${PRETTY_NAME:-unknown system}. The installer is tested on Debian 13."
+    ask "Continue anyway" || die "Aborted."
   fi
 fi
 
-echo -e "${c_b}  Panel Roundcube — integracje systemowe${c_rst}"
+echo -e "${c_b}  Roundcube panel — system integrations${c_rst}"
 hr
 set_run_user
-echo "Roundcube: $RC_DIR   |   pula PHP panelu: $PANEL_USER   |   Apache: $APACHE_USER   |   PHP-FPM: ${PHP_VER:-nie wykryto}"
-echo "PHP Roundcube działa teraz jako: $RUN_USER"
+echo "Roundcube: $RC_DIR   |   panel PHP pool: $PANEL_USER   |   Apache: $APACHE_USER   |   PHP-FPM: ${PHP_VER:-not detected}"
+echo "Roundcube PHP is currently running as: $RUN_USER"
 hr
 
 declare -A NEWPW=()   # hasła kont DB utworzonych w tym uruchomieniu (nigdzie indziej nie są zapisane)
 
 # --- 0. Baza danych (mailserver + konta + schemat + granty) ---
-if ask "0) Utworzyć bazę mailserver, konta mailuser/mailpanel/mailpostlogin, zaimportować schemat i nadać granty"; then
+if ask "0) Create the mailserver database and the mailuser/mailpanel/mailpostlogin accounts, import the schema and set the grants"; then
   if ! mysql -e 'SELECT 1' >/dev/null 2>&1; then
-    warn "klient mysql nie łączy się jako root (socket) — pomijam sekcję 0."
+    warn "the mysql client cannot connect as root (socket) — skipping section 0."
   else
     S0=1
     run_sql "CREATE DATABASE IF NOT EXISTS mailserver CHARACTER SET utf8mb4;" || S0=0
@@ -381,7 +382,7 @@ if ask "0) Utworzyć bazę mailserver, konta mailuser/mailpanel/mailpostlogin, z
     # niżej — to jedyne miejsce, gdzie je zobaczysz. (1.0.x robiło ALTER USER przy każdym uruchomieniu.)
     for u in mailuser mailpanel mailpostlogin; do
       if db_user_exists "$u"; then
-        ok "konto DB $u istnieje — hasło i (dla mailuser) granty bez zmian"
+        ok "DB account $u exists — password and (for mailuser) grants unchanged"
       else
         pw=$(gen_pw)
         if run_sql "CREATE USER '$u'@'localhost' IDENTIFIED BY '$pw';"; then
@@ -394,41 +395,41 @@ if ask "0) Utworzyć bazę mailserver, konta mailuser/mailpanel/mailpostlogin, z
     if [ "$S0" -eq 1 ] && [ -f "$SRC/sql/panel_schema.sql" ]; then
       ERRF=$(mktemp)
       if mysql mailserver < "$SRC/sql/panel_schema.sql" 2>"$ERRF"; then
-        ok "schemat panel_schema.sql zaimportowany (IF NOT EXISTS — istniejące dane nietknięte)"
+        ok "schema panel_schema.sql imported (IF NOT EXISTS — existing data untouched)"
         if [ -n "${NEWPW[mailuser]:-}" ]; then
           run_sql "GRANT SELECT ON mailserver.virtual_domains TO 'mailuser'@'localhost';
 GRANT SELECT ON mailserver.virtual_users   TO 'mailuser'@'localhost';
 GRANT SELECT ON mailserver.virtual_aliases TO 'mailuser'@'localhost';
-FLUSH PRIVILEGES;" && ok "nowe konto mailuser: SELECT na virtual_domains / virtual_users / virtual_aliases"
+FLUSH PRIVILEGES;" && ok "new mailuser account: SELECT on virtual_domains / virtual_users / virtual_aliases"
         fi
         # granty aplikacji: per tabela, odbierane i nadawane od nowa (idempotentnie; to również sposób na zawężenie istniejącego konta)
         if mysql < "$SRC/sql/panel_grants.sql" 2>"$ERRF"; then
-          ok "granty mailpanel (sql/panel_grants.sql): per tabela, bez praw do aliasów INSERT/UPDATE"
+          ok "mailpanel grants (sql/panel_grants.sql): per table, no INSERT/UPDATE rights on aliases"
         else
-          warn "sql/panel_grants.sql nie przeszedł: $(head -1 "$ERRF")"
+          warn "sql/panel_grants.sql failed: $(head -1 "$ERRF")"
         fi
         if mysql < "$SRC/sql/postlogin_grants.sql" 2>"$ERRF"; then
-          ok "granty mailpostlogin: tylko EXECUTE na sp_register_login"
+          ok "mailpostlogin grants: only EXECUTE on sp_register_login"
         else
-          warn "sql/postlogin_grants.sql nie przeszedł: $(head -1 "$ERRF")"
+          warn "sql/postlogin_grants.sql failed: $(head -1 "$ERRF")"
         fi
       else
-        warn "import schematu nie przeszedł: $(head -1 "$ERRF")"
+        warn "schema import failed: $(head -1 "$ERRF")"
       fi
       rm -f "$ERRF"
     elif [ "$S0" -eq 1 ]; then
-      warn "Brak $SRC/sql/panel_schema.sql — schemat zaimportuj ręcznie, potem sql/panel_grants.sql i sql/postlogin_grants.sql."
+      warn "Missing $SRC/sql/panel_schema.sql — import the schema by hand, then sql/panel_grants.sql and sql/postlogin_grants.sql."
     fi
-    [ -n "${NEWPW[mailuser]:-}" ]      && warn "NOWE hasło mailuser (wpisz w /etc/postfix/mysql-virtual-*.cf i dovecot.conf): ${NEWPW[mailuser]}"
-    [ -n "${NEWPW[mailpanel]:-}" ]     && warn "NOWE hasło mailpanel (podasz w install.php / wpiszesz w .env jako PANEL_DB_PASS): ${NEWPW[mailpanel]}"
-    [ -n "${NEWPW[mailpostlogin]:-}" ] && ok "nowe konto mailpostlogin — jego hasło zapisze sekcja 6 do /etc/dovecot/mysql-mailpanel.cnf"
-    [ "${#NEWPW[@]}" -gt 0 ] && warn "Hasła wyżej są pokazane TYLKO TERAZ (poza mailpostlogin, które trafia do pliku w sekcji 6)."
+    [ -n "${NEWPW[mailuser]:-}" ]      && warn "NEW mailuser password (put it in /etc/postfix/mysql-virtual-*.cf and dovecot.conf): ${NEWPW[mailuser]}"
+    [ -n "${NEWPW[mailpanel]:-}" ]     && warn "NEW mailpanel password (enter it in install.php / put it in .env as PANEL_DB_PASS): ${NEWPW[mailpanel]}"
+    [ -n "${NEWPW[mailpostlogin]:-}" ] && ok "new mailpostlogin account — section 6 will save its password to /etc/dovecot/mysql-mailpanel.cnf"
+    [ "${#NEWPW[@]}" -gt 0 ] && warn "The passwords above are shown ONLY NOW (except mailpostlogin, whose password goes to a file in section 6)."
   fi
 fi
 hr
 
 # --- 1. Skrypty /usr/local/bin ---
-if ask "1) Zainstalować skrypty do /usr/local/bin"; then
+if ask "1) Install the scripts to /usr/local/bin"; then
   install -o root -g root -m 755 "$SRC/scripts/mailpanel-scan.sh"         /usr/local/bin/ && ok "mailpanel-scan.sh (755)"
   install -o root -g root -m 700 "$SRC/scripts/mailpanel-delete-user.sh"  /usr/local/bin/ && ok "mailpanel-delete-user.sh (700)"
   install -o root -g root -m 755 "$SRC/scripts/update-postfix-limits.sh"  /usr/local/bin/ && ok "update-postfix-limits.sh (755)"
@@ -436,7 +437,7 @@ if ask "1) Zainstalować skrypty do /usr/local/bin"; then
   if getent group dovecot >/dev/null; then
     install -o root -g dovecot -m 750 "$SRC/scripts/dovecot-postlogin.sh" /usr/local/bin/ && ok "dovecot-postlogin.sh (750 root:dovecot)"
   else
-    install -o root -g root -m 755 "$SRC/scripts/dovecot-postlogin.sh"    /usr/local/bin/ && warn "dovecot-postlogin.sh (grupa dovecot nie istnieje)"
+    install -o root -g root -m 755 "$SRC/scripts/dovecot-postlogin.sh"    /usr/local/bin/ && warn "dovecot-postlogin.sh (the dovecot group does not exist)"
   fi
 fi
 
@@ -446,40 +447,40 @@ fi
 # root:$PANEL_USER 640, reguły sudo dla $PANEL_USER, sesje w /var/lib/php/sessions-$PANEL_USER. Inne strony bez zmian.
 hr
 if pool_ready; then
-  ok "1b) osobna pula [$PANEL_USER] już działa ($(pool_conf), vhost -> $(pool_sock))"
-  if ask "   Odświeżyć ją (plik puli z szablonu, własność plików, handler w vhostach)"; then
-    setup_pool || warn "odświeżenie puli nie powiodło się (komunikaty wyżej)"
+  ok "1b) the separate pool [$PANEL_USER] is already running ($(pool_conf), vhost -> $(pool_sock))"
+  if ask "   Refresh it (pool file from the template, file ownership, handler in the vhosts)"; then
+    setup_pool || warn "refreshing the pool failed (see the messages above)"
   fi
 elif [ "$PANEL_USER" = "$APACHE_USER" ]; then
-  warn "1b) PANEL_USER=$PANEL_USER to użytkownik Apache — Roundcube i panel zostają we wspólnej puli (bez osobnej puli)"
+  warn "1b) PANEL_USER=$PANEL_USER is the Apache user — Roundcube and the panel stay in the shared pool (no separate pool)"
 elif [ -z "$PHP_VER" ]; then
-  warn "1b) nie wykryto wersji PHP-FPM (/etc/php/*/fpm) — ustaw PHP_VER=8.x; Roundcube zostaje we wspólnej puli"
-elif ask "1b) Utworzyć osobną pulę PHP-FPM [$PANEL_USER] dla Roundcube i panelu i przełączyć na nią vhost(y) Apache"; then
-  setup_pool || warn "osobna pula NIE została włączona — Roundcube działa dalej we wspólnej puli (komunikaty wyżej)"
+  warn "1b) PHP-FPM version not detected (/etc/php/*/fpm) — set PHP_VER=8.x; Roundcube stays in the shared pool"
+elif ask "1b) Create a separate PHP-FPM pool [$PANEL_USER] for Roundcube and the panel and switch the Apache vhost(s) to it"; then
+  setup_pool || warn "the separate pool was NOT enabled — Roundcube keeps running in the shared pool (see the messages above)"
 fi
 set_run_user
-ok "PHP Roundcube i panelu działa jako: $RUN_USER (ten użytkownik dostaje reguły sudo, sekrety i katalogi zapisu)"
+ok "PHP of Roundcube and the panel runs as: $RUN_USER (this user gets the sudo rules, the secrets and the write directories)"
 
 # --- 2. sudoers ---
 hr
-if ask "2) Zainstalować helper Fail2Ban i reguły sudoers dla $RUN_USER (/etc/sudoers.d/mailpanel), usunąć stare reguły z wildcardami"; then
+if ask "2) Install the Fail2Ban helper and the sudoers rules for $RUN_USER (/etc/sudoers.d/mailpanel), remove the old rules with wildcards"; then
   # Reguły mają DOKŁADNE argumenty (^regex$) — wymagają sudo >= 1.9.10 (Debian 13: 1.9.16).
   # Starsze sudo traktuje ^...$ dosłownie, więc nic by nie pasowało; nie instalujemy wtedy niczego.
   SV=$(sudo -V 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
   if [ -z "$SV" ] || [ "$(printf '%s\n1.9.10\n' "$SV" | sort -V | head -1)" != "1.9.10" ]; then
-    warn "sudo ${SV:-nieznane} < 1.9.10 — brak argumentów ^regex\$; sudoers NIE zainstalowany (zaktualizuj sudo)"
+    warn "sudo ${SV:-unknown} < 1.9.10 — no ^regex\$ arguments; sudoers NOT installed (upgrade sudo)"
   elif install_f2b_helper; then   # helper najpierw — reguła sudoers wskazuje na niego
     # jedyna zmienna linia pliku: User_Alias z użytkownikiem, który NAPRAWDĘ wykonuje PHP panelu (sekcja 1b)
     tmp=$(mktemp)
     render_template "$SRC/system/sudoers.d/mailpanel" "User_Alias ROUNDCONTROL_USER = mailweb" "User_Alias ROUNDCONTROL_USER = $RUN_USER" > "$tmp"
     SUDOERS_OK=0
     if ! grep -qx "User_Alias ROUNDCONTROL_USER = $RUN_USER" "$tmp"; then
-      warn "nie znalazłem linii User_Alias w $SRC/system/sudoers.d/mailpanel — sudoers NIE zainstalowany"
+      warn "no User_Alias line found in $SRC/system/sudoers.d/mailpanel — sudoers NOT installed"
     elif install_sudoers_file "$tmp"; then
       SUDOERS_OK=1
-      ok "sudoers dla $RUN_USER zainstalowany: plik (visudo -cf) i CAŁA konfiguracja (visudo -c) poprawne; dokładne argumenty"
+      ok "sudoers for $RUN_USER installed: the file (visudo -cf) and the WHOLE configuration (visudo -c) are valid; exact arguments"
     else
-      warn "sudoers NIE zainstalowany (patrz komunikat wyżej; sprawdź $SRC/system/sudoers.d/mailpanel i: visudo -c)"
+      warn "sudoers NOT installed (see the message above; check $SRC/system/sudoers.d/mailpanel and: visudo -c)"
     fi
     rm -f "$tmp"
     # sudo przyznaje polecenie, gdy pasuje KTÓRAKOLWIEK reguła: jedna stara reguła z wildcardem (1.0: fail2ban-client,
@@ -490,40 +491,40 @@ if ask "2) Zainstalować helper Fail2Ban i reguły sudoers dla $RUN_USER (/etc/s
       for CU in $(printf '%s\n' "$APACHE_USER" "$RUN_USER" | sort -u); do
         OLD=$(WEB_USER="$CU" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" 2>&1); rc=$?
         if [ "$rc" -ne 0 ]; then
-          echo -e "${c_red}✗ STARE reguły sudo panelu dla $CU poza /etc/sudoers.d/mailpanel — wildcardy dają drogę do roota:${c_rst}"
+          echo -e "${c_red}✗ OLD panel sudo rules for $CU outside /etc/sudoers.d/mailpanel — wildcards give a path to root:${c_rst}"
           echo "$OLD" | sed 's/^/     /'
-          if ask "   Zakomentować je teraz (kopie w /root/sudoers-backup-*; każdy plik i cała konfiguracja walidowane visudo)"; then
-            WEB_USER="$CU" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" --apply || warn "część reguł wymaga ręcznej edycji (visudo) — patrz wyżej"
+          if ask "   Comment them out now (backups in /root/sudoers-backup-*; every file and the whole configuration validated by visudo)"; then
+            WEB_USER="$CU" bash "$SRC/scripts/mailpanel-sudoers-cleanup.sh" --apply || warn "some rules need manual editing (visudo) — see above"
           fi
         else
-          ok "brak starych reguł sudo panelu dla $CU poza /etc/sudoers.d/mailpanel"
+          ok "no old panel sudo rules for $CU outside /etc/sudoers.d/mailpanel"
         fi
       done
     else
-      warn "Nowy plik sudoers nie został zainstalowany, więc starych reguł nie ruszam."
+      warn "The new sudoers file was not installed, so I am not touching the old rules."
     fi
   else
-    warn "Instalacja helpera Fail2Ban nie powiodła się — sudoers NIE zainstalowany."
+    warn "Installing the Fail2Ban helper failed — sudoers NOT installed."
   fi
 fi
 
 # --- 3. Fail2Ban ---
 hr
-if ask "3) Skonfigurować Fail2Ban (filtry + jaile panelu)"; then
+if ask "3) Configure Fail2Ban (panel filters + jails)"; then
   install -o root -g root -m 644 "$SRC/system/fail2ban/filter.d/panel-permaban.conf" /etc/fail2ban/filter.d/ && ok "filter panel-permaban"
   install -o root -g root -m 644 "$SRC/system/fail2ban/filter.d/panel-tempban.conf"  /etc/fail2ban/filter.d/ && ok "filter panel-tempban"
-  install -o root -g root -m 644 "$SRC/system/fail2ban/filter.d/mailpanel-portal.conf" /etc/fail2ban/filter.d/ && ok "filter mailpanel-portal (jail domyślnie wyłączony)"
+  install -o root -g root -m 644 "$SRC/system/fail2ban/filter.d/mailpanel-portal.conf" /etc/fail2ban/filter.d/ && ok "filter mailpanel-portal (jail disabled by default)"
   [ -f /etc/fail2ban/filter.d/roundcube-auth.conf ] || install -o root -g root -m 644 "$SRC/system/fail2ban/filter.d/roundcube-auth.conf" /etc/fail2ban/filter.d/
   touch /var/log/mailpanel-permaban.log /var/log/mailpanel-tempban.log
-  ok "logi permaban/tempban gotowe"
+  ok "permaban/tempban logs ready"
 
   # Jaile panelu żyją w OSOBNYM pliku jail.d/ — nadpisanie = idempotencja,
   # jail.local zostaje czysty dla jaili standardowych (edytowanych z panelu).
   if [ -f /etc/fail2ban/jail.local ] && grep -q '\[panel-permaban\]' /etc/fail2ban/jail.local; then
-    warn "jaile panelu są (legacy) w jail.local — zostawiam; rozważ przeniesienie do jail.d/mailpanel.local"
+    warn "the panel jails are (legacy) in jail.local — leaving them there; consider moving them to jail.d/mailpanel.local"
   else
     install -o root -g root -m 644 "$SRC/system/fail2ban/jail.d/mailpanel.local" /etc/fail2ban/jail.d/mailpanel.local
-    ok "jaile panelu: /etc/fail2ban/jail.d/mailpanel.local"
+    ok "panel jails: /etc/fail2ban/jail.d/mailpanel.local"
   fi
 
   # jail.local należy do ROOTA (root:root 644) — panel go nie zapisuje (patrz install_f2b_helper).
@@ -532,16 +533,16 @@ if ask "3) Skonfigurować Fail2Ban (filtry + jaile panelu)"; then
     install_f2b_helper
     chown root:root /etc/fail2ban/jail.local && chmod 644 /etc/fail2ban/jail.local
     for b in /etc/fail2ban/jail.local.bak-*; do [ -e "$b" ] && chown root:root "$b" && chmod 600 "$b"; done
-    ok "jail.local: root:root 644 (panel tylko proponuje zmiany; zapisuje je helper mailpanel-f2b-apply)"
+    ok "jail.local: root:root 644 (the panel only proposes changes; the mailpanel-f2b-apply helper writes them)"
   else
-    warn "Brak /etc/fail2ban/jail.local — utwórz wg README (jaile sshd/dovecot/postfix-sasl/roundcube-auth/recidive), jako root:root 644."
+    warn "Missing /etc/fail2ban/jail.local — create it following the README (jails sshd/dovecot/postfix-sasl/roundcube-auth/recidive), as root:root 644."
   fi
 
   if command -v fail2ban-client >/dev/null; then
     if fail2ban-client -t >/dev/null 2>&1; then
-      fail2ban-client reload >/dev/null 2>&1 && ok "konfiguracja poprawna, fail2ban przeładowany"
+      fail2ban-client reload >/dev/null 2>&1 && ok "configuration valid, fail2ban reloaded"
     else
-      warn "fail2ban-client -t zgłasza błąd konfiguracji — NIE przeładowano (sprawdź: fail2ban-client -t)"
+      warn "fail2ban-client -t reports a configuration error — NOT reloaded (check: fail2ban-client -t)"
     fi
   fi
 
@@ -552,21 +553,21 @@ if ask "3) Skonfigurować Fail2Ban (filtry + jaile panelu)"; then
       R=$(systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/fail2ban/jail.local \
             /usr/local/sbin/mailpanel-f2b-apply --selftest 2>&1)
       if [ "$R" = "selftest ok" ]; then
-        ok "helper pod sandboxem php-fpm (ProtectSystem=full, ReadWritePaths=jail.local): zapis w miejscu + kopie zapasowe działają"
+        ok "helper under the php-fpm sandbox (ProtectSystem=full, ReadWritePaths=jail.local): in-place write + backups work"
       else
-        warn "helper pod sandboxem NIE przeszedł selftestu: ${R:-brak odpowiedzi}"
+        warn "helper under the sandbox did NOT pass the selftest: ${R:-no response}"
       fi
     else
-      warn "brak systemd-run — pominięto test helpera pod sandboxem php-fpm"
+      warn "systemd-run not found — skipped testing the helper under the php-fpm sandbox"
     fi
-    # (b) przez sudo jako użytkownik panelu: propozycja identyczna z jail.local => "bez zmian" (nic nie zapisuje).
+    # (b) przez sudo jako użytkownik panelu: propozycja identyczna z jail.local => "unchanged" (przed 1.3.1: "bez zmian"; nic nie zapisuje).
     #     Sprawdza regułę sudoers, argumenty (""), czytanie ze stdin i uprawnienia.
     if grep -q 'mailpanel-f2b-apply' /etc/sudoers.d/mailpanel 2>/dev/null; then
       R=$(sudo -u "$RUN_USER" sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local 2>&1)
-      if [ "$R" = "bez zmian" ]; then
-        ok "test helpera jako $RUN_USER przez sudo: 'bez zmian' (sudoers + helper + stdin działają)"
+      if [ "$R" = "unchanged" ] || [ "$R" = "bez zmian" ]; then   # "bez zmian" = output of helpers before 1.3.1
+        ok "helper test as $RUN_USER via sudo: 'unchanged' (sudoers + helper + stdin work)"
       else
-        warn "test helpera jako $RUN_USER nie przeszedł: ${R:-brak odpowiedzi} (sprawdź krok 2 i: sudo -l -U $RUN_USER)"
+        warn "helper test as $RUN_USER did not pass: ${R:-no response} (check step 2 and: sudo -l -U $RUN_USER)"
       fi
     fi
   fi
@@ -574,21 +575,21 @@ fi
 
 # --- 4. Policy service (dzienny limit wysyłki) ---
 hr
-if ask "4) Zainstalować policy service (dzienny limit wysyłki — liczy odbiorców)"; then
+if ask "4) Install the policy service (daily sending limit — counts recipients)"; then
   # Idempotencja: istniejące hasło z /etc/mailpanel-policy.cf jest używane ponownie (po sprawdzeniu kształtu), konto
   # DB istniejące — nietknięte. Nowe konto/hasło tylko, gdy ich brak.
   PW=""
   if [ -f /etc/mailpanel-policy.cf ]; then
     PW=$(file_kv /etc/mailpanel-policy.cf password || true)
     if [ -n "$PW" ] && ! valid_secret "$PW"; then
-      warn "hasło w /etc/mailpanel-policy.cf ma niedozwolone znaki (dozwolone: A-Za-z0-9._~+-, 16-128) — NIE używam go, trzeba nowego"
+      warn "the password in /etc/mailpanel-policy.cf contains disallowed characters (allowed: A-Za-z0-9._~+-, 16-128) — NOT using it, a new one is needed"
       PW=""
     fi
   fi
   POLICY_OK=1
   if db_user_exists mailpolicy; then
     if [ -z "$PW" ]; then
-      if ask "   konto DB mailpolicy istnieje, ale nie znam jego hasła — ustawić nowe (jedyny użytkownik: plik, który zaraz zapiszę)"; then
+      if ask "   DB account mailpolicy exists, but I do not know its password — set a new one (its only user: the file I am about to write)"; then
         PW=$(gen_pw)
         run_sql "ALTER USER 'mailpolicy'@'localhost' IDENTIFIED BY '$PW';" || POLICY_OK=0
       else
@@ -603,7 +604,7 @@ if ask "4) Zainstalować policy service (dzienny limit wysyłki — liczy odbior
 GRANT SELECT ON mailserver.app_settings  TO 'mailpolicy'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON mailserver.send_counters TO 'mailpolicy'@'localhost';
 FLUSH PRIVILEGES;"; then
-    ok "użytkownik DB mailpolicy + granty"
+    ok "DB user mailpolicy + grants"
     if [ ! -f /etc/mailpanel-policy.cf ] || [ "$(file_kv /etc/mailpanel-policy.cf password || true)" != "$PW" ]; then
       [ -f /etc/mailpanel-policy.cf ] && cp -p /etc/mailpanel-policy.cf "/etc/mailpanel-policy.cf.bak-$(date +%s)"
       ( umask 077; render_template "$SRC/system/mailpanel-policy.cf.example" HASLO_MAILPOLICY "$PW" > /etc/mailpanel-policy.cf.new ) \
@@ -612,18 +613,18 @@ FLUSH PRIVILEGES;"; then
     chown root:nogroup /etc/mailpanel-policy.cf && chmod 640 /etc/mailpanel-policy.cf
     ok "/etc/mailpanel-policy.cf (640 root:nogroup)"
     install -o root -g root -m 755 "$SRC/scripts/mailpanel-policy-daily.php" /usr/local/bin/
-    echo "   Postfix: dokończ ręcznie wg system/postfix/master.cf.snippet:"
-    echo "     - w submission/submissions dopisz  -o smtpd_data_restrictions=\$mua_data_restrictions  oraz  -o smtpd_recipient_limit=50"
+    echo "   Postfix: finish by hand following system/postfix/master.cf.snippet:"
+    echo "     - in submission/submissions add  -o smtpd_data_restrictions=\$mua_data_restrictions  and  -o smtpd_recipient_limit=50"
     echo "     - main.cf: mua_data_restrictions = reject_unauth_pipelining, check_policy_service unix:private/policy-daily"
-    echo "     - master.cf: usługa spawn policy-daily"
-    echo "     - Roundcube musi wysyłać przez 587 z uwierzytelnieniem (smtp_host tls://localhost:587, smtp_user %u)"
+    echo "     - master.cf: the spawn service policy-daily"
+    echo "     - Roundcube must send through 587 with authentication (smtp_host tls://localhost:587, smtp_user %u)"
     echo "     - postfix check && systemctl reload postfix"
   fi
 fi
 
 # --- 5. Plugin password (samoobsługa zmiany hasła) ---
 hr
-if ask "5) Skonfigurować plugin 'password' (zmiana hasła w webmailu)"; then
+if ask "5) Configure the 'password' plugin (password change in webmail)"; then
   PCFG="$RC_DIR/plugins/password/config.inc.php"
   if [ -d "$RC_DIR/plugins/password" ]; then
     # Idempotencja: hasło z istniejącego config.inc.php jest zachowywane (po sprawdzeniu kształtu).
@@ -631,14 +632,14 @@ if ask "5) Skonfigurować plugin 'password' (zmiana hasła w webmailu)"; then
     if [ -f "$PCFG" ] && [ ! -L "$PCFG" ]; then
       PW=$(grep -oP "mysql://roundcubepw:\K[^@]+" "$PCFG" | head -1 || true)
       if [ -n "$PW" ] && ! valid_secret "$PW"; then
-        warn "hasło w $PCFG ma niedozwolone znaki — NIE używam go"
+        warn "the password in $PCFG contains disallowed characters — NOT using it"
         PW=""
       fi
     fi
     PLUG_OK=1
     if db_user_exists roundcubepw; then
       if [ -z "$PW" ]; then
-        if ask "   konto DB roundcubepw istnieje, ale nie znam jego hasła — ustawić nowe (jedyny użytkownik: plik pluginu)"; then
+        if ask "   DB account roundcubepw exists, but I do not know its password — set a new one (its only user: the plugin file)"; then
           PW=$(gen_pw)
           run_sql "ALTER USER 'roundcubepw'@'localhost' IDENTIFIED BY '$PW';" || PLUG_OK=0
         else
@@ -651,7 +652,7 @@ if ask "5) Skonfigurować plugin 'password' (zmiana hasła w webmailu)"; then
     fi
     if [ "$PLUG_OK" -eq 1 ] && run_sql "GRANT SELECT, UPDATE ON mailserver.virtual_users TO 'roundcubepw'@'localhost';
 FLUSH PRIVILEGES;"; then
-      ok "użytkownik DB roundcubepw + granty"
+      ok "DB user roundcubepw + grants"
       if [ ! -f "$PCFG" ] || ! grep -qF "mysql://roundcubepw:$PW@" "$PCFG"; then
         [ -f "$PCFG" ] && cp -p "$PCFG" "$PCFG.bak-$(date +%s)"
         ( umask 077; render_template "$SRC/plugins/password/config.inc.php.example" SILNE_HASLO_POLICY "$PW" > "$PCFG.new" ) \
@@ -660,59 +661,59 @@ FLUSH PRIVILEGES;"; then
       chown root:"$RUN_USER" "$PCFG" && chmod 640 "$PCFG"
       ok "$PCFG (640 root:$RUN_USER)"
       grep -q "'password'" "$RC_DIR/config/config.inc.php" \
-        && ok "'password' już w \$config['plugins']" \
-        || warn "'password' nie jest w \$config['plugins'] — doda go sekcja 9"
+        && ok "'password' is already in \$config['plugins']" \
+        || warn "'password' is not in \$config['plugins'] — section 9 will add it"
       rm -rf "$RC_DIR/temp/"* 2>/dev/null
     fi
   else
-    warn "Brak $RC_DIR/plugins/password — plugin jest w komplecie Roundcube; zainstaluj Roundcube z pluginami."
+    warn "Missing $RC_DIR/plugins/password — the plugin ships with Roundcube; install Roundcube with its plugins."
   fi
 fi
 
 # --- 6. Rejestracja logowań IMAP/POP3 (dovecot postlogin -> sp_register_login) ---
 hr
-if ask "6) Skonfigurować /etc/dovecot/mysql-mailpanel.cnf (konto mailpostlogin: tylko EXECUTE na jednej procedurze)"; then
+if ask "6) Configure /etc/dovecot/mysql-mailpanel.cnf (mailpostlogin account: EXECUTE on a single procedure only)"; then
   CNF=/etc/dovecot/mysql-mailpanel.cnf
   CUR_USER=""
   [ -f "$CNF" ] && CUR_USER=$(file_kv "$CNF" user || true)
   if [ "$CUR_USER" = "mailpostlogin" ]; then
-    ok "$CNF już używa konta mailpostlogin — bez zmian"
+    ok "$CNF already uses the mailpostlogin account — unchanged"
   else
     # Nowy plik albo MIGRACJA z 1.0.x, gdzie skrypt używał konta `mailpanel` (pełny dostęp do bazy panelu).
-    [ -n "$CUR_USER" ] && warn "$CNF używa konta '$CUR_USER' — przechodzę na mailpostlogin (kopia zapasowa pliku powstanie)"
+    [ -n "$CUR_USER" ] && warn "$CNF uses the account '$CUR_USER' — switching to mailpostlogin (the file will be backed up)"
     PLPW="${NEWPW[mailpostlogin]:-}"
     PL_OK=1
     if [ -z "$PLPW" ]; then
       PLPW=$(gen_pw)
       if db_user_exists mailpostlogin; then
         # konto istnieje, ale jego hasło znał tylko plik, którego nie ma / który zaraz zastępujemy
-        ask "   konto DB mailpostlogin istnieje, ale nie znam jego hasła — ustawić nowe (jedyny użytkownik: ten plik)" \
+        ask "   DB account mailpostlogin exists, but I do not know its password — set a new one (its only user: this file)" \
           && { run_sql "ALTER USER 'mailpostlogin'@'localhost' IDENTIFIED BY '$PLPW';" || PL_OK=0; } || PL_OK=0
       else
         run_sql "CREATE USER 'mailpostlogin'@'localhost' IDENTIFIED BY '$PLPW';" || PL_OK=0
       fi
     fi
     if [ "$PL_OK" -eq 1 ]; then
-      mysql < "$SRC/sql/postlogin_grants.sql" 2>/dev/null || warn "sql/postlogin_grants.sql nie przeszedł (najpierw sekcja 0 — schemat i procedura)"
+      mysql < "$SRC/sql/postlogin_grants.sql" 2>/dev/null || warn "sql/postlogin_grants.sql failed (run section 0 first — schema and procedure)"
       [ -f "$CNF" ] && cp -p "$CNF" "$CNF.bak-$(date +%s)"
       ( umask 077; render_template "$SRC/system/dovecot/mysql-mailpanel.cnf.example" HASLO_MAILPOSTLOGIN "$PLPW" > "$CNF.new" ) \
         && mv "$CNF.new" "$CNF"
       chown dovecot:dovecot "$CNF" && chmod 400 "$CNF"
-      ok "$CNF (400 dovecot:dovecot, konto mailpostlogin)"
+      ok "$CNF (400 dovecot:dovecot, mailpostlogin account)"
       if mysql --defaults-extra-file="$CNF" -e 'SELECT 1' >/dev/null 2>&1; then
-        ok "połączenie z bazą jako mailpostlogin działa"
+        ok "the database connection as mailpostlogin works"
       else
-        warn "połączenie jako mailpostlogin NIE działa — sprawdź konto i $CNF"
+        warn "the connection as mailpostlogin does NOT work — check the account and $CNF"
       fi
     fi
   fi
-  echo "   Pamiętaj o usługach imap-postlogin/pop3-postlogin w /etc/dovecot/dovecot.conf"
-  echo "   (wzorzec: system/dovecot/postlogin.conf.snippet)."
+  echo "   Remember the imap-postlogin/pop3-postlogin services in /etc/dovecot/dovecot.conf"
+  echo "   (template: system/dovecot/postlogin.conf.snippet)."
 fi
 
 # --- 7. Symlinki w webroot + właściciel plików ---
 hr
-if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić właściciela (kod: root, $RUN_USER tylko do odczytu)"; then
+if ask "7) Expose portal/panel/assets in the webroot (public_html) and set the file owner (code: root, read-only for $RUN_USER)"; then
   if [ -d "$RC_DIR/public_html" ]; then
     # Roundcube 1.7: DocumentRoot = public_html. Kod nakładki żyje POZA
     # webrootem — publikujemy tylko punkty wejścia (idempotentne ln -sfn).
@@ -721,9 +722,9 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
       chown -h root:root "$RC_DIR/public_html/$lnk"
     done
     [ -e "$RC_DIR/public_html/.htaccess" ] || ln -sfn "$RC_DIR/.htaccess" "$RC_DIR/public_html/.htaccess"
-    ok "symlinki public_html/{assets,portal.php,panel,.htaccess}"
+    ok "symlinks public_html/{assets,portal.php,panel,.htaccess}"
   else
-    warn "Brak public_html (layout inny niż 1.7?) — pomiń, jeśli pliki są już w webroot."
+    warn "Missing public_html (a layout other than 1.7?) — skip if the files are already in the webroot."
   fi
 
   # Kod nakładki: root:root, katalogi 755, pliki 644. Proces PHP ($RUN_USER) potrzebuje tylko ODCZYTU: gdy kod należy
@@ -738,13 +739,13 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
       chmod 644 "$RC_DIR/$p"
     fi
   done
-  ok "kod nakładki (app assets panel portal.php config/panel_config.php plugins/custom_auth .htaccess): root:root, 755/644"
+  ok "overlay code (app assets panel portal.php config/panel_config.php plugins/custom_auth .htaccess): root:root, 755/644"
 
   # sekrety root:$RUN_USER 640, temp/ logs/ (i log_dir Roundcube poza drzewem) dla $RUN_USER
   runtime_ownership "$RUN_USER"
   secure_secret_copies
 
-  if ask "   Cała reszta Roundcube (program/, vendor/, skins/, plugins/, config/...) też root:root — zapisywalne dla $RUN_USER zostają tylko temp/ i logs/"; then
+  if ask "   The rest of Roundcube (program/, vendor/, skins/, plugins/, config/...) also root:root — only temp/ and logs/ stay writable for $RUN_USER"; then
     chown -R root:root "$RC_DIR"
     runtime_ownership "$RUN_USER"      # chown -R wyżej zabrał je użytkownikowi PHP — oddajemy
     # żaden plik poza temp/ i logs/ nie może być zapisywalny dla grupy ani innych (np. 664 po ręcznych kopiowaniach)
@@ -753,20 +754,20 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
     LEFT=$(find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o ! -type l \
              \( -user "$RUN_USER" -o -user "$APACHE_USER" -o -perm -o+w \) -print 2>/dev/null | head -5)
     if [ -z "$LEFT" ]; then
-      ok "drzewo $RC_DIR: root:root, zapisywalne dla $RUN_USER tylko temp/ i logs/ (find -user/-perm -o+w: puste)"
+      ok "tree $RC_DIR: root:root, only temp/ and logs/ writable for $RUN_USER (find -user/-perm -o+w: empty)"
     else
-      warn "nadal należą do $RUN_USER/$APACHE_USER albo są zapisywalne dla wszystkich: $(echo "$LEFT" | tr '\n' ' ')"
+      warn "still owned by $RUN_USER/$APACHE_USER or writable by everyone: $(echo "$LEFT" | tr '\n' ' ')"
     fi
     # plik 600/640, który należał do użytkownika PHP, jest teraz roota — proces PHP przestaje go czytać
     UNREAD=$(sudo -u "$RUN_USER" find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type f ! -readable \
                ! \( "${SECRET_COPY_NAMES[@]}" \) -print 2>/dev/null | head -5)
     if [ -z "$UNREAD" ]; then
-      ok "$RUN_USER czyta wszystkie pliki drzewa (poza temp/, logs/ i kopiami z sekretami)"
+      ok "$RUN_USER can read every file in the tree (except temp/, logs/ and the copies with secrets)"
     else
-      warn "$RUN_USER NIE może czytać: $(echo "$UNREAD" | tr '\n' ' ') — nadaj grupę: chown root:$RUN_USER <plik> && chmod 640 <plik>"
+      warn "$RUN_USER can NOT read: $(echo "$UNREAD" | tr '\n' ' ') — give it a group: chown root:$RUN_USER <file> && chmod 640 <file>"
     fi
   else
-    warn "reszta Roundcube bez zmian — sprawdź: find $RC_DIR -user $RUN_USER -o -user $APACHE_USER ; find $RC_DIR -perm -o+w"
+    warn "the rest of Roundcube unchanged — check: find $RC_DIR -user $RUN_USER -o -user $APACHE_USER ; find $RC_DIR -perm -o+w"
   fi
 fi
 
@@ -776,26 +777,26 @@ hr
 # drogą zapisu jest helper mailpanel-f2b-apply (root): sprawdza propozycję, robi fail2ban-client -t i sam przeładowuje —
 # timer jest zbędny (i dublował reload po każdym zapisie). Nie instalujemy go już; stary usuwamy (za zgodą).
 if [ -e /etc/systemd/system/mailpanel-f2b-reload.timer ] || [ -e /usr/local/sbin/mailpanel-f2b-reload.php ]; then
-  if ask "8) Usunąć przestarzały timer mailpanel-f2b-reload (reload robi helper mailpanel-f2b-apply)"; then
+  if ask "8) Remove the obsolete timer mailpanel-f2b-reload (the mailpanel-f2b-apply helper does the reload)"; then
     systemctl disable --now mailpanel-f2b-reload.timer >/dev/null 2>&1
     rm -f /etc/systemd/system/mailpanel-f2b-reload.timer /etc/systemd/system/mailpanel-f2b-reload.service \
           /usr/local/sbin/mailpanel-f2b-reload.php /var/lib/mailpanel/f2b_state.json
     rmdir /var/lib/mailpanel 2>/dev/null
     systemctl daemon-reload
-    ok "timer mailpanel-f2b-reload usunięty"
+    ok "timer mailpanel-f2b-reload removed"
   fi
 else
-  ok "8) brak przestarzałego timera mailpanel-f2b-reload — nic do zrobienia"
+  ok "8) no obsolete mailpanel-f2b-reload timer — nothing to do"
 fi
 
 # --- 9. Wpięcie panelu w config.inc.php Roundcube ---
 hr
-if ask "9) Wpiąć panel w config.inc.php (require panel_config.php + plugin 'password')"; then
+if ask "9) Hook the panel into config.inc.php (require panel_config.php + the 'password' plugin)"; then
   CFG="$RC_DIR/config/config.inc.php"
   if [ ! -f "$CFG" ]; then
-    warn "Brak $CFG — najpierw skonfiguruj Roundcube; potem uruchom tę sekcję ponownie."
+    warn "Missing $CFG — configure Roundcube first, then run this section again."
   elif ! command -v php >/dev/null; then
-    warn "Brak php w PATH — wepnij ręcznie wg README (sekcja 5)."
+    warn "php not found in PATH — hook it in by hand following the README (section 5)."
   else
     # Bezpieczna edycja: kopia zapasowa -> zmiana -> walidacja php -l ->
     # przy błędzie automatyczny powrót do kopii. Ręczne przywrócenie:
@@ -804,13 +805,13 @@ if ask "9) Wpiąć panel w config.inc.php (require panel_config.php + plugin 'pa
     cp -a "$CFG" "$BAK"
     CHANGED=0
     if grep -q "panel_config.php" "$CFG"; then
-      ok "require panel_config.php — już wpięty"
+      ok "require panel_config.php — already hooked in"
     else
       printf "\nrequire_once __DIR__ . '/panel_config.php';\n" >> "$CFG"
-      CHANGED=1; ok "dopisano require_once panel_config.php (na końcu pliku)"
+      CHANGED=1; ok "added require_once panel_config.php (at the end of the file)"
     fi
     if grep -q "'password'" "$CFG"; then
-      ok "'password' — już na liście pluginów"
+      ok "'password' — already in the plugin list"
     else
       if RC_CFG="$CFG" php <<'PHP'
 <?php
@@ -825,23 +826,23 @@ if ($cnt !== 1) { exit(1); }
 file_put_contents($f, $n);
 PHP
       then
-        CHANGED=1; ok "dopisano 'password' do \$config['plugins']"
+        CHANGED=1; ok "added 'password' to \$config['plugins']"
       else
-        warn "nie znalazłem \$config['plugins'] w $CFG — dopisz 'password' ręcznie"
+        warn "\$config['plugins'] not found in $CFG — add 'password' by hand"
       fi
     fi
     if php -l "$CFG" >/dev/null 2>&1; then
       if [ "$CHANGED" -eq 1 ]; then
-        ok "składnia OK (php -l); backup: $BAK"
-        echo "   Przywrócenie ręczne w razie potrzeby: cp -a $BAK $CFG"
+        ok "syntax OK (php -l); backup: $BAK"
+        echo "   Manual restore if needed: cp -a $BAK $CFG"
         rm -rf "$RC_DIR/temp/"* 2>/dev/null
       else
-        rm -f "$BAK"; ok "nic do zmiany (backup usunięty)"
+        rm -f "$BAK"; ok "nothing to change (backup removed)"
       fi
     else
       cp -a "$BAK" "$CFG"
-      warn "php -l zgłosił błąd składni — PRZYWRÓCONO oryginał z $BAK."
-      warn "Wepnij ręcznie: require_once + 'password' w plugins (README sekcja 5)."
+      warn "php -l reported a syntax error — the original was RESTORED from $BAK."
+      warn "Hook it in by hand: require_once + 'password' in plugins (README section 5)."
     fi
   fi
 fi
@@ -854,10 +855,10 @@ hr
 # ReadWritePaths zdejmuje tylko montowanie read-only: uprawnienia plików (root:root 644) nadal trzymają www-data z dala.
 # jail.local: dokładnie jeden plik (helper pisze w miejscu); /etc/postfix: cały katalog (postconf -e tworzy plik tymczasowy
 # i robi rename). Zmiana wymaga RESTARTU php-fpm (reload nie buduje namespace od nowa).
-if ask "10) Zainstalować drop-in php-fpm (ReadWritePaths=/etc/fail2ban/jail.local /etc/postfix) i zrestartować php-fpm"; then
+if ask "10) Install the php-fpm drop-in (ReadWritePaths=/etc/fail2ban/jail.local /etc/postfix) and restart php-fpm"; then
   mapfile -t FPM_SVCS < <(systemctl list-unit-files --type=service --no-legend 'php*-fpm.service' 2>/dev/null | awk '{print $1}')
   if [ "${#FPM_SVCS[@]}" -eq 0 ]; then
-    warn "nie znaleziono usługi php*-fpm.service — dodaj drop-in ręcznie (README: php-fpm sandbox)"
+    warn "no php*-fpm.service found — add the drop-in by hand (README: php-fpm sandbox)"
   else
     for svc in "${FPM_SVCS[@]}"; do
       [[ "$svc" =~ ^php[0-9.]*-fpm\.service$ ]] || continue
@@ -870,14 +871,14 @@ if ask "10) Zainstalować drop-in php-fpm (ReadWritePaths=/etc/fail2ban/jail.loc
       ok "$d/mailpanel.conf"
     done
     systemctl daemon-reload
-    if ask "   Zrestartować teraz php-fpm (chwilowe przerwanie obsługi stron na tej puli)"; then
+    if ask "   Restart php-fpm now (page serving on this pool is briefly interrupted)"; then
       for svc in "${FPM_SVCS[@]}"; do
         [[ "$svc" =~ ^php[0-9.]*-fpm\.service$ ]] || continue
-        systemctl restart "$svc" && ok "restart $svc" || warn "restart $svc nie powiódł się"
+        systemctl restart "$svc" && ok "restart $svc" || warn "restart $svc failed"
         echo "   $(systemctl show -p ProtectSystem -p ReadWritePaths "$svc" | tr '\n' ' ')"
       done
     else
-      warn "Drop-in zadziała dopiero po: systemctl restart ${FPM_SVCS[*]}"
+      warn "The drop-in takes effect only after: systemctl restart ${FPM_SVCS[*]}"
     fi
   fi
   # test zapisu main.cf pod takim samym sandboxem (ta sama wartość -> nic się nie zmienia, ale plik jest przepisany)
@@ -886,9 +887,9 @@ if ask "10) Zainstalować drop-in php-fpm (ReadWritePaths=/etc/fail2ban/jail.loc
     if [[ "$CUR" =~ ^[0-9]{1,6}$ ]]; then
       if systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/postfix \
            /usr/sbin/postconf -e "smtpd_client_message_rate_limit=$CUR" >/dev/null 2>&1; then
-        ok "postconf -e pod sandboxem php-fpm (ReadWritePaths=/etc/postfix): zapis main.cf działa"
+        ok "postconf -e under the php-fpm sandbox (ReadWritePaths=/etc/postfix): writing main.cf works"
       else
-        warn "postconf -e pod sandboxem NIE działa — zmiana limitów Postfix z panelu zgłosi błąd"
+        warn "postconf -e under the sandbox does NOT work — changing the Postfix limits from the panel will report an error"
       fi
     fi
   fi
@@ -898,18 +899,18 @@ fi
 hr
 # Czyszczenie robi timer systemd (Debian 13 z tego poradnika nie ma pakietu cron — /etc/cron.daily nikt by nie uruchomił).
 # Wiek wpisu = czas usunięcia zapisany w nazwie katalogu (mv zachowuje mtime skrzynki, więc nie mtime).
-if ask "11) Utworzyć /var/mail/deleted (kwarantanna 700) i timer systemd czyszczący wpisy starsze niż 30 dni"; then
+if ask "11) Create /var/mail/deleted (quarantine, 700) and a systemd timer that purges entries older than 30 days"; then
   install -d -o root -g root -m 700 /var/mail/deleted && ok "/var/mail/deleted (700 root)"
   if install -o root -g root -m 755 "$SRC/scripts/mailpanel-purge-deleted" /usr/local/sbin/mailpanel-purge-deleted \
      && install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-purge-deleted.service" /etc/systemd/system/ \
      && install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-purge-deleted.timer" /etc/systemd/system/ \
      && systemctl daemon-reload && systemctl enable --now mailpanel-purge-deleted.timer >/dev/null 2>&1; then
-    ok "timer mailpanel-purge-deleted (codziennie, Persistent=true; retencja 30 dni — RETENTION_DAYS w /usr/local/sbin/mailpanel-purge-deleted)"
+    ok "timer mailpanel-purge-deleted (daily, Persistent=true; 30-day retention — RETENTION_DAYS in /usr/local/sbin/mailpanel-purge-deleted)"
   else
-    warn "timer mailpanel-purge-deleted NIE działa — sprawdź: systemctl status mailpanel-purge-deleted.timer"
+    warn "timer mailpanel-purge-deleted is NOT working — check: systemctl status mailpanel-purge-deleted.timer"
   fi
   # 1.1.0 przed poprawką kładło skrypt do /etc/cron.daily (bez crona nigdy nie ruszał); stara kopia jest zbędna
-  [ -e /etc/cron.daily/mailpanel-purge-deleted ] && rm -f /etc/cron.daily/mailpanel-purge-deleted && ok "usunięto /etc/cron.daily/mailpanel-purge-deleted"
+  [ -e /etc/cron.daily/mailpanel-purge-deleted ] && rm -f /etc/cron.daily/mailpanel-purge-deleted && ok "removed /etc/cron.daily/mailpanel-purge-deleted"
 fi
 
 # --- 12. Katalog języków dodanych w panelu (1.3.0) ---
@@ -918,25 +919,25 @@ hr
 # to pliki JSON w katalogu DANYCH, do którego pisze wyłącznie użytkownik puli; panel czyta je json_decode — nigdy include.
 # Inne miejsce: LANG_DATA_DIR w .env (wtedy utwórz ten katalog z tymi samymi prawami).
 LANG_DIR=/var/lib/roundcontrol/lang
-if ask "12) Utworzyć $LANG_DIR (języki dodane w panelu; właściciel $RUN_USER, 0750)"; then
+if ask "12) Create $LANG_DIR (languages added in the panel; owner $RUN_USER, 0750)"; then
   if install -d -o root -g root -m 755 /var/lib/roundcontrol && install -d -o "$RUN_USER" -g "$RUN_USER" -m 750 "$LANG_DIR"; then
     ok "$LANG_DIR ($RUN_USER:$RUN_USER 750)"
   else
-    warn "nie udało się utworzyć $LANG_DIR — kopie i wgrywanie języków w panelu zgłoszą błąd (pl i en działają bez niego)"
+    warn "could not create $LANG_DIR — copying and uploading languages in the panel will report an error (pl and en work without it)"
   fi
 fi
 
 hr
-ok "Gotowe. Weryfikacja:"
-echo "   - https://<host>/portal.php  → ekran logowania"
-echo "   - https://<host>/.env  i  /.env.bak  i  /scripts/mailpanel-f2b-apply.php  → 403"
-echo "   - panel: Fail2Ban/Bezpieczeństwo bez czerwonych ostrzeżeń; zapis w zakładce Fail2Ban kończy się komunikatem 'sprawdzona i przeładowana'"
-echo "   - test limitu: nadlimitowa wysyłka SMTP → 554 (limit liczy ODBIORCÓW)"
-echo "   - fail2ban-client status     → jaile panel-permaban / panel-tempban"
-echo "   - stat -c '%A %U:%G' /etc/fail2ban/jail.local  → -rw-r--r-- root:root (panel go nie zapisuje)"
-echo "   - sudo -l -U $RUN_USER  → tylko dokładne reguły ^regex\$ / \"\", bez znaku *"
-[ "$RUN_USER" != "$APACHE_USER" ] && echo "   - sudo -l -U $APACHE_USER  → ŻADNEJ reguły panelu (fail2ban-client, doveadm, mailpanel-*, update-postfix-limits)"
-[ "$RUN_USER" != "$APACHE_USER" ] && echo "   - ps -o user= -C php-fpm${PHP_VER} | sort | uniq -c  → procesy puli $RUN_USER pojawiają się po wejściu na webmail"
-echo "   - find $RC_DIR -user $RUN_USER -o -user $APACHE_USER -o -perm -o+w  → tylko temp/ i logs/"
-echo "   - systemctl list-timers mailpanel-purge-deleted.timer  → codzienne czyszczenie kwarantanny"
-echo "   - stat -c '%A %U:%G' /var/lib/roundcontrol/lang  → drwxr-x--- $RUN_USER:$RUN_USER (języki dodane w panelu)"
+ok "Done. Verification:"
+echo "   - https://<host>/portal.php  → the login screen"
+echo "   - https://<host>/.env  and  /.env.bak  and  /scripts/mailpanel-f2b-apply.php  → 403"
+echo "   - panel: Fail2Ban/Security without red warnings; saving in the Fail2Ban tab ends with a message that the configuration was saved, verified and reloaded"
+echo "   - limit test: an over-limit SMTP send → 554 (the limit counts RECIPIENTS)"
+echo "   - fail2ban-client status     → jails panel-permaban / panel-tempban"
+echo "   - stat -c '%A %U:%G' /etc/fail2ban/jail.local  → -rw-r--r-- root:root (the panel does not write it)"
+echo "   - sudo -l -U $RUN_USER  → only exact ^regex\$ / \"\" rules, no * character"
+[ "$RUN_USER" != "$APACHE_USER" ] && echo "   - sudo -l -U $APACHE_USER  → NO panel rules at all (fail2ban-client, doveadm, mailpanel-*, update-postfix-limits)"
+[ "$RUN_USER" != "$APACHE_USER" ] && echo "   - ps -o user= -C php-fpm${PHP_VER} | sort | uniq -c  → $RUN_USER pool processes appear once you open webmail"
+echo "   - find $RC_DIR -user $RUN_USER -o -user $APACHE_USER -o -perm -o+w  → only temp/ and logs/"
+echo "   - systemctl list-timers mailpanel-purge-deleted.timer  → daily quarantine purge"
+echo "   - stat -c '%A %U:%G' /var/lib/roundcontrol/lang  → drwxr-x--- $RUN_USER:$RUN_USER (languages added in the panel)"

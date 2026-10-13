@@ -10,7 +10,7 @@ declare(strict_types=1);
  */
 
 /** Wersja TryHackX RoundControl (pokazywana WYŁĄCZNIE zalogowanemu administratorowi — w stopce panelu). */
-define('APP_VERSION', '1.3.0');
+define('APP_VERSION', '1.3.1');
 define('APP_ROOT', __DIR__);
 define('PROJECT_ROOT', dirname(__DIR__));
 

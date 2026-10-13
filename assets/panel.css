@@ -203,6 +203,9 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
     font-size: 24px;
 }
 .header-actions { display: flex; align-items: center; gap: 18px; }
+/* język tuż obok motywu */
+.header-tools { display: flex; align-items: center; gap: 8px; }
+.lang-switch-slot { display: contents; }
 .admin-info { font-size: 13.5px; color: var(--text-muted); }
 .admin-info b { color: var(--text-main); }
 .logout-form { margin: 0; display: inline; }
@@ -1282,6 +1285,26 @@ code {
     .sort-hint { display: none; }
     .form-actions .btn, .settings-card .mt-4 .btn { width: 100%; justify-content: center; }
     .pagination-btn { padding: 6px 9px; }
+    /* Obok przycisków zostaje sam adres (etykieta "Zalogowany:" znika, czytnik ekranu nadal ją czyta) */
+    .admin-info { font-size: 0; }
+    .admin-info b { font-size: 13px; }
+    .header-tools { gap: 6px; }
+    /* tabela języków: kolumna paska pokrycia węższa */
+    .lang-cov { min-width: 90px; }
+    .lang-cov-bar { max-width: 60px; }
+    .lang-tool { padding: 12px; }
+}
+/* Telefon poziomo / małe tablety (721–1000 px) — cztery liczniki w jednym rzędzie zamiast 3 + 1 */
+@media (min-width: 721px) and (max-width: 1000px) {
+    .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .stat-card { padding: 12px 14px; }
+    .stat-card h3 { font-size: 10.5px; letter-spacing: 0.5px; }
+    .stat-card .value { font-size: 24px; }
+}
+/* telefon poziomo (niski ekran): niższy nagłówek i mniejsze marginesy okien (tło okna i tak się przewija) */
+@media (max-height: 500px) {
+    .header-content { padding-top: 8px; padding-bottom: 8px; }
+    .modal { padding: 10px; }
 }
 
 

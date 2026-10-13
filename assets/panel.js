@@ -1387,6 +1387,22 @@
         if (!d || !d.data || typeof d.data.languages_html !== 'string') return;
         var rows = $('lang-rows');
         if (rows) rows.innerHTML = d.data.languages_html;
+        // przełącznik języka w nagłówku (pusty, gdy włączony jest tylko jeden język) — od razu, bez przeładowania
+        var slot = $('langSwitchSlot');
+        if (slot && typeof d.data.lang_switch_html === 'string') slot.innerHTML = d.data.lang_switch_html;
+        // lista "język źródłowy" kopii: dodane / usunięte języki
+        var src = $('lang_dup_from');
+        if (src && Array.isArray(d.data.lang_sources)) {
+            var keep = src.value;
+            src.innerHTML = '';
+            d.data.lang_sources.forEach(function (o) {
+                var opt = document.createElement('option');
+                opt.value = o[0];
+                opt.textContent = o[1];
+                src.appendChild(opt);
+            });
+            if (d.data.lang_sources.some(function (o) { return o[0] === keep; })) src.value = keep;
+        }
         if (d.ok && form && form.hasAttribute('data-reset-on-success')) form.reset();
     }
 

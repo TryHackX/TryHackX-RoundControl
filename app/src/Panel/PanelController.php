@@ -318,7 +318,11 @@ final class PanelController
         $r = (new LanguageAdmin($this->audit))->handle($_POST, $_FILES);
         $this->success = $r['ok'] ? $r['msg'] : '';
         $this->error   = $r['ok'] ? '' : $r['msg'];
-        $this->data['languages_html'] = View::render(self::TPL . '/partials/lang_rows.php', ['lang' => LanguageAdmin::listing(), 'csrf' => Csrf::token()]);
+        $listing = LanguageAdmin::listing();
+        $this->data['languages_html'] = View::render(self::TPL . '/partials/lang_rows.php', ['lang' => $listing, 'csrf' => Csrf::token()]);
+        // 1.3.1: przełącznik języka w nagłówku i lista "język źródłowy" od razu po zmianie (bez przeładowania strony)
+        $this->data['lang_switch_html'] = View::render(APP_ROOT . '/templates/partials/lang_switch.php', ['langSwitchTab' => 'settings']);
+        $this->data['lang_sources'] = array_map(static fn(array $r): array => [$r['code'], strtoupper($r['code']) . ' — ' . $r['name']], $listing['rows']);
         if (isset($r['dropped'])) {
             $this->data['dropped'] = $r['dropped'];
         }
@@ -454,7 +458,7 @@ final class PanelController
         $msg = Commands::fail2banSaveConfig($_POST);
 
         $this->values = $this->f2bFormValues();
-        if (str_contains($msg, 'bez zmian')) {
+        if ($msg === 'unchanged' || $msg === 'bez zmian') {   // odpowiedź helpera: od 1.3.1 po angielsku; "bez zmian" = helper sprzed 1.3.1
             $this->success = t('msg.f2b.unchanged');
             return;
         }

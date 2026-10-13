@@ -11,11 +11,13 @@ use function App\I18n\h;
  * w ciasteczku `lang` i od razu rysuje stronę w wybranym języku. Ukryty, gdy włączony jest tylko jeden język.
  *
  * @var ?string $langSwitchClass dodatkowa klasa (np. lang-switch--portal)
+ * @var ?string $langSwitchTab   zakładka panelu zachowywana w odnośnikach (domyślnie z ?tab=)
  */
 $langOn = Lang::enabled();
 if (count($langOn) > 1):
     $langCur  = Lang::current();
-    $langKeep = isset($_GET['tab']) && is_string($_GET['tab']) && preg_match('/^[a-z0-9]{1,20}$/', $_GET['tab']) ? ['tab' => $_GET['tab']] : [];
+    $langTab  = $langSwitchTab ?? ($_GET['tab'] ?? null);   // $langSwitchTab: render po zapisie (POST, bez ?tab=)
+    $langKeep = is_string($langTab) && preg_match('/^[a-z0-9]{1,20}$/', $langTab) ? ['tab' => $langTab] : [];
     $langAll  = Lang::available();
 ?>
 <details class="lang-switch <?= Html::e($langSwitchClass ?? '') ?>">

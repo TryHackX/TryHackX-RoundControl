@@ -89,12 +89,15 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
         <h1><i class="ri-shield-keyhole-line" aria-hidden="true"></i> <?= h('panel.title') ?></h1>
         <div class="header-actions">
             <span class="admin-info"><?= html('panel.header.logged_in', ['name' => $admin]) ?></span>
-            <?php include __DIR__ . '/../partials/lang_switch.php'; ?>
             <form method="post" action="logout.php" class="logout-form">
                 <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
                 <button type="submit" class="logout-link"><?= h('panel.header.logout') ?></button>
             </form>
-            <button type="button" class="theme-toggle-btn" id="themeToggle" aria-label="<?= h('panel.header.theme_label') ?>" aria-pressed="<?= $theme === 'light' ? 'true' : 'false' ?>" title="<?= h('panel.header.theme_title') ?>"><i class="<?= $theme === 'light' ? 'ri-sun-line' : 'ri-moon-line' ?>" id="themeIcon" aria-hidden="true"></i></button>
+            <?php /* język tuż obok motywu; #langSwitchSlot odświeża panel.js po zmianach w "Języki interfejsu" */ ?>
+            <div class="header-tools">
+                <span id="langSwitchSlot" class="lang-switch-slot"><?php include __DIR__ . '/../partials/lang_switch.php'; ?></span>
+                <button type="button" class="theme-toggle-btn" id="themeToggle" aria-label="<?= h('panel.header.theme_label') ?>" aria-pressed="<?= $theme === 'light' ? 'true' : 'false' ?>" title="<?= h('panel.header.theme_title') ?>"><i class="<?= $theme === 'light' ? 'ri-sun-line' : 'ri-moon-line' ?>" id="themeIcon" aria-hidden="true"></i></button>
+            </div>
         </div>
     </div>
 </header>

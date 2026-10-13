@@ -587,28 +587,28 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     to { opacity: 1; transform: translateY(0); }
 }
 @media (max-width: 768px) {
+    /* Telefon: cienki pasek z przełącznikiem języka nad kartą, karta z zaokrąglonymi rogami i odstępem od krawędzi
+       (dawniej przylegała do górnej krawędzi z kwadratowymi rogami, a przycisk języka siedział na jej rogu). */
     body {
-        padding-top: 0;
-        padding-bottom: 0;
+        padding: 10px 12px 0;
         justify-content: flex-start;
         min-height: 100vh;
     }
     .scene {
         margin-top: 0;
-        margin-bottom: 20px;
-        max-width: 100%;
-        border-radius: 0 0 16px 16px;
+        margin-bottom: 16px;
+        max-width: 480px;
     }
     .card {
-         border-radius: 0 0 16px 16px;
-         box-shadow: none;
-         /* karta przylega do górnej krawędzi (wyśrodkowana względem wyższej karty rejestracji wisiałaby w połowie
-            ekranu z kwadratowymi górnymi rogami) */
+         box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+         /* karta u góry (wyśrodkowana względem wyższej karty rejestracji wisiałaby w połowie ekranu) */
          align-self: start;
     }
+    /* ukryta karta (rejestracja / logowanie) nie zajmuje miejsca: inaczej wyższa karta rejestracji wydłużała stronę i
+       spychała stopkę pod ekran (obie karty i tak zaczynają się u góry — przełączenie niczego nie przesuwa) */
+    .card:not(.active):not(.leaving) { height: 0; min-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; }
     main:not(.scene) {
         margin-top: 0;
-        border-radius: 0 0 16px 16px;
     }
 }
 @media (max-width: 380px) {
@@ -761,7 +761,22 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     /* wąsko: bez kropek-separatorów (zawinięta linia zaczynałaby się od kropki), pozycje w elastycznym wierszu */
     .app-footer p { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 14px; }
     .app-footer-sep { display: none; }
-    .lang-switch--portal { top: 10px; right: 10px; }
+    /* przełącznik w normalnym przepływie: osobny wiersz nad kartą, wyrównany do jej prawej krawędzi */
+    .lang-switch--portal { position: relative; top: auto; right: auto; align-self: flex-end; margin: 0 0 10px; }
+    .lang-switch--portal ~ .scene, .lang-switch--portal ~ main { margin-top: 0; }
+}
+/* telefon poziomo (szeroki, ale niski ekran): karta od razu u góry, bez pustego miejsca nad nią; ukryta karta nie
+   wydłuża strony (jak na telefonie pionowo) */
+@media (max-height: 520px) and (min-width: 769px) {
+    body { padding-top: 14px; }
+    .scene { margin-top: 8px; }
+    .card { align-self: start; }
+    .card:not(.active):not(.leaving) { height: 0; min-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; }
+}
+/* bardzo wąsko (360 px): mniejsze wewnętrzne marginesy karty, żeby widżet CAPTCHA (302 px) mieścił się bez skalowania */
+@media (max-width: 380px) {
+    body { padding-left: 8px; padding-right: 8px; }
+    .card { padding: 22px 14px; }
 }
 
 /* Ograniczony ruch: bez rozmyć, skalowania i drgania — tylko natychmiastowa zmiana */

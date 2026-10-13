@@ -26,13 +26,20 @@ use Throwable;
  *   1. ?lang=xx (przełącznik) — zapamiętany w ciasteczku `lang` (rok, SameSite=Lax, Secure poza trybem dev),
  *   2. ciasteczko `lang`,
  *   3. Accept-Language przeglądarki,
- *   4. default_language z ustawień (domyślnie pl).
+ *   4. default_language z ustawień (bez ustawienia: angielski — FALLBACK_DEFAULT; pl jest językiem wzorcowym kluczy).
  * Ciasteczko jest czytane przez PHP, więc strona od pierwszego bajtu jest w wybranym języku (bez mignięcia).
  */
 final class Lang
 {
     public const BUILT_IN  = ['pl', 'en'];
+    /** Język wzorcowy: komplet kluczy (lista dozwolonych kluczy pakietów, ostatnie uzupełnienie brakującego tekstu). */
     public const REFERENCE = 'pl';
+    /**
+     * Język domyślny serwisu, gdy w ustawieniach nie ma default_language (1.3.1: angielski — repozytorium jest publiczne).
+     * Instalator zapisuje wybór jawnie; aktualizacja istniejącej instalacji zapisuje 'pl' PRZED wdrożeniem kodu 1.3.1,
+     * więc działający serwis nie zmienia języka.
+     */
+    public const FALLBACK_DEFAULT = 'en';
     public const COOKIE    = 'lang';
     public const CODE_RE   = '/^[a-z]{2,3}$/';
 
@@ -120,11 +127,11 @@ final class Lang
     public static function defaultLanguage(): string
     {
         try {
-            $d = strtolower(trim((string) Settings::get('default_language', self::REFERENCE)));
+            $d = strtolower(trim((string) Settings::get('default_language', self::FALLBACK_DEFAULT)));
         } catch (Throwable) {
-            $d = self::REFERENCE;
+            $d = self::FALLBACK_DEFAULT;
         }
-        return self::installed($d) ? $d : self::REFERENCE;
+        return self::installed($d) ? $d : self::FALLBACK_DEFAULT;
     }
 
     /** @return string[] kody włączone (pusta lista w ustawieniach = wszystkie zainstalowane; domyślny zawsze włączony) */

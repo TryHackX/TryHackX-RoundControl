@@ -25,6 +25,9 @@ declare(strict_types=1);
 // Exit codes: 0 = installed and reloaded (or nothing to change); 1 = refused, nothing changed;
 //             2 = installed and tested, but the reload failed; 3 = FAILED and the file may be inconsistent
 //             (the message names the backup).
+// Output (1.3.1: English; the panel translates by exit code and keys on these first words): exactly "unchanged",
+// "saved and reloaded (N changes)", "refused: …", "saved and checked, but the reload failed: …", "FAILED: …",
+// "selftest ok".
 
 if (PHP_SAPI !== 'cli') {      // never reachable over HTTP, even if the web server hands the file out
     http_response_code(404);
@@ -62,14 +65,14 @@ function say(string $m): void
 /** Refused; nothing was changed. */
 function refuse(string $m): never
 {
-    say("odrzucone: $m");
+    say("refused: $m");
     exit(1);
 }
 
 /** Failed in a way that may leave the file in an unknown state. */
 function fail(string $m): never
 {
-    say("BŁĄD: $m");
+    say("FAILED: $m");
     exit(3);
 }
 
@@ -118,28 +121,28 @@ function parseOpt(string $line): ?array
 function writeInPlace($fh, string $content): void
 {
     if (fseek($fh, 0) !== 0) {
-        throw new RuntimeException('fseek nie powiodło się');
+        throw new RuntimeException('fseek failed');
     }
     $len = strlen($content);
     $off = 0;
     while ($off < $len) {
         $w = fwrite($fh, substr($content, $off));
         if ($w === false || $w === 0) {
-            throw new RuntimeException("zapis przerwany po $off z $len bajtów");
+            throw new RuntimeException("write stopped after $off of $len bytes");
         }
         $off += $w;
     }
     if (!fflush($fh)) {
-        throw new RuntimeException('fflush nie powiodło się');
+        throw new RuntimeException('fflush failed');
     }
     if (!ftruncate($fh, $len)) {
-        throw new RuntimeException('ftruncate nie powiodło się');
+        throw new RuntimeException('ftruncate failed');
     }
     if (!fflush($fh)) {
-        throw new RuntimeException('fflush po ftruncate nie powiodło się');
+        throw new RuntimeException('fflush after ftruncate failed');
     }
     if (function_exists('fsync') && !fsync($fh)) {
-        throw new RuntimeException('fsync nie powiodło się');
+        throw new RuntimeException('fsync failed');
     }
 }
 
@@ -180,11 +183,11 @@ function openLive()
 {
     clearstatcache(true, LIVE);
     if (!is_file(LIVE) || is_link(LIVE)) {     // 'c+' would CREATE a missing file / write through a symlink
-        refuse(LIVE . ' nie istnieje albo jest dowiązaniem symbolicznym');
+        refuse(LIVE . ' does not exist or is a symbolic link');
     }
     $fh = @fopen(LIVE, 'c+');
     if ($fh === false) {
-        refuse('nie mogę otworzyć ' . LIVE . ' do zapisu — pod ProtectSystem=full w php-fpm potrzebny jest drop-in '
+        refuse('cannot open ' . LIVE . ' for writing — under ProtectSystem=full php-fpm needs the drop-in '
             . 'ReadWritePaths=/etc/fail2ban/jail.local (README: "php-fpm sandbox")');
     }
     $locked = false;
@@ -195,7 +198,7 @@ function openLive()
         }
     }
     if (!$locked) {
-        refuse('inny zapis jail.local jest w toku (blokada)');
+        refuse('another write of jail.local is in progress (lock)');
     }
     return $fh;
 }
@@ -208,17 +211,17 @@ function checkOwnership($fh): void
     }
     $st = fstat($fh);
     if ($st === false) {
-        refuse('fstat ' . LIVE . ' nie powiodło się');
+        refuse('fstat ' . LIVE . ' failed');
     }
     if ($st['uid'] === 0 && ($st['mode'] & 0022) === 0) {
         return;
     }
     if (!chown(LIVE, 'root') || !chgrp(LIVE, 'root') || !chmod(LIVE, 0644)) {
-        refuse(LIVE . ' nie należy do root:root albo jest zapisywalny dla grupy/innych i nie udało się tego naprawić');
+        refuse(LIVE . ' is not root:root or is writable by group/others, and that could not be repaired');
     }
     $st = fstat($fh);
     if ($st === false || $st['uid'] !== 0 || ($st['mode'] & 0022) !== 0) {
-        refuse(LIVE . ' nadal nie ma właściciela root i trybu 644 po próbie naprawy');
+        refuse(LIVE . ' still is not root-owned with mode 644 after the repair attempt');
     }
 }
 
@@ -230,22 +233,22 @@ if (($argv[1] ?? '') === '--selftest') {
     checkOwnership($fh);
     $cur = stream_get_contents($fh);
     if ($cur === false || $cur === '') {
-        refuse('nie mogę odczytać ' . LIVE);
+        refuse('cannot read ' . LIVE);
     }
     try {
         writeInPlace($fh, $cur);
     } catch (RuntimeException $e) {
-        fail('zapis w miejscu nie działa: ' . $e->getMessage());
+        fail('in-place write does not work: ' . $e->getMessage());
     }
     if (!readsBack($fh, $cur)) {
-        fail('po zapisie w miejscu zawartość się różni');
+        fail('the content differs after the in-place write');
     }
     if (!is_dir(BAK) && !@mkdir(BAK, 0700, true)) {
-        refuse('nie mogę utworzyć ' . BAK);
+        refuse('cannot create ' . BAK);
     }
     $probe = BAK . '/.selftest-' . getmypid();
     if (@file_put_contents($probe, 'x') !== 1 || !@unlink($probe)) {
-        refuse(BAK . ' nie jest zapisywalny');
+        refuse(BAK . ' is not writable');
     }
     say('selftest ok');
     exit(0);
@@ -254,13 +257,13 @@ if (($argv[1] ?? '') === '--selftest') {
 /* ------------------------------------------------------------------ the proposal (stdin) */
 $in = stream_get_contents(STDIN, MAX_BYTES + 1);
 if ($in === false || $in === '') {
-    refuse('pusta propozycja (oczekiwana na standardowym wejściu)');
+    refuse('empty proposal (expected on standard input)');
 }
 if (strlen($in) > MAX_BYTES) {
-    refuse('propozycja za duża');
+    refuse('proposal too large');
 }
 if (str_contains($in, "\0")) {
-    refuse('propozycja zawiera bajt zerowy');
+    refuse('proposal contains a NUL byte');
 }
 
 $fh = openLive();
@@ -268,12 +271,12 @@ checkOwnership($fh);
 
 $curRaw = stream_get_contents($fh);
 if ($curRaw === false) {
-    refuse('nie mogę przeczytać ' . LIVE);
+    refuse('cannot read ' . LIVE . ' (current file)');
 }
 $cur = splitLines($curRaw);
 $new = splitLines($in);
 if (count($cur) !== count($new)) {
-    refuse('zmieniła się liczba linii');
+    refuse('the number of lines changed');
 }
 
 $sec = null;
@@ -285,7 +288,7 @@ foreach ($cur as $i => $c) {
     if (preg_match('/^\s*\[([^\]]+)\]/', $c, $m) === 1) {
         $sec = trim($m[1]);
         if ($n !== $c) {
-            refuse("zmieniony nagłówek sekcji (linia $line)");
+            refuse("changed section header (line $line)");
         }
         continue;
     }
@@ -293,12 +296,12 @@ foreach ($cur as $i => $c) {
         continue;
     }
     if (preg_match('/^\s*\[/', $n) === 1) {
-        refuse("nowy nagłówek sekcji w linii $line");
+        refuse("new section header in line $line");
     }
     $oc = parseOpt($c);
     $on = parseOpt($n);
     if ($oc === null || $on === null || $oc[0] !== $on[0] || preg_match('/^[A-Za-z0-9_.]+ = /', $n) !== 1) {
-        refuse("linia $line nie jest tą samą opcją w postaci 'opcja = wartość'");
+        refuse("line $line is not the same option in the form 'option = value'");
     }
     if ($oc[1] === $on[1]) {       // ta sama opcja i wartość, inny odstęp: bez znaczenia
         $cosmetic++;
@@ -306,18 +309,18 @@ foreach ($cur as $i => $c) {
     }
     [$k, $v] = [$on[0], $on[1]];
     if ($sec === null || !isset($allowed[$sec])) {
-        refuse("zmiana w sekcji [" . ($sec ?? '') . "] (linia $line)");
+        refuse("change in section [" . ($sec ?? '') . "] (line $line)");
     }
     if (!in_array($k, $allowed[$sec], true)) {
-        refuse("opcja $k nie jest edytowalna z panelu w sekcji [$sec]");
+        refuse("option $k is not editable from the panel in section [$sec]");
     }
     if (strlen($v) > 2000) {
-        refuse("$k: wartość za długa");
+        refuse("$k: value too long");
     }
     if ($rules[$k] === 'ip_list') {
         $toks = preg_split('/\s+/', trim($v), -1, PREG_SPLIT_NO_EMPTY);
         if (!$toks || count($toks) > 200) {
-            refuse('ignoreip: pusta lub za długa lista');
+            refuse('ignoreip: empty or too long list');
         }
         foreach ($toks as $t) {
             if (!ipOk($t)) {
@@ -330,27 +333,27 @@ foreach ($cur as $i => $c) {
     $changed++;
 }
 if ($changed === 0) {
-    say('bez zmian');
+    say('unchanged');
     exit(0);
 }
 
 /* ------------------------------------------------------------------ backup */
 if (!is_dir(BAK) && !@mkdir(BAK, 0700, true)) {
-    refuse('nie mogę utworzyć katalogu kopii ' . BAK);
+    refuse('cannot create the backup directory ' . BAK);
 }
 $bak = BAK . '/jail.local.' . date('YmdHis') . '-' . getmypid();
 $written = @file_put_contents($bak, $curRaw);
 if ($written === false || $written !== strlen($curRaw)) {
     @unlink($bak);
-    refuse('nie mogę zapisać kopii zapasowej ' . $bak);
+    refuse('cannot write the backup ' . $bak);
 }
 if (!@chmod($bak, 0600) && PHP_OS_FAMILY !== 'Windows') {
     @unlink($bak);
-    refuse('nie mogę ustawić uprawnień kopii zapasowej ' . $bak);
+    refuse('cannot set the mode of the backup ' . $bak);
 }
 if (@hash_file('sha256', $bak) !== hash('sha256', $curRaw)) {
     @unlink($bak);
-    refuse('kopia zapasowa nie zgadza się z oryginałem');
+    refuse('the backup does not match the original');
 }
 $old = glob(BAK . '/jail.local.*') ?: [];
 sort($old);
@@ -364,10 +367,10 @@ $restore = static function () use ($fh, $curRaw, $bak): void {
     try {
         writeInPlace($fh, $curRaw);
     } catch (RuntimeException $e) {
-        fail('NIE UDAŁO SIĘ PRZYWRÓCIĆ ' . LIVE . ' (' . $e->getMessage() . ') — oryginał jest w ' . $bak);
+        fail('COULD NOT RESTORE ' . LIVE . ' (' . $e->getMessage() . ') — the original is in ' . $bak);
     }
     if (!readsBack($fh, $curRaw)) {
-        fail(LIVE . ' po przywróceniu różni się od oryginału — oryginał jest w ' . $bak);
+        fail(LIVE . ' differs from the original after the restore — the original is in ' . $bak);
     }
 };
 
@@ -375,22 +378,22 @@ try {
     writeInPlace($fh, $newRaw);
 } catch (RuntimeException $e) {
     $restore();
-    refuse('zapis ' . LIVE . ' nie powiódł się (' . $e->getMessage() . '); przywrócono poprzednią zawartość');
+    refuse('writing ' . LIVE . ' failed (' . $e->getMessage() . '); the previous content was restored');
 }
 if (!readsBack($fh, $newRaw)) {
     $restore();
-    refuse('po zapisie ' . LIVE . ' nie zawiera tego, co zapisano; przywrócono poprzednią zawartość');
+    refuse('after the write ' . LIVE . ' does not contain what was written; the previous content was restored');
 }
 
 [$rt, $tout] = run(timeoutPrefix() . F2B . ' -t');
 if ($rt !== 0) {
     $restore();
-    refuse('fail2ban odrzucił konfigurację (przywrócono poprzednią): ' . $tout);
+    refuse('fail2ban rejected the configuration (the previous one was restored): ' . $tout);
 }
 [$rr, $rout] = run(timeoutPrefix() . F2B . ' reload');
 if ($rr !== 0) {
-    say('zapisane i sprawdzone, ale reload nie powiódł się: ' . $rout);
+    say('saved and checked, but the reload failed: ' . $rout);
     exit(2);
 }
-say("zapisane i przeładowane ($changed zmian)");
+say("saved and reloaded ($changed changes)");
 exit(0);
