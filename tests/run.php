@@ -153,11 +153,11 @@ try {
     $r = $call('check_identity', ['email' => $email]);
     ok(!empty($r['ok']) && ($r['focus_id'] ?? '') === 'inpPassword', 'identity user -> hasło');
 
-    $r = $call('perform_login', ['password' => 'DevTest123!', 'target' => 'webmail']);
+    $r = $call('perform_login', ['password' => 'DevTest123!']);
     eq($r['redirect'] ?? '', './?_task=mail', 'login webmail OK');
 
     $call('check_identity', ['email' => $email]);
-    $r = $call('perform_login', ['password' => 'ZLE', 'target' => 'webmail']);
+    $r = $call('perform_login', ['password' => 'ZLE']);
     ok(empty($r['ok']) && !empty($r['reset']), 'login webmail złe hasło -> reset');
 
     $r = $call('check_identity', ['email' => 'niema_' . time() . '@' . $TEST_DOMAIN]);

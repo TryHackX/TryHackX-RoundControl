@@ -4,24 +4,30 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.1.0** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — a **security release** (registration rules, account
-deletion, helpers that report success only when they verified it, login limiting, file ownership, Roundcube + panel in
-their own PHP-FPM pool). If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110). If you run 1.0: run
-`install.sh` from this package (it covers both) or follow the same 1.0.1 → 1.1.0 steps.
+**Version 1.2.0** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — the **panel and portal without page reloads** (every
+form saves in place with the server's message, lists refresh without jumping), **login tiles again** (e-mail →
+password → *Webmail / Admin panel*, shown only after a correct administrator password), failed password confirmations
+in the audit log, clear rules for reserved names and aliases, a Fail2Ban portal filter that actually matches.
+Code only — no database change. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120). If you run 1.0.1:
+[Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package (it installs 1.2.0 directly). If you run 1.0: run
+`install.sh` from this package (it covers every older version).
 
 - **Login portal** (`portal.php`) — a shared entry screen for webmail and the panel
-  (flow: e-mail → password and service → in) + **public account registration** with per-IP
-  (IPv4) / per-/64 (IPv6) limits, reserved names, a password policy and optional reCAPTCHA,
+  (flow: e-mail → password → in; an administrator who also has a mailbox then picks a tile: Webmail or Admin panel)
+  + **public account registration** with per-IP (IPv4) / per-/64 (IPv6) limits, reserved names, a password policy and
+  optional reCAPTCHA,
 - **Admin panel** (`panel/`) — accounts (search by e-mail/IP/date/quota/%usage,
   quota in binary units, per-account daily send limit, password reset,
-  bans, deletion together with the on-disk mailbox), IP blocks (local + Fail2Ban) with a
+  bans, deletion — the mailbox goes to a 30-day quarantine), IP blocks (local + Fail2Ban) with a
   suspicious-IP scanner, logs (registrations, admin logins, audit) with a universal
-  search, editing of Fail2Ban and Postfix limits,
+  search, editing of Fail2Ban and Postfix limits; everything saves and refreshes in place (fetch + JSON, CSRF-checked;
+  without JavaScript the same forms still work with a page reload),
 - **Password self-service** — the Roundcube `password` plugin (SQL → `$6$` into virtual_users),
 - **Daily send limit** — a Postfix policy service (per account / global), counted in **recipients**,
 - **Security**: CSRF, rate-limiting (per account+client and per client, never per account alone), fail-closed
-  reCAPTCHA, no account / role enumeration at login, a CSP with no inline JS, hardened sessions, the PRG pattern,
-  action auditing, least-privilege database accounts, code owned by root, Roundcube + panel in their own PHP-FPM
+  reCAPTCHA, no account / role enumeration at login (not even after a wrong password), a CSP with no inline JS,
+  hardened sessions, JSON saves with CSRF (PRG without JavaScript), action auditing (including failed confirmation
+  passwords), least-privilege database accounts, code owned by root, Roundcube + panel in their own PHP-FPM
   pool and user (`mailweb`) — other PHP sites on the server can neither read its secrets nor use its sudo rules.
 
 ## Quick install
@@ -38,6 +44,53 @@ sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban
 
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
+
+## Upgrading from 1.1.0 to 1.2.0
+
+**Code only.** No database change, no new grant, no new sudo rule, no php-fpm pool or Apache change: replace the panel's
+files (they stay `root:root`; the 1.1.0 ownership model is untouched) and the Fail2Ban portal filter. Details:
+[CHANGELOG](CHANGELOG.md).
+
+What you will notice:
+
+- **No page reloads in the panel.** Saving a form shows the server's message in a notification in the corner (it does
+  not push the page), the button shows that it is working and then "Zapisano"; dialogs keep their errors inside (a
+  wrong password in *Delete account* leaves the dialog open). Lists refresh in place: after adding / deleting an account,
+  a ban or an unban the table, the counters and the audit log update, the scroll position stays, columns keep their
+  width and the pagination stays under the cursor. The first page of every list arrives with the page (no empty tables
+  filling in), the open tab survives F5 (`?tab=`), the light / dark theme is applied before the first paint.
+- **Login:** e-mail → password. Only a correct **administrator** password, for an address that also has a mailbox,
+  leads to two tiles (*Webmail* / *Panel Admina*); an administrator without a mailbox goes straight to the panel,
+  everybody else straight to webmail. Until the password is correct the portal answers the same for any address
+  (nonexistent, normal, administrator). The *mailbox* password of an administrator's address opens webmail directly. A
+  wrong password keeps you on the password screen (with reCAPTCHA on, back to the e-mail step for a new token).
+- **Delete account** says what really happens: the maildir is **moved** to `/var/mail/deleted/<domain>__<user>__<date>`
+  and purged automatically after 30 days.
+- **A wrong admin password in a confirmation prompt** (deleting an account, changing the admin password) is recorded in
+  the audit log (`REAUTH_FAILED`; search "REAUTH" on the Logs tab) and in the journal (`journalctl -t mailpanel`,
+  `reauth-failure …`); after 5 in one session the session ends (`REAUTH_LOCKOUT`). Fail2Ban deliberately does not count
+  them — see "Optional: Fail2Ban for portal logins".
+- **Add user** explains a refused name: *reserved* (built-in role address or your list) and *recently deleted / alias
+  target* can be created with the consent box; an **alias address** cannot (Postfix forwards it before any mailbox would
+  see it), and the dialog offers *Delete alias* (with a confirmation; the full row goes to the audit log).
+
+```bash
+PKG=/root/rc-1.2.0 ; RC=/var/www/roundcube ; V=8.5 ; TS=$(date +%F-%H%M%S)
+tar czf /root/roundcube-pre-1.2.0-$TS.tgz -C "$(dirname $RC)" "$(basename $RC)"        # backup (owners and modes kept)
+cp -a /etc/fail2ban/filter.d/mailpanel-portal.conf /root/mailpanel-portal.conf.pre-1.2.0-$TS
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/app $PKG/assets $PKG/panel $PKG/portal.php $PKG/.htaccess $RC/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/config/panel_config.php $RC/config/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/plugins/custom_auth $RC/plugins/
+find $RC/app $RC/panel $RC/portal.php -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors'   # prints nothing
+install -o root -g root -m 644 $PKG/system/fail2ban/filter.d/mailpanel-portal.conf /etc/fail2ban/filter.d/
+fail2ban-regex 'Oct 13 12:00:00 mail mailpanel[1]: auth-failure ip=203.0.113.7 kind=admin user=x' mailpanel-portal | grep '^Lines'  # 1 matched
+fail2ban-client -t && { fail2ban-client status mailpanel-portal >/dev/null 2>&1 && fail2ban-client reload mailpanel-portal ; true ; }
+systemctl reload php$V-fpm                 # graceful (running requests finish): no cached old code is served
+curl -s -o /dev/null -w '%{http_code}\n' https://<mail-host>/portal.php    # 200
+```
+
+`rsync` only touches the files it copies, so the owners of `temp/`, `logs/` (`mailweb`) and of the secrets
+(`root:mailweb 640`) stay as 1.1.0 left them. Going back: unpack the tarball over the same paths.
 
 ## Upgrading from 1.0.1 to 1.1.0
 
@@ -333,8 +386,8 @@ that is the hole this release closes (an error message from the helper says what
 ├── sql/panel_schema.sql          # database schema (IF NOT EXISTS) — also upgrades an existing one
 ├── sql/panel_grants.sql          # least-privilege grants for the panel DB account (+ postlogin_grants.sql)
 ├── sql/upgrade_1.1.0.sql         # data migration 1.0.x → 1.1.0 (lower-case addresses) + reports
-├── tests/                        # run.php (dev DB), db_test.php (own scratch DB), security_test.php, scripts_test.php,
-│                                 #   sudoers_test.php — the last three need no database and no sudo; run anywhere
+├── tests/                        # run.php (dev DB), db_test.php + http_test.php (own scratch DB), security_test.php,
+│                                 #   scripts_test.php, sudoers_test.php — the last three need no database and no sudo
 ├── CHANGELOG.md
 ├── .env.example  .gitignore  LICENSE
 ```
@@ -690,6 +743,20 @@ user=…`, IP first, user URL-encoded last). `system/fail2ban/jail.d/mailpanel.l
 `[mailpanel-portal]` jail with a matching filter: enable it (after `journalctl -t mailpanel` shows the lines) to ban at
 the firewall instead of slowing requests down in PHP.
 
+**1.2.0: install the new filter before enabling the jail.** Fail2Ban matches the line *with* the host and the identifier
+in front (`mail mailpanel[1234]: auth-failure …`); the 1.1.0 filter started with `^auth-failure` and never matched.
+Check: `fail2ban-regex 'Oct 13 12:00:00 mail mailpanel[1]: auth-failure ip=203.0.113.7 kind=admin user=x' mailpanel-portal`
+→ `1 matched`.
+
+**A wrong admin password in a confirmation prompt is not a login failure.** The panel writes it as
+`reauth-failure ip=… kind=admin user=…` (same identifier, so it is in `journalctl -t mailpanel`) and into its audit log
+(`REAUTH_FAILED`), and ends the admin session after 5 of them; the filter deliberately does **not** count it. Reason:
+it comes from an administrator who already logged in — counting it would let a few typos (plus a few login typos) ban
+the administrator's IP from the panel *and* the webmail for `bantime`, while guessing through that prompt is already
+stopped by the session lockout. If you want it banned anyway, add a second line under `failregex` in
+`/etc/fail2ban/filter.d/mailpanel-portal.conf` (and keep your own address in `ignoreip`):
+`^\s*(?:\S+\s+)?mailpanel(?:\[\d+\])?:\s+reauth-failure ip=<HOST> kind=admin user=\S*$`.
+
 ### Daily send limit (Postfix policy service)
 
 The "Send limit (per day)" setting and individual limits (the "Change
@@ -834,23 +901,25 @@ error messages. Tests (never deploy `tests/`):
 | Command | What it covers | Needs |
 |---|---|---|
 | `php tests/sudoers_test.php` | the sudoers rules (what the panel runs is allowed, hostile forms are refused, no `*`) and the Fail2Ban helper vs. `Commands.php` | nothing (safe anywhere) |
-| `php tests/security_test.php` | account-name rules, reserved names, `/64` keys, CIDR, quota clamping, the identical login screen | nothing |
+| `php tests/security_test.php` | account-name rules, reserved names (and why), `/64` keys, CIDR, quota clamping, the identical password screen, the login tiles, the encrypted password for the Webmail tile, the syslog lines vs. the Fail2Ban filter (`auth-failure` matched, `reauth-failure` not) | nothing |
 | `php tests/scripts_test.php` | the helper (in-place write, refusals, restore, no false success), the delete / Postfix / sudoers-cleanup scripts and the `install.sh` secret handling, with fake `fail2ban-client` / `postconf` / `doveadm`; static checks (`php -l`, `bash -n`, no `sleep`) | PHP, bash |
 | `php tests/db_test.php` | registration, reserved names, aliases, tombstones, login limits (pair / client / IPv6 `/64`), account deletion, policy service (recipients, atomic counter), grants — in a **scratch database it creates and drops**, with an app account holding exactly the `sql/panel_grants.sql` privileges | MariaDB: `MP_TEST_DB_DSN` (default `mysql:host=127.0.0.1;port=3307`), `MP_TEST_DB_USER`, `MP_TEST_DB_PASS`; skips itself without |
+| `php tests/http_test.php` | the real entry points over HTTP (`php -S`): login without enumeration (identical answers for nonexistent / normal / admin addresses until the password is correct), the tiles, the panel's JSON endpoints (no session → 403 JSON, CSRF → 403, values after normalisation, refresh hints), `REAUTH_FAILED` + session end, alias deletion, reserved names, `?tab=` — in its own scratch database. `--serve[=seconds]` keeps the test server running with test accounts for a manual look in a browser | MariaDB as for `db_test.php`, PHP `curl` |
 | `php tests/run.php` | older integration tests against the dev database from `.env` (refuses to run unless `APP_ENV=dev`) | dev database |
 
 In `dev` mode the Fail2Ban tab cannot save (there is no root helper): editing `jail.local` is a server feature.
 
 ## 11. Security — what's inside and what to keep in mind
 
-Built in: CSRF on every mutation (all mutations via POST + PRG, including logout), Argon2id for admins /
+Built in: CSRF on every mutation (all mutations via POST — from 1.2.0 sent by `fetch()` and answered with JSON, without
+JavaScript the classic POST + redirect; logout is a POST too), Argon2id for admins /
 SHA-512 crypt for mailboxes, a CSP with no inline JS (self-hosted icons), a `HttpOnly/SameSite/Secure` session +
 `use_strict_mode` + ID regeneration after login, HSTS/X-Frame-Options/nosniff headers, an audit log of administrator
 actions. System operations run through `sudo` with **exact-argument** rules (no `*` wildcards), and the panel never
 writes a file that a root service reads: `jail.local` is `root:root`, edits go through a validating root helper (see
 "Editing Fail2Ban from the panel").
 
-Behaviour worth knowing (1.1.0):
+Behaviour worth knowing (1.1.0, updated for 1.2.0):
 
 - **Login limits** are per *(account, client)* and per *client* (IPv4 address or IPv6 `/64`), 4× higher for the client as
   a whole; **never per account alone**, so strangers cannot lock the administrator out. Failures go to their own table
@@ -858,17 +927,30 @@ Behaviour worth knowing (1.1.0):
   log (`admin_login_attempts`) is never pruned. A blocked client is refused immediately: nothing sleeps in PHP (one FPM
   pool serves every site on the server). Addresses in `SCAN_TRUSTED_IPS` (exact or CIDR) are not limited.
 - **No enumeration:** the first login step answers the same for any well-formed address, existing or not, administrator
-  or not; the choice *Webmail / Admin panel* is made by the user on the password screen, and the admin password is
-  verified against a dummy hash when no such administrator exists (same timing).
+  or not, and so does a wrong password: every password is first checked as the panel password (one Argon2id
+  verification, against a dummy hash when the address is no administrator) and then as the mailbox password (IMAP
+  through Roundcube), so each failure takes the same path and gets the same answer. Only a correct administrator
+  password reveals the role: an administrator with a mailbox then chooses a tile (*Webmail* / *Panel Admina*). For the
+  Webmail tile the password is kept in the session **encrypted** (AES-256-GCM) with a key that only the browser holds
+  (single use, 2 minutes, bound to the address and IP), so the session file alone does not reveal it. Cost: every login
+  pays one Argon2id check, as admin logins always did.
+- **Confirmation passwords** (deleting an account, changing the admin password): a wrong one is written to the audit log
+  (`REAUTH_FAILED`) and to the journal (`reauth-failure`, not counted by the Fail2Ban filter); after 5 in one session the
+  session ends (`REAUTH_LOCKOUT`) — a stolen session cannot be used to guess the admin password.
 - **Registration** lower-cases the name, accepts `[a-z0-9]` ends with `[a-z0-9._-]` inside (≤ 64), refuses the built-in
   reserved list (`admin administrator hostmaster postmaster webmaster` — the addresses CAs accept for e-mail domain
   validation — plus `abuse security noc root noreply mailer-daemon owner-* *-request …`), the editable list in
   *Settings* (default `info support contact sales …`), names that are the source or target of a virtual alias, and
   names deleted in the last `deleted_name_hold_days` (365). The administrator can override reserved / recently deleted
-  names deliberately (tick-box in *Add user*), never an existing account or an alias source.
+  names / alias targets deliberately (consent box in *Add user*, which appears only when it applies and says why; the
+  consent is in the audit log), never an existing account or an alias **source**: Postfix resolves `virtual_alias_maps`
+  before mailbox delivery, so a mailbox named like an alias would never receive anything. *Add user* shows the alias
+  (source → destination) and offers *Delete alias* (the panel's database account has `DELETE` on `virtual_aliases`,
+  never `INSERT`/`UPDATE`, so the full row is written to the audit log for restoring it by hand).
 - **Deleting an account** (one transaction): the aliases that point at it, its login history and today's send counter
-  go; a tombstone is kept; the maildir is quarantined and the result of the script is checked and shown (a failed or
-  "not found" outcome is a visible error, not a success message).
+  go; a tombstone is kept; the maildir is **moved** to the quarantine `/var/mail/deleted/<domain>__<user>__<YYYYmmddHHMMSS>`
+  (purged after 30 days by `mailpanel-purge-deleted.timer`; until then it can be moved back by hand) and the result of
+  the script is checked and shown (a failed or "not found" outcome is a visible error, not a success message).
 - **"Ban IP"** (Users tab) acts in two layers: the portal and panel (`ip_blocks`) **and**, when Fail2Ban is available,
   the jail `panel-tempban` (webmail, IMAP, SMTP at the firewall); the confirmation says which layers took effect.
   Admin sessions end after 1 h idle / 12 h absolute, when the admin is removed or changes the password.
@@ -908,8 +990,12 @@ Your responsibilities:
 | Fail2Ban save: "odrzucone: …" | the helper refused the proposal (the text says which line/value) or Fail2Ban rejected it (`fail2ban-client -t`; the previous file was restored); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
 | Fail2Ban save: "BŁĄD: …" (exit 3) | the write could not be completed **and** the previous content could not be restored: the message names the backup in `/var/backups/mailpanel-f2b/` — copy it back as root and run `fail2ban-client -t` |
 | Postfix limits: "Postfix NIE został zmieniony: … ReadWritePaths=/etc/postfix" | the drop-in lacks `/etc/postfix` (or no restart): "php-fpm sandbox" above |
-| Deleting an account: "NIE usunięto plików poczty (kod N)" | the account is gone from the database but the maildir is still there; codes: 4 no such directory, 6 the account still exists in Dovecot, 7 `doveadm` could not confirm, 3 path outside `/var/mail/vhosts`, 5/8 move or quarantine failed — see the header of `scripts/mailpanel-delete-user.sh` |
-| Registration says a name is "zarezerwowana" / "niedostępna" | reserved list, an alias that names it, or a recently deleted account (*Settings*: reserved names, hold days); an administrator can create it by ticking the override in *Add user* |
+| Deleting an account: "pliki poczty NIE zostały przeniesione do kwarantanny (kod N)" | the account is gone from the database but the maildir is still in place; codes: 4 no such directory, 6 the account still exists in Dovecot, 7 `doveadm` could not confirm, 3 path outside `/var/mail/vhosts`, 5/8 move or quarantine failed — see the header of `scripts/mailpanel-delete-user.sh` |
+| Registration says a name is "zarezerwowana" / "niedostępna" | reserved list, an alias that names it, or a recently deleted account (*Settings*: reserved names, hold days); an administrator can create it with the consent box in *Add user* — except an alias address ("To adres aliasu"): delete the alias there first, or keep it |
+| Panel: "Sesja administratora wygasła — zaloguj się ponownie." bar | the admin session ended (1 h idle, 12 h, password changed elsewhere, 5 wrong confirmation passwords — the audit log says `REAUTH_LOCKOUT`); nothing was saved by the request that hit it — log in again |
+| Panel: "Token bezpieczeństwa nie pasuje do sesji" | the page belongs to an older session (e.g. you logged in again in another tab): reload the page (F5) |
+| Login: the *Webmail* tile is greyed out | the administrator password is not the password of the mailbox with the same address: log out ("Wyloguj — zmień użytkownika") and log in with the mailbox password — it opens webmail directly |
+| `fail2ban-regex … mailpanel-portal` → `0 matched` | the 1.1.0 filter is still installed (it never matched): install `system/fail2ban/filter.d/mailpanel-portal.conf` from 1.2.0 |
 | Fail2Ban tab: "no read permission" | `jail.local` must be readable by the PHP user: `root:root` **644** (do **not** make it writable for it) |
 | Webmail login fails, panel works | check `imap_host` in `config.inc.php` (that's plain RC login) |
 | After login it returns to the portal | cookies: HTTPS required in prod (the session has the Secure flag) |

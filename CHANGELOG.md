@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.2.0 — 2026-10-13 — usability
+
+**Code only** (no database change, no new grants or sudo rules, no php-fpm / Apache change) plus a corrected Fail2Ban
+filter. Steps: [README → Upgrading from 1.1.0 to 1.2.0](README.md#upgrading-from-110-to-120).
+
+Changed — the panel works without page reloads:
+
+- Every form of the panel (settings, security / anti-spam, admin password, Fail2Ban, add user, quota, password reset,
+  ban, delete, manual Fail2Ban ban, unban / move) is sent with `fetch()` (field `_ajax`, the existing per-session CSRF
+  token) and answered with JSON `{ok, msg, error, refresh, values, data, done}`. The message is always the server's text;
+  `values` are the values the server actually stored (clamped / normalised — e.g. the hold days capped at 3650, the
+  reserved list lower-cased, the "apply quota to all" box unticked again, the reCAPTCHA secret field emptied) and are
+  written back into the form; `refresh` names the lists / counters to update. Without JavaScript the same forms still
+  post and redirect (PRG, now to `index.php?tab=…`). Server-side validation is unchanged.
+- Feedback without layout shift: notifications in a corner overlay (success fades after a few seconds, errors stay until
+  closed), errors of a dialog inside the dialog in a reserved slot (the dialog stays open, e.g. after a wrong password),
+  buttons keep their width while working (spinner, then "Zapisano"), a one-line session-expired bar with a login link.
+- Lists refresh in place: the old rows stay (dimmed, with a thin progress bar) until the new ones arrive, the table keeps
+  its height while paging (the pagination stays under the cursor), columns only grow, stale responses are dropped, the
+  keyboard focus returns to the same button of the same row. After add / delete / quota / ban / unban the list, the
+  counters (`?ajax_stats`) and the audit log refresh by themselves; a changed row flashes. The pagination always shows
+  first / previous / next / last (disabled when there is nowhere to go), so buttons no longer move between pages.
+- The first page of every list is rendered with the page (empty tables used to fill in after load and push everything
+  down); the active tab comes from `?tab=` (survives F5 without flashing the first tab); the theme is a cookie read by the
+  server (no dark → light flash); `scrollbar-gutter: stable` (switching tabs or opening a dialog no longer moves the page
+  sideways); tab content fades instead of sliding.
+- Accessibility: real buttons instead of clickable `div`/`span` (tile, IP badges, sort icons, dialog close), tabs with
+  `role=tablist` and arrow keys, sortable headers reachable with Tab and Enter (`aria-sort`), dialogs with
+  `role=dialog`, focus moved in and trapped, Escape closes the top one, focus returns to the button that opened it;
+  labels tied to every field; `prefers-reduced-motion` honoured; phone layout: counters 2×2, notifications full width.
+- Confirmations run in the dialog (the button shows progress, an error stays in the dialog). "Apply quota to all" asks
+  first and is logged (`QUOTA_ALL`); quota changes are logged (`USER_QUOTA`); a quota change or deletion of an account
+  that no longer exists is an error that refreshes the list, not a silent success. An unknown POST is an error.
+- Session expiry: `fetch()` requests get `403 {auth:true}` JSON (not the portal's HTML), CSRF failures `403 {csrf:true}`.
+
+Changed — login (portal):
+
+- **E-mail → password → (administrator) tiles.** The password screen has no service choice any more. A password is
+  checked first as the panel password (always one Argon2id verification, against a dummy hash when the address is no
+  administrator) and then as the mailbox password (IMAP through Roundcube, `kill_session` + `authenticate` hook as in
+  1.1.0). Every wrong password takes the same path and gets the same answer for a nonexistent, a normal and an
+  administrator address (tested over HTTP). A correct administrator password for an address with a mailbox shows two
+  tiles (*Webmail* / *Panel Admina*, the last choice marked); without a mailbox it goes straight to the panel; the
+  mailbox password of an administrator's address goes straight to webmail. When the panel password does not open the
+  mailbox (other password), the Webmail tile is disabled with an explanation. For the Webmail tile the password is kept
+  in the session encrypted with AES-256-GCM under a key held only by the page (single use, bound to address, admin and
+  IP, 2 minutes). Limits, failure logging (`throttle_events`, `admin_login_attempts`, syslog) and session hardening are
+  unchanged; a successful panel entry is logged when the panel is entered (not when webmail is chosen).
+- A wrong password keeps the password screen (the page starts the e-mail step again in the background, identically for
+  every address); with reCAPTCHA enabled it returns to the e-mail step (new token). Show-password button, Caps Lock hint,
+  password-manager friendly (`autocomplete=username` on the password step), messages that expand instead of jumping,
+  real buttons, `inert` on the hidden card, Escape = back, reduced motion.
+
+Fixed:
+
+- **Delete account dialog** said "Pliki: Zostaną usunięte z dysku"; since 1.1.0 the maildir is moved to the quarantine
+  `/var/mail/deleted/<domain>__<user>__<YYYYmmddHHMMSS>` and purged after 30 days. The dialog, the result messages, the
+  audit entry and the README say so; without the sudo rule the dialog says the files stay on disk.
+- **A wrong admin password in a confirmation prompt** (deleting an account, changing the admin password) was recorded
+  nowhere. It is now an audit entry `REAUTH_FAILED` (which action, which account, attempt n of 5) and a journal line
+  `reauth-failure ip=… kind=admin user=…`; after 5 in one session the session ends (`REAUTH_LOCKOUT`). The Fail2Ban
+  filter deliberately does not count `reauth-failure` (an administrator's typos must not ban the administrator; guessing
+  is stopped by the lockout) — README "Optional: Fail2Ban for portal logins" shows the one line to add for those who
+  want it.
+- **Fail2Ban `mailpanel-portal` filter never matched**: Fail2Ban sees `host mailpanel[pid]: auth-failure …`, the 1.1.0
+  regex started with `^auth-failure`. Verified with `fail2ban-regex` on Fail2Ban 1.1.0 (old: 0 matched; new: matches
+  IPv4 / IPv6 / no host, not `reauth-failure`, not a line from another program, not an `ip=` smuggled into the login).
+- **Reserved names / aliases in Add user**: the consent box appears only when it can help and says why the name is
+  held (built-in role address — with the certificate-authority reason —, an entry of the editable list, a recent
+  deletion with its date, an alias pointing here). An **alias address** (e.g. `postmaster@` → `admin@`) cannot be
+  overridden — a mailbox of that name would never receive mail — and the dialog explains this, shows the alias and offers
+  *Delete alias* (confirmation; full row in the audit log as `DELETE_ALIAS`, since the panel cannot recreate aliases).
+  An existing account offers "show on the list".
+
+Tests: `tests/http_test.php` (new: real entry points over `php -S` with a scratch database — login non-enumeration,
+tiles, encrypted tile password, JSON endpoints: no session / CSRF / errors / normalised values / refresh hints,
+`REAUTH_FAILED` + lockout, alias deletion, reserved names, `?tab=`; `--serve` keeps it running for a manual browser
+check), `security_test.php` (screens, tiles, `AuthFlow` encryption, syslog lines against the shipped filter regex,
+`Accounts::reservedBy`). `db_test.php`, `scripts_test.php`, `sudoers_test.php` unchanged and green.
+
 ## 1.1.0 — 2026-10-13 — security
 
 **Upgrade is recommended for every installation** (exact steps:

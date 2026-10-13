@@ -199,7 +199,7 @@ try {
     $t0 = microtime(true);
     for ($i = 1; $i <= 5; $i++) {
         $call('check_identity', ['email' => 'boss@example.test'], $ipA);
-        $r = $call('perform_login', ['password' => 'zle-haslo-' . $i, 'target' => 'admin'], $ipA);
+        $r = $call('perform_login', ['password' => 'zle-haslo-' . $i], $ipA);
         ok(empty($r['ok']) && !empty($r['reset']) && $r['msg'] === 'Nieprawidłowe dane logowania', "zła próba admina #$i: komunikat ogólny + reset");
     }
     ok(microtime(true) - $t0 < 15, 'pięć złych prób bez sleep() (czas ' . round(microtime(true) - $t0, 2) . ' s)');
@@ -210,7 +210,7 @@ try {
     $r = $call('check_identity', ['email' => 'boss@example.test'], $ipB);
     ok(!empty($r['ok']), 'inny adres IP NIE jest blokowany dla tego samego konta (admin nie do zablokowania z zewnątrz)');
     $call('check_identity', ['email' => 'boss@example.test'], $ipB);
-    $r = $call('perform_login', ['password' => 'Admin-Pass-12345!', 'target' => 'admin'], $ipB);
+    $r = $call('perform_login', ['password' => 'Admin-Pass-12345!'], $ipB);
     ok(!empty($r['ok']) && $r['redirect'] === 'panel/index.php', 'poprawne hasło admina z innego IP: wejście');
     ok(!empty($_SESSION['admin_id']) && !empty($_SESSION['admin_login_at']) && !empty($_SESSION['admin_fp']), 'sesja admina: id, czas logowania, odcisk hasła');
     eq($count("SELECT COUNT(*) FROM admin_login_attempts WHERE username='boss@example.test' AND success=0"), 5, 'udane logowanie nie skasowało wierszy porażek');
@@ -220,7 +220,7 @@ try {
     $before = $count("SELECT COUNT(*) FROM throttle_events WHERE kind='webmail' AND email='jan@example.test'");
     for ($i = 0; $i < 3; $i++) {
         $call('check_identity', ['email' => 'jan@example.test'], '203.0.113.70');
-        $call('perform_login', ['password' => 'zle', 'target' => 'webmail'], '203.0.113.70');
+        $call('perform_login', ['password' => 'zle'], '203.0.113.70');
     }
     $afterFails = $count("SELECT COUNT(*) FROM throttle_events WHERE kind='webmail' AND email='jan@example.test'");
     eq($afterFails - $before, 3, 'webmail: porażki zapisane w throttle_events');
@@ -229,7 +229,7 @@ try {
     }
     eq($count("SELECT COUNT(*) FROM throttle_events WHERE kind='webmail' AND email='jan@example.test'"), $afterFails, 'udane logowania (sp_register_login) nie ruszają licznika porażek');
     $call('check_identity', ['email' => 'jan@example.test'], '203.0.113.70');
-    $r = $call('perform_login', ['password' => 'DevTest123!', 'target' => 'webmail'], '203.0.113.70');
+    $r = $call('perform_login', ['password' => 'DevTest123!'], '203.0.113.70');
     eq($r['redirect'] ?? '', './?_task=mail', 'poprawne hasło webmail');
 
     // limit na klienta (rozsiewanie haseł po kontach)

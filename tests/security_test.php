@@ -2,9 +2,11 @@
 declare(strict_types=1);
 
 /**
- * Testy jednostkowe 1.1.0 bez bazy danych:  php tests/security_test.php
- * Accounts (normalizacja, kształt nazwy, nazwy zarezerwowane), Ip (klucz /64, zakresy, CIDR, lista zaufanych),
- * Quota (przycinanie zamiast przepełnienia), Env (ścieżka konfiguracji), Screens (ten sam ekran dla każdego adresu).
+ * Testy jednostkowe 1.1.0 / 1.2.0 bez bazy danych:  php tests/security_test.php
+ * Accounts (normalizacja, kształt nazwy, nazwy zarezerwowane i skąd), Ip (klucz /64, zakresy, CIDR, lista zaufanych),
+ * Quota (przycinanie zamiast przepełnienia), Env (ścieżka konfiguracji), Screens (ten sam ekran hasła dla każdego
+ * adresu; kafelki dopiero po haśle administratora), AuthFlow (hasło dla kafelka Webmail zaszyfrowane kluczem
+ * z przeglądarki), AuthLog vs. wyrażenie z filtra Fail2Ban (auth-failure liczone, reauth-failure nie).
  */
 
 $tmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mp_sec_' . bin2hex(random_bytes(4));
@@ -123,13 +125,71 @@ $big = str_repeat("# linia jail.local\n", 3000);   // ~54 KB: mieści się w buf
 $r = App\System\Commands::pipeTo('php -r "echo strlen(stream_get_contents(STDIN));"', $big);
 eq([$r['code'], trim($r['out'])], [0, (string) strlen($big)], 'duża propozycja (54 KB) przekazana w całości');
 
-group('Screens::password: ten sam ekran dla każdego adresu');
-$s1 = Screens::password('admin@example.org', 'webmail');
-$s2 = Screens::password('nikt@example.org', 'webmail');
-eq(str_replace('admin@example.org', 'X', str_replace('>a<', '>n<', $s1)), str_replace('nikt@example.org', 'X', $s2), 'ekran nie zależy od tego, czy adres to admin / istniejące konto');
-ok(str_contains($s1, 'name="target"') && str_contains($s1, '<option value="webmail" selected>') && str_contains($s1, 'value="admin"'), 'wybór usługi jest po stronie przeglądarki (select), domyślnie webmail');
-ok(str_contains(Screens::password('a@b.org', 'admin'), '<option value="admin" selected>'), 'preferowana usługa admin zaznaczona');
-ok(!str_contains(Screens::password('"><script>@x.org', 'webmail'), '<script>'), 'adres w ekranie jest escapowany');
+group('Screens::password (1.2.0): sam ekran hasła, ten sam dla każdego adresu');
+$s1 = Screens::password('admin@example.org');
+$s2 = Screens::password('nikt@example.org');
+eq(str_replace('admin@example.org', 'X', str_replace('>A<', '>N<', $s1)), str_replace('nikt@example.org', 'X', $s2), 'ekran nie zależy od tego, czy adres to admin / istniejące konto');
+ok(!str_contains($s1, 'name="target"') && !str_contains($s1, '<select') && !str_contains($s1, 'service-card'), 'przed hasłem: żadnego wyboru usługi (ani select, ani kafelków)');
+ok(str_contains($s1, 'autocomplete="current-password"') && str_contains($s1, 'autocomplete="username"'), 'menedżer haseł: pole hasła + ukryty login');
+ok(!str_contains(Screens::password('"><script>@x.org'), '<script>'), 'adres w ekranie jest escapowany');
+
+group('Screens::choice (1.2.0): kafelki po poprawnym haśle administratora');
+$c = Screens::choice('boss@example.org', 'admin', true);
+ok(substr_count($c, 'class="service-card"') === 2 && str_contains($c, 'data-target="webmail"') && str_contains($c, 'data-target="admin"'), 'dwa kafelki: Webmail i Panel Admina');
+ok(!preg_match('/id="tileWebmail"[^>]*disabled/', $c) && !str_contains($c, 'choiceNote'), 'to samo hasło do skrzynki: oba kafelki aktywne');
+$c = Screens::choice('boss@example.org', 'webmail', false);
+ok(preg_match('/id="tileWebmail"[^>]*disabled/', $c) === 1 && str_contains($c, 'id="choiceNote"'), 'inne hasło skrzynki: kafelek Webmail wyłączony z wyjaśnieniem');
+eq([Screens::choiceFocus('webmail', true), Screens::choiceFocus('webmail', false), Screens::choiceFocus('admin', true)],
+   ['tileWebmail', 'tileAdmin', 'tileAdmin'], 'fokus na ostatnio wybranym kafelku (o ile aktywny)');
+ok(!str_contains(Screens::choice('"><script>@x.org', 'admin', false), '<script>'), 'adres w kafelkach escapowany');
+
+group('AuthFlow (1.2.0): hasło dla kafelka Webmail zaszyfrowane kluczem z przeglądarki');
+$_SERVER['REMOTE_ADDR'] = '203.0.113.5';
+$_SESSION = [];
+$flow = new App\Auth\AuthFlow();
+$flow->start('boss@example.org');
+ok($flow->valid('password') && !$flow->valid('choose'), 'po adresie: etap "password"');
+$key = $flow->offerChoice(7, '$argon2id$x', 'Tajne-Haslo-1!');
+ok(strlen($key) >= 40 && $flow->valid('choose') && !str_contains(serialize($_SESSION), 'Tajne-Haslo-1!'), 'w sesji nie ma hasła jawnym tekstem; klucz tylko dla przeglądarki');
+eq([$flow->adminId(), $flow->adminFp()], [7, hash('sha256', '$argon2id$x')], 'w sesji: id administratora i odcisk hasha');
+$copy = $_SESSION;
+eq($flow->takePassword(strrev($key)), null, 'zły klucz: brak hasła');
+eq($flow->takePassword($key), null, '... i szyfrogram jest już zużyty (jeden raz)');
+$_SESSION = $copy;
+eq($flow->takePassword($key), 'Tajne-Haslo-1!', 'dobry klucz: hasło odszyfrowane');
+$_SESSION = $copy;
+$_SESSION['portal_auth_flow']['email'] = 'inny@example.org';
+eq($flow->takePassword($key), null, 'szyfrogram przeniesiony do innego logowania (inny adres) się nie odszyfruje');
+$_SESSION = $copy;
+$_SERVER['REMOTE_ADDR'] = '203.0.113.6';
+ok(!$flow->valid('choose'), 'inny adres IP klienta: wybór nieważny (i wyczyszczony)');
+eq($_SESSION['portal_auth_flow'] ?? null, null, '... stan logowania usunięty');
+$_SERVER['REMOTE_ADDR'] = '203.0.113.5';
+$flow->start('a@b.org');
+eq($flow->offerChoice(1, 'h', null), '', 'kafelek Webmail niedostępny: nic nie jest szyfrowane');
+$_SESSION = [];
+
+group('AuthLog + filtr Fail2Ban (1.2.0): auth-failure liczone, reauth-failure nie');
+eq(App\Support\AuthLog::line('auth-failure', 'admin', 'Jan@x.org', '203.0.113.7'), 'auth-failure ip=203.0.113.7 kind=admin user=Jan%40x.org', 'linia nieudanego logowania');
+eq(App\Support\AuthLog::line('reauth-failure', 'admin', 'jan@x.org', '203.0.113.7'), 'reauth-failure ip=203.0.113.7 kind=admin user=jan%40x.org', 'linia nieudanego potwierdzenia hasłem');
+$conf = (string) file_get_contents(dirname(__DIR__) . '/system/fail2ban/filter.d/mailpanel-portal.conf');
+preg_match('/^failregex\s*=\s*(.+)$/m', $conf, $fm);
+$re = '~' . str_replace(['~', '<HOST>'], ['\~', '(?P<host>[0-9a-fA-F:.]+)'], trim($fm[1] ?? '')) . '~';
+$hit = static function (string $line) use ($re): ?string { return preg_match($re, $line, $m) === 1 ? $m['host'] : null; };
+// fail2ban dopasowuje linię "<host> <identyfikator>[pid]: <wiadomość>" (data odcięta; po odcięciu bywa spacja na początku)
+eq($hit('mail mailpanel[123]: ' . App\Support\AuthLog::line('auth-failure', 'admin', 'a@b.org', '203.0.113.7')), '203.0.113.7', 'filtr łapie auth-failure (journal: host + identyfikator[pid])');
+eq($hit(' mail mailpanel[9]: ' . App\Support\AuthLog::line('auth-failure', 'webmail', 'a@b.org', '2001:db8::7')), '2001:db8::7', 'filtr łapie auth-failure z IPv6 i spacją po odciętej dacie');
+eq($hit('mailpanel[9]: ' . App\Support\AuthLog::line('auth-failure', 'admin', '', '198.51.100.1')), '198.51.100.1', 'filtr łapie linię bez nazwy hosta');
+eq($hit('mail mailpanel[123]: ' . App\Support\AuthLog::line('reauth-failure', 'admin', 'a@b.org', '203.0.113.8')), null, 'filtr NIE łapie reauth-failure (literówka zalogowanego administratora)');
+eq($hit('mail mailpanel[1]: ' . App\Support\AuthLog::line('auth-failure', 'webmail', 'x ip=198.51.100.66 kind=admin', '203.0.113.9')), '203.0.113.9', 'wstrzyknięte "ip=" w loginie nie zmienia banowanego adresu');
+eq($hit('mail other[1]: x mailpanel[1]: auth-failure ip=203.0.113.11 kind=admin user=x'), null, 'linia innego programu udającego mailpanel nie pasuje');
+eq($hit('auth-failure ip=203.0.113.7 kind=admin user=x'), null, '(1.1.0 dopasowywał tylko gołą wiadomość — fail2ban jej nigdy tak nie podaje)');
+
+group('Accounts::reservedBy (1.2.0): skąd rezerwacja');
+eq(Accounts::reservedBy('postmaster', ''), ['base', 'postmaster'], 'postmaster: lista wbudowana');
+eq(Accounts::reservedBy('list-request', ''), ['base', '*-request'], 'wzorzec z listy wbudowanej');
+eq(Accounts::reservedBy('info', null), ['list', 'info'], 'info: lista z ustawień (domyślna)');
+eq(Accounts::reservedBy('jan', null), null, 'zwykła nazwa: brak rezerwacji');
 
 echo "\n";
 echo ($T['fail'] === 0 ? 'OK' : 'BŁĘDY') . ": {$T['pass']} przeszło, {$T['fail']} nie\n";
