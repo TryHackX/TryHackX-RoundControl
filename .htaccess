@@ -12,7 +12,35 @@ RewriteRule ^(?!installer|\.well-known\/|[a-zA-Z0-9]{16})(\.?[^\.]+)$ - [F]
 RewriteRule ^/?(\.git|\.tx|SQL|bin|config|logs|temp|tests|vendor|program\/(include|lib|localization|steps)) - [F]
 # - deny access to some documentation files
 RewriteRule /?(README.*|CHANGELOG.*|SECURITY.*|meta\.json|composer\..*|jsdeps.json)$ - [F]
+
+# 1.1.0 - what this package ships (or admins leave behind) that the web must never serve. The rules above only
+# catch names WITHOUT a dot, so ".env.bak", "sql_backup/dump.sql", "scripts/*.php", "install.sh" etc. used to be served.
+# - application, root-oriented helpers, templates, SQL, backups, old code, tests
+RewriteRule ^/?(app|scripts|system|sql|sql_backup|_legacy|plugins\/[^/]+\/config)(\/|$) - [F,NC]
+# - installers
+RewriteRule ^/?install\.(php|sh)$ - [F,NC]
+# - environment files and their copies (.env, .env.bak, .env.save, panel.env ...)
+RewriteRule (^|/)\.env - [F,NC]
+RewriteRule \.env$ - [F,NC]
+# - backups, dumps, keys, logs, swap files
+RewriteRule \.(sql|bak|old|orig|save|swp|log|sh|md|dist|example|pem|key|cnf)$ - [F,NC]
+RewriteRule ~$ - [F]
 </IfModule>
+
+# The same denial without mod_rewrite (if rewriting is unavailable, AllowOverride still applies, but a missing
+# module no longer opens these files).
+<FilesMatch "(^\.env|\.env$|\.(sql|bak|old|orig|save|swp|log|sh|md|dist|example|pem|key|cnf)$|~$)">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Single point of failure: all of the above, and the app/ deny file, depend on AllowOverride All. Keep the
+# configuration OUT of the web tree as well: /etc/mailpanel/panel.env is read before <root>/.env (README).
 
 <IfModule mod_deflate.c>
 SetOutputFilter DEFLATE

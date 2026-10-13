@@ -1,0 +1,16 @@
+# Text files are LF in the repository AND in the working tree on every platform: the shell scripts and the
+# `#!/usr/bin/php` helpers must not get a carriage return in the shebang line / at the end of every command
+# when someone clones the repo on Windows and copies the files to the server.
+* text=auto eol=lf
+*.sh text eol=lf
+*.php text eol=lf
+*.sql text eol=lf
+scripts/* text eol=lf
+system/** text eol=lf
+
+# Binary assets
+*.woff2 binary
+*.ttf binary
+*.png binary
+*.jpg binary
+*.ico binary

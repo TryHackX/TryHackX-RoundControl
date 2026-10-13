@@ -4,21 +4,24 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.0.1** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — a **security release**. If you run 1.0, upgrade now:
-[Upgrading from 1.0](#upgrading-from-10-security-release-101).
+**Version 1.1.0** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — a **security release** (registration rules, account
+deletion, helpers that report success only when they verified it, login limiting, file ownership). If you run 1.0.1:
+[Upgrading from 1.0.1](#upgrading-from-101-to-110). If you run 1.0: do
+[the 1.0.1 steps](#upgrading-from-10-security-release-101) first, or just run `install.sh` (it covers both).
 
 - **Login portal** (`portal.php`) — a shared entry screen for webmail and the panel
-  (flow: e-mail → pick service → password) + **public account registration** with per-IP
-  limits, a password policy and optional reCAPTCHA,
+  (flow: e-mail → password and service → in) + **public account registration** with per-IP
+  (IPv4) / per-/64 (IPv6) limits, reserved names, a password policy and optional reCAPTCHA,
 - **Admin panel** (`panel/`) — accounts (search by e-mail/IP/date/quota/%usage,
   quota in binary units, per-account daily send limit, password reset,
   bans, deletion together with the on-disk mailbox), IP blocks (local + Fail2Ban) with a
   suspicious-IP scanner, logs (registrations, admin logins, audit) with a universal
   search, editing of Fail2Ban and Postfix limits,
 - **Password self-service** — the Roundcube `password` plugin (SQL → `$6$` into virtual_users),
-- **Daily send limit** — a Postfix policy service (per account / global),
-- **Security**: CSRF, rate-limiting, brute-force lockouts, fail-closed reCAPTCHA,
-  a CSP with no inline JS, hardened sessions, the PRG pattern, action auditing.
+- **Daily send limit** — a Postfix policy service (per account / global), counted in **recipients**,
+- **Security**: CSRF, rate-limiting (per account+client and per client, never per account alone), fail-closed
+  reCAPTCHA, no account / role enumeration at login, a CSP with no inline JS, hardened sessions, the PRG pattern,
+  action auditing, least-privilege database accounts, code owned by root.
 
 ## Quick install
 
@@ -34,7 +37,146 @@ sudo bash install.sh   # scripts, sudoers + Fail2Ban helper, Fail2Ban, policy se
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
 
+## Upgrading from 1.0.1 to 1.1.0
+
+**What changes** (details: [CHANGELOG](CHANGELOG.md)): public registration refuses reserved / role names, names that an
+alias still points at and recently deleted names, and stores every address in lower case; deleting an account removes
+the aliases that point at it and quarantines its maildir instead of `rm -rf`; the root helpers
+(`mailpanel-f2b-apply`, `update-postfix-limits.sh`, `mailpanel-delete-user.sh`) check every write and **never report a
+success they have not verified**; login limiting no longer reveals accounts / roles and cannot lock the admin out;
+the daily send limit counts recipients; the web user no longer owns the code; database accounts get per-table grants;
+`.htaccess` really blocks what the README says it blocks.
+
+**You need to know three things before you start.**
+
+1. *php-fpm sandbox.* Debian's `php*-fpm.service` runs with `ProtectSystem=full`, and a process started through
+   `sudo` from PHP-FPM **inherits that sandbox**: `/etc` is read-only for the root helpers too. 1.0.1 wrote
+   `jail.local.new` next to `jail.local` and renamed it — impossible in that namespace (and it reported success). 1.1.0
+   rewrites `jail.local` **in place** and needs the drop-in `ReadWritePaths=/etc/fail2ban/jail.local` (a single file),
+   and `update-postfix-limits.sh` needs `/etc/postfix` writable too (`postconf -e` creates a temporary file and renames
+   it). 1.0.1 wrongly said the drop-in was not needed — **keep / install it** (step 5). `ReadWritePaths` only lifts the
+   read-only *mount*; the files stay `root:root 644`, so `www-data` still cannot write them.
+2. *Old sudo rules.* sudo grants a command if **any** rule matches. A leftover `www-data … doveadm … quota get -u *`
+   (in `/etc/sudoers` or an old `/etc/sudoers.d/mailpanel-*` file) or `… mailpanel-scan.sh *` makes the exact rules
+   worthless. Step 3 finds and removes them (`scripts/mailpanel-sudoers-cleanup.sh`).
+3. *Lower case.* Run `upgrade_1.1.0.sql` (step 1) **before** anyone deletes an account. A plain
+   `WHERE email <> LOWER(email)` finds nothing, because the column is compared case-insensitively — use `BINARY`.
+
+**Steps** (as root, package unpacked in `$PKG`; everything is idempotent; the portal and panel may show an error for a
+few seconds between steps 2 and 5).
+
+```bash
+PKG=/root/rc-1.1.0 ; RC=/var/www/roundcube ; FPM=php8.5-fpm       # adjust (systemctl list-units 'php*-fpm*')
+TS=$(date +%F-%H%M%S)
+
+# 0) preconditions and backups
+sudo -V | head -1                                                  # >= 1.9.10
+( umask 077; mysqldump mailserver > /root/mailserver-pre-1.1.0-$TS.sql )
+cp -a /etc/sudoers /root/sudoers.pre-1.1.0-$TS ; cp -a /etc/sudoers.d /root/sudoers.d.pre-1.1.0-$TS
+cp -a /etc/fail2ban/jail.local /root/jail.local.pre-1.1.0-$TS
+( cd $RC && tar czf /root/rc-overlay-pre-1.1.0-$TS.tgz app assets panel portal.php config/panel_config.php plugins/custom_auth .htaccess )
+
+# 1) database: structure, data migration (lower case; READ the reports it prints), new account, grants
+mysql mailserver < $PKG/sql/panel_schema.sql
+mysql mailserver < $PKG/sql/upgrade_1.1.0.sql
+if [ "$(mysql -N -B -e "SELECT COUNT(*) FROM mysql.user WHERE User='mailpostlogin' AND Host='localhost'")" = 0 ]; then
+  PLPW=$(openssl rand -hex 24)
+  mysql -e "CREATE USER 'mailpostlogin'@'localhost' IDENTIFIED BY '$PLPW';"
+  ( umask 077; printf '[client]\nuser=mailpostlogin\npassword=%s\nhost=localhost\n' "$PLPW" > /etc/dovecot/mysql-mailpanel.cnf.new )
+  cp -p /etc/dovecot/mysql-mailpanel.cnf /root/mysql-mailpanel.cnf.pre-1.1.0-$TS
+  chown dovecot:dovecot /etc/dovecot/mysql-mailpanel.cnf.new ; chmod 400 /etc/dovecot/mysql-mailpanel.cnf.new
+  mv /etc/dovecot/mysql-mailpanel.cnf.new /etc/dovecot/mysql-mailpanel.cnf
+fi
+mysql < $PKG/sql/panel_grants.sql ; mysql < $PKG/sql/postlogin_grants.sql
+mysql --defaults-extra-file=/etc/dovecot/mysql-mailpanel.cnf -e 'SELECT 1'      # the postlogin account connects
+
+# 2) code: root-owned (no --delete: nothing else of yours is touched; tests/ and sql/ are not deployed)
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/app $PKG/assets $PKG/panel $PKG/portal.php $PKG/.htaccess $RC/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/config/panel_config.php $RC/config/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/plugins/custom_auth $RC/plugins/
+rm -rf $RC/tests ; for f in $RC/app/src/*/*.php $RC/panel/*.php $RC/portal.php ; do php -l "$f" >/dev/null || echo "SYNTAX ERROR: $f" ; done
+
+# 3) root helpers, scripts, sudoers (validated BEFORE it is installed), removal of the OLD wildcard rules
+install -o root -g root -m 755 $PKG/scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
+php -l /usr/local/sbin/mailpanel-f2b-apply
+install -o root -g root -m 755 $PKG/scripts/mailpanel-scan.sh         /usr/local/bin/
+install -o root -g root -m 700 $PKG/scripts/mailpanel-delete-user.sh  /usr/local/bin/
+install -o root -g root -m 755 $PKG/scripts/update-postfix-limits.sh  /usr/local/bin/
+install -o root -g root -m 755 $PKG/scripts/mailpanel-policy-daily.php /usr/local/bin/
+install -o root -g dovecot -m 750 $PKG/scripts/dovecot-postlogin.sh   /usr/local/bin/
+visudo -cf $PKG/system/sudoers.d/mailpanel && install -o root -g root -m 440 $PKG/system/sudoers.d/mailpanel /etc/sudoers.d/mailpanel
+grep -q 'mailpanel-f2b-apply ""' /etc/sudoers.d/mailpanel || echo "!!! the new sudoers file is NOT installed - stop here"
+bash $PKG/scripts/mailpanel-sudoers-cleanup.sh              # lists leftovers (old 1.0 rules); exit 1 = something is left
+bash $PKG/scripts/mailpanel-sudoers-cleanup.sh --apply      # comments them out, visudo-validated, originals in /root/sudoers-backup-*
+visudo -c ; sudo -l -U www-data                             # only ^regex$ / "" rules, no '*' anywhere
+rm -rf /var/lib/mailpanel-f2b                               # 1.0.1 proposal directory, no longer used
+
+# 4) Fail2Ban: new filter + the (disabled) portal jail; jail.local stays root:root 644
+install -o root -g root -m 644 $PKG/system/fail2ban/filter.d/mailpanel-portal.conf /etc/fail2ban/filter.d/
+diff $PKG/system/fail2ban/jail.d/mailpanel.local /etc/fail2ban/jail.d/mailpanel.local || true   # only the new [mailpanel-portal] block should differ
+install -o root -g root -m 644 $PKG/system/fail2ban/jail.d/mailpanel.local /etc/fail2ban/jail.d/mailpanel.local
+chown root:root /etc/fail2ban/jail.local ; chmod 644 /etc/fail2ban/jail.local
+fail2ban-client -t && fail2ban-client reload
+
+# 5) php-fpm drop-in (additive to an existing one) + RESTART (reload does not rebuild the sandbox)
+install -d -m 755 /etc/systemd/system/$FPM.service.d
+printf '%s\n' '[Service]' 'ReadWritePaths=-/etc/fail2ban/jail.local -/etc/postfix' > /etc/systemd/system/$FPM.service.d/mailpanel.conf
+systemctl daemon-reload ; systemctl restart $FPM
+systemctl show $FPM -p ProtectSystem -p ReadWritePaths
+
+# 6) prove the helpers work under THE SAME sandbox (this is what 1.0.1's self-test never exercised)
+systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/fail2ban/jail.local \
+  /usr/local/sbin/mailpanel-f2b-apply --selftest                                # -> selftest ok
+sudo -u www-data sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local     # -> bez zmian
+CUR=$(postconf -h smtpd_client_message_rate_limit)
+systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/postfix \
+  /usr/sbin/postconf -e "smtpd_client_message_rate_limit=$CUR" && echo "postconf -e works under the sandbox"
+
+# 7) file ownership: code root:root, only temp/ and logs/ writable by www-data
+chown -R root:root $RC ; chown -R www-data:www-data $RC/temp $RC/logs
+for f in $RC/.env /etc/mailpanel/panel.env $RC/config/config.inc.php $RC/plugins/password/config.inc.php ; do
+  [ -f "$f" ] && chown root:www-data "$f" && chmod 640 "$f"          # secrets: readable by the PHP process through the group only
+done
+find $RC \( -path $RC/temp -o -path $RC/logs \) -prune -o -type f \( -perm -g+w -o -perm -o+w \) -exec chmod go-w {} +
+find $RC \( -path $RC/temp -o -path $RC/logs \) -prune -o ! -type l \( -user www-data -o -perm -o+w \) -print        # must print nothing
+# nothing the web user needs became unreadable (a 600/640 file that used to belong to www-data is now root's): must print nothing
+sudo -u www-data find $RC \( -path $RC/temp -o -path $RC/logs \) -prune -o -type f ! -readable -print
+sudo -u www-data php -r 'echo is_readable("'$RC'/config/config.inc.php") ? "config.inc.php readable\n" : "!!! config.inc.php NOT readable\n";'
+
+# 8) mailbox quarantine (deleting an account moves its maildir here; the cron purges entries older than 30 days)
+install -d -o root -g root -m 700 /var/mail/deleted
+install -o root -g root -m 755 $PKG/scripts/mailpanel-purge-deleted /etc/cron.daily/mailpanel-purge-deleted
+```
+
+Then, by hand: (a) in `/etc/postfix/master.cf`, in the `submission` and `submissions` blocks add
+`-o smtpd_recipient_limit=50` next to the existing `-o smtpd_data_restrictions=$mua_data_restrictions`
+(`postfix check && systemctl reload postfix`) — the daily limit now counts recipients; (b) Roundcube must send through
+port 587 **with authentication** (`smtp_host = 'tls://localhost:587'`, `smtp_user = '%u'`), otherwise no limit applies;
+(c) optionally move the configuration out of the web tree:
+`install -d -o root -g www-data -m 750 /etc/mailpanel && mv $RC/.env /etc/mailpanel/panel.env` (it is read first when
+present); (d) optionally enable the `[mailpanel-portal]` jail (see `jail.d/mailpanel.local`); (e) a DNS **CAA** record
+(`0 issue "letsencrypt.org"` or your CA) limits who may issue certificates for your domain.
+
+**Verify.**
+
+```bash
+stat -c '%a %U:%G' /etc/fail2ban/jail.local                       # 644 root:root
+mysql -e "SHOW GRANTS FOR 'mailpanel'@'localhost'"                # per-table list, no ON mailserver.*
+curl -sk -o /dev/null -w '%{http_code}\n' https://<host>/.env     # 403 (also /.env.bak, /scripts/mailpanel-f2b-apply.php, /install.sh)
+```
+
+In the panel: save once in the **Fail2Ban** tab (a real change, e.g. `maxretry`) — the message must say it was saved,
+checked and reloaded, and `sha256sum /etc/fail2ban/jail.local` must change; save the **Security** (Postfix) form and
+check `postconf smtpd_client_message_rate_limit`; log in as a normal user and as the admin; in **Users** try *Add* with
+`postmaster` (refused without the tick) and delete a throw-away account (maildir appears in `/var/mail/deleted/`).
+If a step goes wrong, the pre-1.1.0 copies in `/root/*pre-1.1.0*` restore the previous state; do not "roll back" by
+making `jail.local` writable for `www-data`.
+
 ## Upgrading from 1.0 (security release 1.0.1)
+
+> Historical. The 1.0.1 helper protocol (a proposal *file* in `/var/lib/mailpanel-f2b`, atomic rename) was replaced in
+> 1.1.0 (proposal on stdin, in-place write). From 1.0, the simplest path is to unpack the **1.1.0** package and run
+> `sudo bash install.sh` (sections 0-3, 7, 8, 10, 11); the steps below are what 1.0.1 changed.
 
 **What was wrong.** In 1.0 the sudo rules for `fail2ban-client` used `*` wildcards (`set * banip *`, `status *` …).
 In sudoers a `*` inside arguments also matches **spaces**, so any code running as `www-data` — any PHP site on the
@@ -49,8 +191,8 @@ which 1.0 made writable by `www-data` (664): a jail may name any action.
   `/var/lib/mailpanel-f2b/jail.local.proposed` and runs the root helper `mailpanel-f2b-apply` through sudo; the helper
   installs it only if **nothing but the values of the options edited in the tab changed** and each value is well-formed,
   tests it with `fail2ban-client -t`, and reloads Fail2Ban (otherwise it refuses and changes nothing);
-- the `ReadWritePaths=/etc/fail2ban/jail.local` php-fpm drop-in (if you added one) and the `mailpanel-f2b-reload`
-  timer are no longer needed.
+- the `mailpanel-f2b-reload` timer is no longer needed (the `ReadWritePaths=/etc/fail2ban/jail.local` php-fpm drop-in,
+  however, IS needed from 1.1.0 on — see below; 1.0.1 wrongly called it unnecessary).
 
 **Upgrade — option A (installer).** Copy the 1.0.1 package over the Roundcube directory (the `rsync` from step 1
 below), run `sudo bash install.sh` and answer **yes (`t`)** to sections 2, 3 and 8. Section 2 lists any *old* wildcard
@@ -98,7 +240,7 @@ visudo -cf /etc/sudoers.new && install -o root -g root -m 440 /etc/sudoers.new /
 systemctl disable --now mailpanel-f2b-reload.timer
 rm -f /etc/systemd/system/mailpanel-f2b-reload.{timer,service} /usr/local/sbin/mailpanel-f2b-reload.php
 systemctl daemon-reload
-#    and the php-fpm drop-in, if you had one:  ReadWritePaths=/etc/fail2ban/jail.local  -> delete it, reload php-fpm
+#    KEEP the php-fpm drop-in ReadWritePaths=/etc/fail2ban/jail.local if you have one (1.1.0 needs it; see "Upgrading from 1.0.1")
 ```
 
 **Verify.**
@@ -112,10 +254,8 @@ done
 for c in "set dovecot action nftables actionban touch banip 1.2.3.4" "set dovecot banip 1.2.3.4 extra" "start" "stop"; do
   sudo -l -U www-data /usr/bin/fail2ban-client $c >/dev/null 2>&1 && echo "!!! allowed (must NOT be): $c" || echo "refused (good): $c"
 done
-# the helper end to end, as the panel calls it: an unchanged proposal -> "bez zmian" ("no changes")
-cp /etc/fail2ban/jail.local /var/lib/mailpanel-f2b/jail.local.proposed
-chown www-data:www-data /var/lib/mailpanel-f2b/jail.local.proposed
-sudo -u www-data sudo -n /usr/local/sbin/mailpanel-f2b-apply
+# the helper end to end, as the panel calls it (1.1.0: the proposal is read from stdin): unchanged -> "bez zmian" ("no changes")
+sudo -u www-data sudo -n /usr/local/sbin/mailpanel-f2b-apply < /etc/fail2ban/jail.local
 ```
 
 Then open the panel's **Fail2Ban** tab and save once. If something in step 5 goes wrong, `/root/sudoers.bak-*` is
@@ -130,12 +270,15 @@ that is the hole this release closes (an error message from the helper says what
 ├── panel/  config/panel_config.php
 ├── plugins/custom_auth/          # redirect unauthenticated users to the portal
 ├── plugins/password/config.inc.php.example
-├── scripts/                      # scripts for /usr/local/bin (scanner, policy, delete-user…)
-│   └── mailpanel-f2b-apply.php   #   root helper → /usr/local/sbin (installs the panel's jail.local proposal)
+├── scripts/                      # scripts for /usr/local/bin (scanner, policy, delete-user, postfix limits…)
+│   ├── mailpanel-f2b-apply.php   #   root helper → /usr/local/sbin (installs the panel's jail.local proposal, in place)
+│   └── mailpanel-sudoers-cleanup.sh  # finds / removes OLD wildcard sudo rules (run from an admin shell)
 ├── system/                       # integration templates (sudoers, fail2ban, postfix, policy.cf)
-├── sql/panel_schema.sql          # database schema (IF NOT EXISTS)
-├── tests/run.php                 # tests (dependency-free runner; dev, needs the DB)
-├── tests/sudoers_test.php        # sudoers rules + Fail2Ban helper consistency (no DB, no sudo; runs anywhere)
+├── sql/panel_schema.sql          # database schema (IF NOT EXISTS) — also upgrades an existing one
+├── sql/panel_grants.sql          # least-privilege grants for the panel DB account (+ postlogin_grants.sql)
+├── sql/upgrade_1.1.0.sql         # data migration 1.0.x → 1.1.0 (lower-case addresses) + reports
+├── tests/                        # run.php (dev DB), db_test.php (own scratch DB), security_test.php, scripts_test.php,
+│                                 #   sudoers_test.php — the last three need no database and no sudo; run anywhere
 ├── CHANGELOG.md
 ├── .env.example  .gitignore  LICENSE
 ```
@@ -167,8 +310,9 @@ You copy everything into the Roundcube root directory, **preserving the tree**:
 
 ```
 roundcube/                        ← your Roundcube root directory
-├── .htaccess                     ← REPLACE (blocks app/, .env, sql_backup…)
-├── .env                          ← CREATE from .env.example (secrets, NOT from the package!)
+├── .htaccess                     ← REPLACE (blocks app/, scripts/, sql/, .env*, backups, installers…)
+├── .env                          ← CREATE from .env.example (secrets, NOT from the package!); better
+│                                    /etc/mailpanel/panel.env (read first when present)
 ├── portal.php                    ← NEW: login/registration portal
 ├── app/                          ← NEW: all application code (blocked from the web)
 │   ├── .htaccess                 ←   deny all
@@ -185,8 +329,8 @@ roundcube/                        ← your Roundcube root directory
 │   └── panel_config.php          ← NEW/REPLACE: wires rc_* settings into RC
 ├── plugins/
 │   └── custom_auth/              ← NEW: redirect unauthenticated users to the portal
-├── sql/panel_schema.sql          ← (need not live on the server — for the DB import)
-└── tests/run.php                 ← (optional; run only on dev)
+├── sql/*.sql                     ← (need not live on the server — for the DB import)
+└── tests/                        ← do NOT deploy (the rsync below excludes it)
 ```
 
 The rest of Roundcube (`program/`, `skins/`, `vendor/`, `config/config.inc.php`…)
@@ -195,11 +339,19 @@ stays unchanged — apart from one line in step 5.
 ## 3. Step 1 — Files
 
 ```bash
-# from the package directory:
-rsync -av --exclude README.md --exclude sql/ ./ /var/www/roundcube/
-chown -R www-data:www-data /var/www/roundcube/app /var/www/roundcube/assets \
-    /var/www/roundcube/portal.php /var/www/roundcube/panel /var/www/roundcube/plugins/custom_auth
+# from the package directory (the code is owned by ROOT; the web user only reads it):
+rsync -av --chown=root:root --chmod=D755,F644 \
+    --exclude .git --exclude README.md --exclude CHANGELOG.md --exclude sql/ --exclude tests/ --exclude scripts/ \
+    --exclude system/ --exclude install.php --exclude install.sh --exclude .env.example --exclude .gitignore --exclude LICENSE \
+    ./ /var/www/roundcube/
 ```
+
+**File ownership (1.1.0).** `www-data` must be able to *read* the code but never *write* it: when the code belongs to
+`www-data`, a flaw in **any** site served by the same PHP-FPM pool can replace `panel/index.php` or `portal.php` and
+read admin and webmail passwords (and use every `sudo` rule the panel has). So: code `root:root` (directories 755,
+files 644), secrets (`.env`, `config/config.inc.php`, `plugins/password/config.inc.php`) `root:www-data` 640, and
+**only** Roundcube's own `temp/` and `logs/` writable by `www-data`. `install.sh` section 7 does this (it also fixes
+stray 664 files); to check: `find /var/www/roundcube -user www-data -o -perm -o+w` should list only `temp/` and `logs/`.
 
 Remove leftovers of old panel versions if present (replaced by `app/`):
 `bootstrap.php` (in the root), `panel/config.php`, `panel/_csrf.php`,
@@ -207,18 +359,27 @@ Remove leftovers of old panel versions if present (replaced by `app/`):
 
 ## 4. Step 2 — Database
 
-```bash
-# 1) DB user for the panel (EXECUTE needed for the sp_register_login procedure)
-mysql -u root -p <<'SQL'
-CREATE DATABASE IF NOT EXISTS mailserver CHARACTER SET utf8mb4;
-CREATE USER IF NOT EXISTS 'mailpanel'@'localhost' IDENTIFIED BY 'STRONG_PASSWORD';
-GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON mailserver.* TO 'mailpanel'@'localhost';
-FLUSH PRIVILEGES;
-SQL
+`install.sh` section 0 does all of this (creates the accounts that are missing — with random passwords it prints once —
+and never touches the password of one that exists). By hand:
 
-# 2) schema (safe for existing data: IF NOT EXISTS / INSERT IGNORE)
+```bash
+# 1) database and the two application accounts (passwords: only [A-Za-z0-9._~+-], e.g. openssl rand -hex 24)
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS mailserver CHARACTER SET utf8mb4;
+  CREATE USER IF NOT EXISTS 'mailpanel'@'localhost' IDENTIFIED BY 'STRONG_PASSWORD';
+  CREATE USER IF NOT EXISTS 'mailpostlogin'@'localhost' IDENTIFIED BY 'ANOTHER_STRONG_PASSWORD';"
+
+# 2) schema (safe for existing data: IF NOT EXISTS / INSERT IGNORE / CREATE OR REPLACE) ...
 mysql -u root -p mailserver < sql/panel_schema.sql
+
+# 3) ... and the grants: per table, not `mailserver.*` (REVOKEs everything first, so it is also the way to tighten an
+#    existing account). `mailpostlogin` (used by the Dovecot post-login script) may only EXECUTE one procedure.
+mysql -u root -p < sql/panel_grants.sql
+mysql -u root -p < sql/postlogin_grants.sql
 ```
+
+What the grants leave out on purpose: no `INSERT`/`UPDATE` on `virtual_aliases` (whoever takes over the panel's database
+account cannot redirect anybody's mail), no `DELETE` on the audit / login / registration logs, no access to tables the
+panel does not use. The reCAPTCHA secret is no longer printed in the settings page.
 
 Then (if it is a fresh database) add the domain and the first administrator:
 
@@ -290,16 +451,54 @@ The panel runs system operations as `www-data` through `sudo`. The rules live in
 ```bash
 # 1) the Fail2Ban helper first: a sudoers rule can only be tested against a command that exists
 install -o root -g root -m 755 scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
-install -d -o www-data -g www-data -m 750 /var/lib/mailpanel-f2b      # where the panel leaves its proposal
 # 2) the rules (sudo >= 1.9.10; validate BEFORE installing)
 visudo -cf system/sudoers.d/mailpanel
 install -o root -g root -m 440 system/sudoers.d/mailpanel /etc/sudoers.d/mailpanel
+# 3) remove OLD wildcard rules for the same commands, wherever they live (sudo grants a command if ANY rule matches)
+bash scripts/mailpanel-sudoers-cleanup.sh            # lists them; add --apply to comment them out (validated, backed up)
+sudo -l -U www-data                                  # must show only exact ^regex$ / "" rules - no '*'
 ```
 
-Do **not** paste wildcard rules for `fail2ban-client` (`set * banip *` and the like) into `visudo`: in sudoers a `*`
-in arguments also matches spaces, which lets any code running as `www-data` run arbitrary `fail2ban-client`
-commands (e.g. replace a jail's `actionban`, which Fail2Ban then runs as root). The shipped file uses exact
-`^regex$` arguments instead.
+Do **not** paste wildcard rules for `fail2ban-client`, `doveadm` or `mailpanel-scan.sh` (`set * banip *`, `-u *`, `*`)
+into `visudo`: in sudoers a `*` in arguments also matches spaces, which lets any code running as `www-data` run
+arbitrary `fail2ban-client` commands (e.g. replace a jail's `actionban`, which Fail2Ban then runs as root). The shipped
+file uses exact `^regex$` arguments instead. (In a `^regex$` argument the sudoers characters `,` `:` `=` `\` are
+escaped with a backslash — see the file.)
+
+### php-fpm sandbox (`ReadWritePaths`) — needed for the root helpers
+
+Debian's `php*-fpm.service` ships with `ProtectSystem=full`: `/usr`, `/boot` and **`/etc` are read-only**, and a process
+started through `sudo` from PHP-FPM **inherits that mount namespace — root included**. The helpers that write under
+`/etc` therefore need two exceptions, as a systemd drop-in (`install.sh` section 10 writes it):
+
+```ini
+# /etc/systemd/system/php8.5-fpm.service.d/mailpanel.conf          (use your service name)
+[Service]
+ReadWritePaths=-/etc/fail2ban/jail.local -/etc/postfix
+```
+
+```bash
+systemctl daemon-reload && systemctl restart php8.5-fpm       # a RESTART: reload does not rebuild the sandbox
+systemctl show php8.5-fpm -p ProtectSystem -p ReadWritePaths
+```
+
+| Helper | Writes | Needs |
+|---|---|---|
+| `mailpanel-f2b-apply` | `/etc/fail2ban/jail.local` **in place** (open, `flock`, rewrite, truncate, read back; it cannot create or rename files there), backups in `/var/backups/mailpanel-f2b` | `ReadWritePaths=/etc/fail2ban/jail.local` |
+| `update-postfix-limits.sh` | `/etc/postfix/main.cf` (`postconf -e` writes a temporary file and renames it) | `ReadWritePaths=/etc/postfix` (the directory) |
+| `mailpanel-delete-user.sh` | moves a maildir under `/var/mail` (stays writable) | nothing |
+
+`ReadWritePaths` only lifts the read-only *mount*: the files stay `root:root 644`, so `www-data` still cannot write them.
+**Test the helpers under the same sandbox**, not from a plain root shell (a plain root shell is what hid the problem):
+
+```bash
+systemd-run --quiet --wait --pipe --collect -p ProtectSystem=full -p ReadWritePaths=/etc/fail2ban/jail.local \
+  /usr/local/sbin/mailpanel-f2b-apply --selftest                 # -> selftest ok
+```
+
+Every helper checks each write and exits non-zero with a clear message on failure; the panel shows that message instead
+of "saved". If you see `read-only file system` or `nie mogę otworzyć … do zapisu`, the drop-in is missing or php-fpm was
+not restarted.
 
 What each entry enables (without an entry, that feature shows a readable message; the rest works):
 
@@ -309,13 +508,12 @@ What each entry enables (without an entry, that feature shows a readable message
 | `fail2ban-client set <jail> unbanip <ip>` | the "Unban (F2B)" button |
 | `fail2ban-client set <jail> banip <ip>` | manual IP block + bans from the scanner |
 | `fail2ban-client get <jail> banip --with-time` | the "Expires" column with the remaining ban time |
-| `fail2ban-client set <jail> bantime <seconds>` | timed bans from the scanner (jail `panel-tempban`) |
-| `fail2ban-client reload` | reload after saving the "Fail2Ban" tab |
-| `mailpanel-f2b-apply` | saving the "Fail2Ban" tab (see "Editing Fail2Ban from the panel" below) |
-| `update-postfix-limits.sh` | applying Postfix limits ("Security") |
-| `mailpanel-delete-user` | deleting mailbox files when removing an account |
-| `doveadm -f flow quota get -u <user>` | quota usage on the account list |
-| `mailpanel-scan.sh *` | the suspicious-IP scanner (accepts a 3rd argument: `ssh`/`dovecot`/`postfix`). The `*` is acceptable here because the script validates strictly: both dates must match `YYYY-MM-DD`, the source is a whitelist, extra arguments are ignored |
+| `fail2ban-client set panel-tempban bantime <seconds>` | timed bans (jail `panel-tempban` **only** — a rule for any jail would let `www-data` set the bantime of `sshd` or `recidive` to one second) |
+| `mailpanel-f2b-apply ""` | saving the "Fail2Ban" tab; takes no arguments, reads the proposal from stdin, reloads Fail2Ban itself (so there is no `fail2ban-client reload` rule) |
+| `update-postfix-limits.sh` | applying Postfix limits ("Security"); three integers, read back and checked |
+| `mailpanel-delete-user.sh` | removing an account's maildir: validates the address, asks Dovecot whether the account still exists (refuses if it does or cannot tell), checks the real path, and **moves** the maildir to `/var/mail/deleted` (a quarantine purged after 30 days by `/etc/cron.daily/mailpanel-purge-deleted`) instead of `rm -rf` |
+| `doveadm -f flow quota get -u <user>` | quota usage on the account list (exact `^regex$`) |
+| `mailpanel-scan.sh SINCE UNTIL [source]` | the suspicious-IP scanner: exactly two `YYYY-MM-DD` dates and optionally `ssh`/`dovecot`/`postfix` (exact `^regex$`; the script validates again) |
 
 ### Panel jails ("permanent" and timed blocks)
 
@@ -371,32 +569,50 @@ and when done `fail2ban-client reload`.
 
 `/etc/fail2ban/jail.local` must be **`root:root` 644** — it must *not* be writable by `www-data`: Fail2Ban runs as
 root and a jail may name any action, so a `jail.local` the web user can write is a way to root. The "Fail2Ban" tab
-therefore does not write the file itself: it writes a *proposal* to `/var/lib/mailpanel-f2b/jail.local.proposed`
-(directory `www-data` 750) and runs `sudo -n /usr/local/sbin/mailpanel-f2b-apply`. That root helper installs the
-proposal only if it differs from the current file **solely in the values of the options the tab edits**
-(`[DEFAULT]`, `[roundcube-auth]`, `[dovecot]`, `[postfix-sasl]`, `[recidive]`: `enabled`, `findtime`, `bantime`,
-`maxretry`, `bantime.increment`, `bantime.factor`, `bantime.maxtime`, `ignoreip`), each value well-formed
-(times, numbers, true/false, IP / CIDR lists). It keeps a copy in `/var/backups/mailpanel-f2b/`, runs
-`fail2ban-client -t` (restoring the old file if Fail2Ban rejects it) and reloads Fail2Ban. Anything else — a new line,
-a changed section header, a changed jail outside that list — is refused with `odrzucone: …` and nothing is changed.
-Edit everything else in `jail.local` as root, by hand. `F2B_JAIL_LOCAL` in `.env` must stay
-`/etc/fail2ban/jail.local` (the only file the helper handles).
+therefore does not write the file itself: it computes the new file and pipes it, on **standard input**, to
+`sudo -n /usr/local/sbin/mailpanel-f2b-apply` (no proposal file exists anywhere `www-data` could swap it). The root
+helper accepts it only if it differs from the current file **solely in the values of the options the tab edits** —
+`[DEFAULT]`: `findtime`, `bantime`, `bantime.maxtime`, `maxretry`, `bantime.factor`, `bantime.increment`, `ignoreip`;
+`[roundcube-auth]`, `[dovecot]`, `[postfix-sasl]`, `[recidive]`: `enabled`, `findtime`, `maxretry`, `bantime` (`enabled`
+is refused under `[DEFAULT]`, where it would switch on every stock jail) — each value well-formed (times, numbers,
+true/false, IP / CIDR lists).
+
+Then, **in place** (see "php-fpm sandbox" above: under `ProtectSystem=full` the helper can neither create a temporary
+file next to `jail.local` nor rename over it): backup to `/var/backups/mailpanel-f2b/` (newest 30 kept) → open
+`jail.local` for writing → `flock` (a second concurrent save waits) → rewrite from offset 0 and truncate → read the
+file back and compare byte for byte → `fail2ban-client -t` → `reload`. Every write, `chown` and `chmod` result is
+checked. If the write, the read-back or `-t` fails, the previous content is restored in place and the helper exits
+non-zero with a message; if the reload fails after a good test it exits 2. The panel shows the message — it never
+says "saved" for something that was not written. A new line, a changed section header or a changed jail outside the
+list is refused with `odrzucone: …` and nothing changes. Edit everything else in `jail.local` as root, by hand.
+`F2B_JAIL_LOCAL` in `.env` must stay `/etc/fail2ban/jail.local` (the only file the helper handles).
 
 There is no reload timer any more: the helper reloads Fail2Ban itself. (1.0 shipped `mailpanel-f2b-reload`, a
 timer that blindly reloaded on every `jail.local` mtime change; `install.sh` section 8 removes it.)
 
-The scripts `/usr/local/bin/update-postfix-limits.sh` and `/usr/local/bin/mailpanel-delete-user`
-are your existing scripts (the same ones the old panel used). The panel detects
-their availability automatically (a probe every 5 minutes).
+The scripts `/usr/local/bin/update-postfix-limits.sh` and `/usr/local/bin/mailpanel-delete-user.sh` are installed by
+`install.sh` section 1; the panel detects their availability automatically (a probe every 5 minutes). Both check every
+step and exit non-zero on any failure (see the table in "php-fpm sandbox").
 
 Note: `APP_ENV=prod` in `.env` is required — in `dev` mode the system
 integrations are deliberately disabled.
+
+#### Optional: Fail2Ban for portal logins
+
+The portal writes every failed login to syslog (`mailpanel`, facility auth: `auth-failure ip=… kind=admin|webmail
+user=…`, IP first, user URL-encoded last). `system/fail2ban/jail.d/mailpanel.local` ships a **disabled**
+`[mailpanel-portal]` jail with a matching filter: enable it (after `journalctl -t mailpanel` shows the lines) to ban at
+the firewall instead of slowing requests down in PHP.
 
 ### Daily send limit (Postfix policy service)
 
 The "Send limit (per day)" setting and individual limits (the "Change
 Quota" modal) are enforced by a separate Postfix policy service — without it the values are
-only saved in the database. Installation:
+only saved in the database. **The limit counts recipients** (1.1.0): a message to 20 addresses uses 20 units, and a
+single message with more recipients than the whole daily limit is refused outright (Postfix reports `recipient_count`
+at the DATA stage; the counter is increased by one atomic SQL statement, so parallel sessions cannot overshoot).
+Before 1.1.0 it counted messages, so a limit of 50 allowed 50 × `smtpd_recipient_limit` (Postfix default 1000)
+recipients. Installation:
 
 ```bash
 # 1) policy script
@@ -428,7 +644,8 @@ mua_data_restrictions = reject_unauth_pipelining, check_policy_service unix:priv
 ```
 
 In `/etc/postfix/master.cf` — in the `submission` and `submissions` blocks add
-`-o smtpd_data_restrictions=$mua_data_restrictions`, and at the end of the file add the service:
+`-o smtpd_data_restrictions=$mua_data_restrictions` and `-o smtpd_recipient_limit=50` (caps the recipients of one
+message on those ports), and at the end of the file add the service:
 
 ```
 policy-daily unix  -       n       n       -       0       spawn
@@ -440,6 +657,12 @@ SASL-authenticated sends (Roundcube webmail and external clients such as
 Thunderbird — both go through port 587/465). Port 25 (incoming mail) is not
 touched. A database failure = fail-open (mail goes out, the limit unenforced).
 Limit semantics: account `NULL` = the global one from the panel, `0` = no limit.
+**Roundcube must send through port 587 with authentication** (`smtp_host = 'tls://localhost:587'`,
+`smtp_user = '%u'`, `smtp_pass = '%p'`): without SASL the policy sees no `sasl_username` and answers DUNNO — no limit.
+
+Note: the Postfix client limits edited in the panel's "Security" tab (`smtpd_client_message_rate_limit` and friends)
+go to `main.cf`, so they apply to **every** smtpd service including port 25 (incoming mail). To confine them to
+submission, keep the defaults in `main.cf` and set them with `-o …` in the `submission`/`submissions` blocks instead.
 
 The sender of a bounced message gets a `554 5.7.1` error already in the client (webmail
 shows it on "Send"), and on the FIRST bounce of a given day additionally a
@@ -471,15 +694,22 @@ In the vhost, the Roundcube directory must honor `.htaccess`:
 > In that case point the `<Directory>` directive at `/var/www/roundcube/public_html`
 > with `Options FollowSymLinks`.
 
-The `.htaccess` from the package blocks web access to: `app/`, `config/`, `logs/`, `temp/`,
-`vendor/`, `sql_backup/`, `_legacy/`, `tests/`, `.env` files and documentation.
+The `.htaccess` from the package blocks web access to: `app/`, `config/`, `logs/`, `temp/`, `vendor/`, `scripts/`,
+`system/`, `sql/`, `sql_backup/`, `_legacy/`, `tests/`, the installers (`install.php`, `install.sh`), every `.env*`
+file (`.env.bak`, `.env.save`, `panel.env` …), backups / dumps / keys / logs by extension (`.sql .bak .old .orig .save
+.swp .log .sh .md .pem .key .cnf .dist .example`, `~`) and documentation — with mod_rewrite rules **and** a
+`<FilesMatch>` fallback. (1.0.x claimed this but its rules only matched names *without* a dot, so e.g. `.env.bak`,
+`sql_backup/*.sql` and `scripts/*` were served.) Everything depends on `AllowOverride All`, so also keep the secrets
+**out of the web tree**: put the configuration in `/etc/mailpanel/panel.env` (`root:www-data` 640; it is read before
+`<root>/.env`), and with Roundcube 1.7 point the DocumentRoot at `public_html/` (symlinks only). The scripts in
+`scripts/` also refuse to run outside the CLI.
 
 ## 8. Post-install verification
 
 | Test | Expected result |
 |---|---|
 | `https://domain/portal.php` | login screen (dark theme) |
-| `https://domain/.env` | **403** |
+| `https://domain/.env`, `/.env.bak`, `/install.sh`, `/scripts/mailpanel-f2b-apply.php`, `/sql/panel_schema.sql` | **403** |
 | `https://domain/app/bootstrap.php` | **403** |
 | `https://domain/config/panel_config.php` | **403** |
 | log in with the admin e-mail → "Admin Panel" | panel with styles and icons |
@@ -499,29 +729,66 @@ Emergency disable from SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_en
 
 `.env`: `APP_ENV=dev` → logging into webmail verifies the password against the
 `$6$` hash from `virtual_users` (no IMAP), system integrations disabled, full
-error messages. Tests: `php tests/run.php` (uses the database from `.env`, cleans up
-after itself — run on dev, not in production); `php tests/sudoers_test.php` (the sudoers rules and the
-Fail2Ban helper vs. `Commands.php`; needs no database and no sudo, safe anywhere).
+error messages. Tests (never deploy `tests/`):
+
+| Command | What it covers | Needs |
+|---|---|---|
+| `php tests/sudoers_test.php` | the sudoers rules (what the panel runs is allowed, hostile forms are refused, no `*`) and the Fail2Ban helper vs. `Commands.php` | nothing (safe anywhere) |
+| `php tests/security_test.php` | account-name rules, reserved names, `/64` keys, CIDR, quota clamping, the identical login screen | nothing |
+| `php tests/scripts_test.php` | the helper (in-place write, refusals, restore, no false success), the delete / Postfix / sudoers-cleanup scripts and the `install.sh` secret handling, with fake `fail2ban-client` / `postconf` / `doveadm`; static checks (`php -l`, `bash -n`, no `sleep`) | PHP, bash |
+| `php tests/db_test.php` | registration, reserved names, aliases, tombstones, login limits (pair / client / IPv6 `/64`), account deletion, policy service (recipients, atomic counter), grants — in a **scratch database it creates and drops**, with an app account holding exactly the `sql/panel_grants.sql` privileges | MariaDB: `MP_TEST_DB_DSN` (default `mysql:host=127.0.0.1;port=3307`), `MP_TEST_DB_USER`, `MP_TEST_DB_PASS`; skips itself without |
+| `php tests/run.php` | older integration tests against the dev database from `.env` (refuses to run unless `APP_ENV=dev`) | dev database |
 
 In `dev` mode the Fail2Ban tab cannot save (there is no root helper): editing `jail.local` is a server feature.
 
 ## 11. Security — what's inside and what to keep in mind
 
-Built in: CSRF on every mutation (all mutations via POST + PRG),
-login rate-limiting (account and IP) with an automatic ban, per-IP registration
-throttling, Argon2id for admins / SHA-512 crypt for mailboxes,
-a CSP with no inline JS (self-hosted icons), a `HttpOnly/SameSite/Secure` session +
-`use_strict_mode` + ID regeneration after login + a 60-minute idle limit,
-HSTS/X-Frame-Options/nosniff headers, an audit log of administrator actions.
-System operations run through `sudo` with **exact-argument** rules (no `*` wildcards on `fail2ban-client`), and the
-panel no longer writes a file that a root service reads: `jail.local` is `root:root`, edits go through a
-validating root helper (see "Editing Fail2Ban from the panel").
+Built in: CSRF on every mutation (all mutations via POST + PRG, including logout), Argon2id for admins /
+SHA-512 crypt for mailboxes, a CSP with no inline JS (self-hosted icons), a `HttpOnly/SameSite/Secure` session +
+`use_strict_mode` + ID regeneration after login, HSTS/X-Frame-Options/nosniff headers, an audit log of administrator
+actions. System operations run through `sudo` with **exact-argument** rules (no `*` wildcards), and the panel never
+writes a file that a root service reads: `jail.local` is `root:root`, edits go through a validating root helper (see
+"Editing Fail2Ban from the panel").
+
+Behaviour worth knowing (1.1.0):
+
+- **Login limits** are per *(account, client)* and per *client* (IPv4 address or IPv6 `/64`), 4× higher for the client as
+  a whole; **never per account alone**, so strangers cannot lock the administrator out. Failures go to their own table
+  (`throttle_events`) — a successful IMAP login (which trims `user_login_events`) cannot reset them — and the admin login
+  log (`admin_login_attempts`) is never pruned. A blocked client is refused immediately: nothing sleeps in PHP (one FPM
+  pool serves every site on the server). Addresses in `SCAN_TRUSTED_IPS` (exact or CIDR) are not limited.
+- **No enumeration:** the first login step answers the same for any well-formed address, existing or not, administrator
+  or not; the choice *Webmail / Admin panel* is made by the user on the password screen, and the admin password is
+  verified against a dummy hash when no such administrator exists (same timing).
+- **Registration** lower-cases the name, accepts `[a-z0-9]` ends with `[a-z0-9._-]` inside (≤ 64), refuses the built-in
+  reserved list (`admin administrator hostmaster postmaster webmaster` — the addresses CAs accept for e-mail domain
+  validation — plus `abuse security noc root noreply mailer-daemon owner-* *-request …`), the editable list in
+  *Settings* (default `info support contact sales …`), names that are the source or target of a virtual alias, and
+  names deleted in the last `deleted_name_hold_days` (365). The administrator can override reserved / recently deleted
+  names deliberately (tick-box in *Add user*), never an existing account or an alias source.
+- **Deleting an account** (one transaction): the aliases that point at it, its login history and today's send counter
+  go; a tombstone is kept; the maildir is quarantined and the result of the script is checked and shown (a failed or
+  "not found" outcome is a visible error, not a success message).
+- **"Ban IP"** (Users tab) acts in two layers: the portal and panel (`ip_blocks`) **and**, when Fail2Ban is available,
+  the jail `panel-tempban` (webmail, IMAP, SMTP at the firewall); the confirmation says which layers took effect.
+  Admin sessions end after 1 h idle / 12 h absolute, when the admin is removed or changes the password.
+- **Database accounts:** `mailpanel` gets per-table grants (`sql/panel_grants.sql`), the Dovecot post-login script its
+  own account `mailpostlogin` (`EXECUTE` on one procedure). `config/panel_config.php` imports only five numeric
+  `rc_*` settings into Roundcube.
 
 Your responsibilities:
 - **keep database backups outside the webroot** (never in the Roundcube directory),
 - after migrating from the old panel, **rotate** the DB passwords and reCAPTCHA keys that
   were hardcoded in the old files (`panel/config.php` etc.),
 - treat Roundcube's `des_key` as a secret (it lives in `config.inc.php`),
+- the sudo rules are exact, but they are granted to `www-data` — **every** PHP site running as `www-data` can use them.
+  The strongest remaining step is a separate PHP-FPM pool and user for Roundcube + the panel (point the `sudoers` rules
+  and the group of `.env` at that user, give the pool its own `pm.max_children`),
+- add a DNS **CAA** record for your domain (`0 issue "letsencrypt.org"`, or your CA): it limits who may issue
+  certificates, which matters most for the role addresses reserved above,
+- keep `ignoreip` in the Fail2Ban tab (it edits `[DEFAULT]`, which `sshd` inherits) set to your own address, and
+  `dbpurgeage` ≥ the longest ban you hand out (temporary bans last up to 90 days),
+- run `scripts/mailpanel-sudoers-cleanup.sh` after any manual sudoers edit: one leftover wildcard rule voids all the exact ones,
 - update Roundcube (`program/`, `vendor/`) independently — the package does not
   modify the core, so RC updates don't overwrite the panel.
 
@@ -534,10 +801,13 @@ Your responsibilities:
 | "DB Error" / 500 on the portal | wrong credentials in `.env` (DSN/user/password) |
 | Red "No access to Fail2Ban" box | missing sudoers entries or `APP_ENV=dev` |
 | "No sudo permission" on Postfix | missing sudoers entry for `update-postfix-limits.sh` |
-| Fail2Ban save: "service not reloaded" | the `fail2ban-client reload` rule is missing from `/etc/sudoers.d/mailpanel` (install the 1.0.1 file) |
-| Fail2Ban save: "Fail2Ban: sudo: a password is required" / "…not allowed to execute…" | the helper or its sudoers rule is missing: `install.sh` section 2 (or the manual steps in "Upgrading from 1.0") |
-| Fail2Ban save: "Nie mogę zapisać /var/lib/mailpanel-f2b/jail.local.proposed" | the directory is missing or not `www-data` 750: `install -d -o www-data -g www-data -m 750 /var/lib/mailpanel-f2b` |
-| Fail2Ban save: "Fail2Ban: odrzucone: …" | the helper refused the proposal (the text says which line/value); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
+| Fail2Ban save: "Fail2Ban: sudo: a password is required" / "…not allowed to execute…" | the helper or its sudoers rule is missing: `install.sh` section 2 (or "Upgrading from 1.0.1 to 1.1.0", step 3). The rule is `mailpanel-f2b-apply ""` — the helper takes no arguments |
+| Fail2Ban save: "odrzucone: nie mogę otworzyć /etc/fail2ban/jail.local do zapisu" / any `read-only file system` | the php-fpm drop-in is missing or php-fpm was not restarted: "php-fpm sandbox" above (`ReadWritePaths=/etc/fail2ban/jail.local`, `systemctl restart`) |
+| Fail2Ban save: "odrzucone: …" | the helper refused the proposal (the text says which line/value) or Fail2Ban rejected it (`fail2ban-client -t`; the previous file was restored); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
+| Fail2Ban save: "BŁĄD: …" (exit 3) | the write could not be completed **and** the previous content could not be restored: the message names the backup in `/var/backups/mailpanel-f2b/` — copy it back as root and run `fail2ban-client -t` |
+| Postfix limits: "Postfix NIE został zmieniony: … ReadWritePaths=/etc/postfix" | the drop-in lacks `/etc/postfix` (or no restart): "php-fpm sandbox" above |
+| Deleting an account: "NIE usunięto plików poczty (kod N)" | the account is gone from the database but the maildir is still there; codes: 4 no such directory, 6 the account still exists in Dovecot, 7 `doveadm` could not confirm, 3 path outside `/var/mail/vhosts`, 5/8 move or quarantine failed — see the header of `scripts/mailpanel-delete-user.sh` |
+| Registration says a name is "zarezerwowana" / "niedostępna" | reserved list, an alias that names it, or a recently deleted account (*Settings*: reserved names, hold days); an administrator can create it by ticking the override in *Add user* |
 | Fail2Ban tab: "no read permission" | `jail.local` must be readable by `www-data`: `root:root` **644** (do **not** make it writable by `www-data`) |
 | Webmail login fails, panel works | check `imap_host` in `config.inc.php` (that's plain RC login) |
 | After login it returns to the portal | cookies: HTTPS required in prod (the session has the Secure flag) |
