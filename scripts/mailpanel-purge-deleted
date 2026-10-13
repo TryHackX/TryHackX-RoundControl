@@ -1,13 +1,53 @@
-#!/bin/sh
-# /etc/cron.daily/mailpanel-purge-deleted  (install.sh section 11)
-# Removes quarantined mailboxes (moved here by mailpanel-delete-user.sh when an account is deleted in the panel)
-# once they are older than RETENTION_DAYS. The quarantine directory is root-only (700); the timestamp of an entry is
-# the moment it was moved. Set RETENTION_DAYS=0 to keep everything until you delete it yourself.
+#!/bin/bash
+# /usr/local/sbin/mailpanel-purge-deleted   (root; started daily by mailpanel-purge-deleted.timer - install.sh section 11)
+#
+# Removes quarantined mailboxes (moved to /var/mail/deleted by mailpanel-delete-user.sh when an account is deleted in
+# the panel) once they are older than RETENTION_DAYS. Set RETENTION_DAYS=0 to keep everything until you delete it.
+#
+# The age of an entry is the DELETION time written into its name by mailpanel-delete-user.sh:
+#     <domain>__<user>__<YYYYmmddHHMMSS>[-<pid>]
+# NOT the directory's mtime: `mv` keeps the mtime of the maildir (the time of its last delivered message), so an
+# mtime-based purge would remove a mailbox of a long-unused account on the first run after the deletion. An entry whose
+# name does not carry such a timestamp is never removed (it is listed, so you can look at it).
+#
+# The path and the retention below are edited by the tests (sed); they are deliberately not environment variables.
 QUARANTINE_DIR="/var/mail/deleted"
 RETENTION_DAYS=30
 
-[ -d "$QUARANTINE_DIR" ] || exit 0
-[ -L "$QUARANTINE_DIR" ] && exit 1
-[ "$RETENTION_DAYS" -gt 0 ] 2>/dev/null || exit 0
+set -u
+set -o pipefail
 
-find "$QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -mtime +"$RETENTION_DAYS" -exec rm -rf -- {} +
+[ -d "$QUARANTINE_DIR" ] || exit 0
+if [ -L "$QUARANTINE_DIR" ]; then
+    echo "$QUARANTINE_DIR is a symlink - refusing" >&2
+    exit 1
+fi
+[[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || { echo "RETENTION_DAYS is not a number" >&2; exit 1; }
+[ "$RETENTION_DAYS" -gt 0 ] || exit 0
+
+CUTOFF=$(date -d "-$RETENTION_DAYS days" +%Y%m%d%H%M%S) || { echo "date -d failed" >&2; exit 1; }
+[[ "$CUTOFF" =~ ^[0-9]{14}$ ]] || { echo "unexpected cutoff '$CUTOFF'" >&2; exit 1; }
+
+STATUS=0
+removed=0
+shopt -s nullglob dotglob
+for entry in "$QUARANTINE_DIR"/*; do
+    name=${entry##*/}
+    if [[ ! "$name" =~ __([0-9]{14})(-[0-9]+)?$ ]]; then
+        echo "kept (no deletion timestamp in the name): $entry"
+        continue
+    fi
+    ts=${BASH_REMATCH[1]}
+    # plain string comparison is a correct date comparison for fixed-width YYYYmmddHHMMSS
+    if [[ "$ts" < "$CUTOFF" ]]; then
+        if rm -rf -- "$entry"; then
+            echo "removed: $name (deleted $ts, retention $RETENTION_DAYS days)"
+            removed=$((removed + 1))
+        else
+            echo "could not remove: $entry" >&2
+            STATUS=1
+        fi
+    fi
+done
+echo "mailpanel-purge-deleted: $removed entr$( [ "$removed" -eq 1 ] && echo y || echo ies ) removed (cutoff $CUTOFF)"
+exit "$STATUS"

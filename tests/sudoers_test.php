@@ -105,12 +105,15 @@ foreach (explode("\n", $joined) as $line) {
 }
 foreach ($rules as [$p, $a]) {
     $name = basename($p);
-    if (in_array($name, ['doveadm', 'mailpanel-scan.sh', 'mailpanel-f2b-apply'], true)) {
+    if (in_array($name, ['doveadm', 'mailpanel-scan.sh', 'mailpanel-f2b-apply', 'update-postfix-limits.sh', 'mailpanel-delete-user.sh'], true)) {
         ok($a !== null, "$name ma ograniczone argumenty (^regex\$ albo \"\")");
     }
 }
 ok(!in_array('/usr/bin/doveadm -f flow quota get -u *', $entries, true), 'doveadm bez wildcardu');
 ok(!in_array('/usr/local/bin/mailpanel-scan.sh *', $entries, true), 'mailpanel-scan.sh bez wildcardu');
+// dwa pliki definiujące ten sam alias = błąd składni sudoers (cały sudo przestaje działać); 1.0.x miało MAILPANEL_F2B
+ok(preg_match('/^Cmnd_Alias\s+MAILPANEL_F2B\b/m', $joined) !== 1 && preg_match('/^Cmnd_Alias\s+ROUNDCONTROL_F2B\b/m', $joined) === 1,
+    'alias Fail2Ban ma unikalną nazwę ROUNDCONTROL_F2B (nie koliduje z MAILPANEL_F2B ze starszych instalacji)');
 
 group('sudoers: polecenia panelu są dozwolone');
 foreach ([
@@ -125,6 +128,7 @@ foreach ([
     '/usr/local/bin/mailpanel-scan.sh 2026-01-01 2026-01-31 dovecot', '/usr/local/bin/mailpanel-scan.sh 2026-01-01 2026-01-31 postfix',
     '/usr/local/bin/update-postfix-limits.sh 100 10 5', '/usr/local/bin/update-postfix-limits.sh',
     '/usr/local/bin/mailpanel-delete-user.sh user@example.com', '/usr/local/bin/mailpanel-delete-user.sh',
+    '/usr/local/bin/mailpanel-delete-user.sh a@example.com', '/usr/local/bin/mailpanel-delete-user.sh a.b-c_d+e@sub.example.org',
 ] as $c) {
     ok(allowed($rules, $c), "dozwolone: $c");
 }
@@ -155,6 +159,12 @@ foreach ([
     '/usr/local/bin/mailpanel-scan.sh 2026-01-01 2026-01-31 ssh; id', '/usr/local/bin/mailpanel-scan.sh 2026-01-01 $(id)',
     '/usr/local/bin/mailpanel-scan.sh 2026-01-01 2026-01-31 ../../x', '/usr/local/bin/mailpanel-scan.sh -x 2026-01-31',
     '/usr/local/sbin/mailpanel-f2b-reload.php', '/bin/sh -c id', '/usr/bin/fail2ban-client',
+    // update-postfix-limits.sh: exactly three integers (or nothing - the probe); mailpanel-delete-user.sh: one lower-case address
+    '/usr/local/bin/update-postfix-limits.sh 1 2', '/usr/local/bin/update-postfix-limits.sh 1 2 3 4', '/usr/local/bin/update-postfix-limits.sh -1 2 3',
+    '/usr/local/bin/update-postfix-limits.sh a b c', '/usr/local/bin/update-postfix-limits.sh 1 2 3; id', '/usr/local/bin/update-postfix-limits.sh 1  2 3',
+    '/usr/local/bin/mailpanel-delete-user.sh ../x@example.com', '/usr/local/bin/mailpanel-delete-user.sh a@example.com b@example.com',
+    '/usr/local/bin/mailpanel-delete-user.sh -rf', '/usr/local/bin/mailpanel-delete-user.sh User@Example.com', '/usr/local/bin/mailpanel-delete-user.sh .@example.com',
+    '/usr/local/bin/mailpanel-delete-user.sh a@example.com/..', '/usr/local/bin/mailpanel-delete-user.sh a@-example.com', '/usr/local/bin/mailpanel-delete-user.sh a@example.com;id',
 ] as $c) {
     ok(!allowed($rules, $c), 'odrzucone: ' . str_replace("\n", '\\n', $c));
 }

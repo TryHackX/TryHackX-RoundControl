@@ -6,13 +6,30 @@
 -- Jedyna zmiana danych: adresy kont zapisane z wielkimi literami przechodzą na małe. Dovecot zawsze zamienia nazwę
 -- użytkownika na małe litery, więc katalog poczty jest /var/mail/vhosts/<domena>/<nazwa-małymi>; konto zapisane
 -- jako "Jan.Kowalski@..." było dla skryptu usuwania innym katalogiem niż ten na dysku (skrzynka zostawała).
--- UWAGA: samo porównanie `email <> LOWER(email)` nic nie zwraca — kolumna ma porównanie bez rozróżniania
--- wielkości liter; trzeba BINARY. Klucz UNIQUE też ignoruje wielkość liter, więc kolizji po zmianie nie ma.
+-- UWAGA: samo porównanie `email <> LOWER(email)` nic nie zwraca — kolumna ma zwykle porównanie bez rozróżniania
+-- wielkości liter; trzeba BINARY.
+-- Dwa konta różniące się TYLKO wielkością liter (możliwe, gdy kolumna ma porównanie binarne / *_bin albo nie ma klucza
+-- UNIQUE): migracja się ZATRZYMUJE przed jakąkolwiek zmianą (SIGNAL, klient mysql kończy z błędem) i wypisuje te
+-- adresy — zdecyduj ręcznie, które konto zostaje (każde ma osobny katalog poczty?), potem uruchom plik ponownie.
+-- Plik jest idempotentny: drugi przebieg nic nie zmienia.
 -- Reszta pliku to RAPORTY (tylko SELECT) do przejrzenia po migracji.
 -- =====================================================================
 
 SELECT 'konta z wielkimi literami (przed migracją):' AS info;
 SELECT id, email FROM virtual_users WHERE BINARY email <> BINARY LOWER(email);
+
+SELECT 'adresy, które po zamianie na małe litery byłyby DWOMA kontami (powinno być pusto):' AS info;
+SELECT LOWER(email) AS adres, COUNT(*) AS konta, GROUP_CONCAT(id ORDER BY id) AS id_kont
+FROM virtual_users GROUP BY LOWER(email) HAVING COUNT(*) > 1;
+
+DELIMITER $$
+BEGIN NOT ATOMIC
+  IF EXISTS (SELECT 1 FROM virtual_users GROUP BY LOWER(email) HAVING COUNT(*) > 1) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upgrade_1.1.0: konta rozniace sie tylko wielkoscia liter (lista wyzej) - nic nie zmieniono, rozstrzygnij recznie';
+  END IF;
+END$$
+DELIMITER ;
 
 UPDATE virtual_users SET email = LOWER(email) WHERE BINARY email <> BINARY LOWER(email);
 

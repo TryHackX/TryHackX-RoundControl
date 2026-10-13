@@ -1,0 +1,17 @@
+# /etc/systemd/system/mailpanel-purge-deleted.service   (install.sh section 11)
+# Removes quarantined mailboxes of deleted accounts older than the retention (30 days by default, see the script).
+# Started by mailpanel-purge-deleted.timer; by hand:  systemctl start mailpanel-purge-deleted.service
+[Unit]
+Description=RoundControl: purge quarantined mailboxes of deleted accounts
+ConditionPathIsDirectory=/var/mail/deleted
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mailpanel-purge-deleted
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/mail/deleted
+ProtectHome=true
+NoNewPrivileges=true

@@ -359,6 +359,33 @@ if ($bash === null) {
     }
     [$rc, $out] = $del('ala@example.org');
     ok($rc === 0 && !is_dir($mail . '/example.org/ala'), 'kolejna skrzynka: przeniesiona (kwarantanna odtworzona)');
+
+    /* ------------------------------------------------------------------ mailpanel-purge-deleted */
+    group('mailpanel-purge-deleted: wiek = czas usunięcia z nazwy, nie mtime');
+    $pq = str_replace("\r\n", "\n", (string) file_get_contents($root . '/scripts/mailpanel-purge-deleted'));
+    $pq = preg_replace('/^QUARANTINE_DIR=".*"$/m', 'QUARANTINE_DIR="' . toPosix($quar) . '"', $pq);
+    file_put_contents($d . '/purge.sh', (string) $pq);
+    $purge = static fn(): array => runProc([$bash, toPosix($d . '/purge.sh')]);
+
+    $justMoved = glob($quar . '/example.org__*') ?: [];
+    ok(count($justMoved) >= 2, 'skrzynki przeniesione przez delete-user są w kwarantannie (' . count($justMoved) . ')');
+    // skrzynka nieużywanego od lat konta: stary mtime katalogu, ale usunięta TERAZ (nazwa) -> musi zostać
+    foreach ($justMoved as $jm) { @touch($jm, time() - 400 * 86400); }
+    mkdir($quar . '/example.org__stary__20000101000000/cur', 0777, true);
+    mkdir($quar . '/example.org__starypid__20000101000000-4242', 0777, true);
+    mkdir($quar . '/reczny-katalog', 0777, true);
+    @touch($quar . '/reczny-katalog', time() - 400 * 86400);
+    [$rc, $out] = $purge();
+    eq($rc, 0, 'purge: exit 0');
+    ok(!is_dir($quar . '/example.org__stary__20000101000000') && !is_dir($quar . '/example.org__starypid__20000101000000-4242'), 'wpisy usunięte dawno (data w nazwie) skasowane');
+    $still = array_filter($justMoved, 'is_dir');
+    ok(count($still) === count($justMoved), 'świeżo usunięte konta zostają mimo starego mtime (mv zachowuje mtime) — to był błąd -mtime +30');
+    ok(is_dir($quar . '/reczny-katalog') && str_contains($out, 'kept (no deletion timestamp'), 'katalog bez daty w nazwie: nigdy kasowany, wypisany');
+    $pq0 = preg_replace('/^RETENTION_DAYS=.*$/m', 'RETENTION_DAYS=0', (string) $pq);
+    file_put_contents($d . '/purge0.sh', (string) $pq0);
+    mkdir($quar . '/example.org__zero__20000101000000', 0777, true);
+    [$rc, ] = runProc([$bash, toPosix($d . '/purge0.sh')]);
+    ok($rc === 0 && is_dir($quar . '/example.org__zero__20000101000000'), 'RETENTION_DAYS=0: nic nie jest kasowane');
 }
 
 /* ====================================================================== update-postfix-limits.sh */
@@ -449,7 +476,8 @@ if ($bash === null) {
     $dir = $s . '/sudoers.d';
     mkdir($dir, 0777, true);
     $visudo = $s . '/visudo';
-    write($visudo, "#!/bin/bash\nf=\"\${2:-}\"\n[ -n \"\$f\" ] && grep -q BROKEN \"\$f\" && exit 1\nexit 0\n");
+    // atrapa visudo: -cf PLIK odrzuca plik ze słowem BROKEN; samo -c (cała konfiguracja) zawodzi, gdy istnieje global_fail
+    write($visudo, "#!/bin/bash\nf=\"\${2:-}\"\n[ \"\$1\" = \"-c\" ] && [ -e " . toPosix($s) . "/global_fail ] && exit 1\n[ -n \"\$f\" ] && grep -q BROKEN \"\$f\" && exit 1\nexit 0\n");
     chmod($visudo, 0755);
     $sc = str_replace("\r\n", "\n", (string) file_get_contents($root . '/scripts/mailpanel-sudoers-cleanup.sh'));
     $sc = preg_replace(
@@ -471,10 +499,17 @@ if ($bash === null) {
     file_put_contents($dir . '/unrelated', "www-data ALL=(root) NOPASSWD: /usr/bin/apt-get update\n");
     file_put_contents($dir . '/ignored.bak', "www-data ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set * banip *\n");   // sudo ignoruje pliki z kropką
     file_put_contents($dir . '/multi', "www-data ALL=(root) NOPASSWD: /usr/bin/fail2ban-client set * banip *, /usr/bin/systemctl restart nginx\n");
+    // jak na produkcji (1.0.1 zainstalowane ręcznie pod inną nazwą): wieloliniowy Cmnd_Alias z tą samą nazwą aliasu
+    $prodF2b = "# 1.0.1\nCmnd_Alias MAILPANEL_F2B = /usr/bin/fail2ban-client ping, \\\n    /usr/bin/fail2ban-client ^set [A-Za-z0-9_-]+ bantime -?[0-9]+\$, \\\n"
+        . "    /usr/local/sbin/mailpanel-f2b-apply\nwww-data ALL=(root) NOPASSWD: MAILPANEL_F2B\n";
+    file_put_contents($dir . '/mailpanel-f2b', $prodF2b);
+    // reguła łącząca alias panelu z CUDZYM aliasem: tylko ręcznie
+    $aliasMix = "Cmnd_Alias PANELX = /usr/bin/doveadm -f flow quota get -u *\nCmnd_Alias OTHERX = /usr/bin/apt-get update\nwww-data ALL=(root) NOPASSWD: PANELX, OTHERX\n";
+    file_put_contents($dir . '/aliasmix', $aliasMix);
 
     [$rc, $out] = $clean();
     eq($rc, 1, 'tryb próbny: exit 1 (są stare reguły)');
-    foreach (['sudoers:', 'mailpanel-quota:', 'mailpanel-scan:', 'oldalias:', 'multi:'] as $needle) {
+    foreach (['sudoers:', 'mailpanel-quota:', 'mailpanel-scan:', 'oldalias:', 'multi:', 'mailpanel-f2b:2-4:', 'mailpanel-f2b:5:', 'aliasmix:3:'] as $needle) {
         ok(str_contains($out, $needle), "tryb próbny wymienia $needle");
     }
     ok(!str_contains($out, 'unrelated') && !str_contains($out, 'ignored.bak') && !str_contains($out, 'dominik'), 'tryb próbny pomija cudze reguły, pliki z kropką i własny plik');
@@ -493,6 +528,10 @@ if ($bash === null) {
     ok(str_contains((string) file_get_contents($dir . '/multi'), "fail2ban-client set * banip *, /usr/bin/systemctl"), 'wiersz z wieloma poleceniami nietknięty');
     ok(count(glob($s . '/sudoers-backup-*/mailpanel-quota') ?: []) === 1, 'kopia oryginału w sudoers-backup-*');
     ok(!is_file($dir . '/mailpanel-quota.new'), 'brak plików tymczasowych *.new');
+    $f2bLines = array_filter(explode("\n", (string) file_get_contents($dir . '/mailpanel-f2b')), static fn(string $l): bool => $l !== '');
+    ok(array_filter($f2bLines, static fn(string $l): bool => $l[0] !== '#') === [], 'wieloliniowy alias (MAILPANEL_F2B): KAŻDA linia zakomentowana, także kontynuacje');
+    ok(array_filter($f2bLines, static fn(string $l): bool => (bool) preg_match('/\\\\\s*$/', $l)) === [], 'zakomentowane linie nie kończą się "\\" (nic nie przechodzi do następnej linii)');
+    eq((string) file_get_contents($dir . '/aliasmix'), $aliasMix, 'reguła z cudzym aliasem: nietknięta (do ręcznej edycji)');
 
     // visudo odrzuca zmieniony plik -> plik NIE jest podmieniany
     file_put_contents($dir . '/broken', "www-data ALL=(root) NOPASSWD: /usr/bin/doveadm -f flow quota get -u *\n# BROKEN\n");
@@ -503,6 +542,18 @@ if ($bash === null) {
 
     unlink($dir . '/broken');
     unlink($dir . '/multi');
+    unlink($dir . '/aliasmix');
+
+    // cała konfiguracja nie przechodzi visudo -c po zmianach -> pliki tego przebiegu wracają z kopii
+    $late = "www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh *\n";
+    file_put_contents($dir . '/late', $late);
+    touch($s . '/global_fail');
+    [$rc, $out] = $clean('--apply');
+    ok($rc === 2 && str_contains($out, 'restored'), 'visudo -c (całość) zawodzi: exit 2 i przywrócenie (' . substr($out, -80) . ')');
+    eq((string) file_get_contents($dir . '/late'), $late, 'visudo -c (całość) zawodzi: plik wrócił do oryginału');
+    unlink($s . '/global_fail');
+    unlink($dir . '/late');
+
     [$rc, $out] = $clean();
     eq($rc, 0, 'po sprzątaniu: exit 0');
     ok(str_contains($out, 'No leftover'), 'po sprzątaniu: komunikat "No leftover"');
@@ -610,6 +661,11 @@ ok(!preg_match('/sed\s+["\'][^\n]*\$\{?(PW|MU_PW|MP_PW|PANEL_PW|PLPW)/', $instCo
 ok(!preg_match('/ALTER USER[^\n]*mailuser/', $instCode), 'install.sh: nie robi ALTER USER dla mailuser (sekcja 0 idempotentna)');
 ok(str_contains($instCode, 'ReadWritePaths=-/etc/fail2ban/jail.local -/etc/postfix'), 'install.sh: drop-in php-fpm z ReadWritePaths (jail.local + /etc/postfix)');
 ok(!str_contains($instCode, 'chown -R "$WEB_USER":"$WEB_USER" "$RC_DIR/app"'), 'install.sh: kod nie jest oddawany www-data');
+ok(!preg_match('#install[^\n]*/etc/cron\.daily#', $instCode) && str_contains($instCode, 'enable --now mailpanel-purge-deleted.timer'),
+    'install.sh: czyszczenie kwarantanny przez timer systemd, nic do /etc/cron.daily (serwer bez crona)');
+ok(!str_contains((string) file_get_contents($root . '/scripts/mailpanel-purge-deleted'), '-mtime'), 'purge: wiek z nazwy, nie z mtime (mv zachowuje mtime skrzynki)');
+ok(str_contains($instCode, 'install_sudoers_file') && preg_match('/mv -f "\$stage" "\$dst"[^\n]*\n\s*if visudo -c /', $instCode) === 1,
+    'install.sh: po wstawieniu pliku sudoers sprawdzana jest CAŁA konfiguracja (visudo -c), z przywróceniem');
 $htaccess = (string) file_get_contents($root . '/.htaccess');
 foreach (['scripts', 'sql_backup', '_legacy', 'tests', 'install\\.(php|sh)', '\\.env'] as $needle) {
     ok(str_contains($htaccess, $needle), ".htaccess blokuje $needle");

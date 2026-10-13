@@ -554,6 +554,23 @@ try {
     }
     eq($count("SELECT COUNT(*) FROM virtual_users WHERE BINARY email = 'mixed.case@example.test'"), 1, 'po migracji adres jest małymi literami');
 
+    // kolumna z porównaniem binarnym: dwa konta różniące się tylko wielkością liter -> migracja staje PRZED zmianą
+    $admin->exec("ALTER TABLE virtual_users MODIFY email VARCHAR(100) COLLATE utf8mb4_bin NOT NULL");
+    $admin->exec("INSERT INTO virtual_users (domain_id, password, email, quota_mb) VALUES ($domId, 'x', 'Dup@example.test', 1), ($domId, 'x', 'dup@example.test', 1), ($domId, 'x', 'Other@example.test', 1)");
+    $sigState = '';
+    try {
+        foreach (splitSql((string) file_get_contents($root . '/sql/upgrade_1.1.0.sql')) as $stmt) {
+            $up = $admin->query($stmt);
+            if ($up instanceof PDOStatement) { $up->fetchAll(); $up->closeCursor(); }
+        }
+    } catch (PDOException $e) {
+        $sigState = (string) $e->getCode();
+    }
+    eq($sigState, '45000', 'kolizja wielkości liter: migracja przerwana (SIGNAL 45000)');
+    eq($count("SELECT COUNT(*) FROM virtual_users WHERE BINARY email IN ('Dup@example.test', 'dup@example.test', 'Other@example.test')"), 3, 'kolizja: NIC nie zostało zmienione (także niekolidujące konto)');
+    $admin->exec("DELETE FROM virtual_users WHERE BINARY email IN ('Dup@example.test', 'dup@example.test', 'Other@example.test')");
+    $admin->exec("ALTER TABLE virtual_users MODIFY email VARCHAR(100) NOT NULL");
+
     /* -------------------------------------------------------------- panel_config.php */
     group('config/panel_config.php: tylko dozwolone klucze rc_*');
     $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('rc_imap_host', 'evil.example'), ('rc_smtp_host', 'evil.example'), ('rc_max_recipients', '12'), ('rc_sendmail_delay', 'abc'), ('rc_login_rate_limit', '999999'), ('rc_des_key', 'x'), ('rcx', 'y')");

@@ -2,7 +2,9 @@
 # mailpanel-delete-user.sh user@domain   (root, through sudo from the panel)  — 1.1.0
 #
 # Moves the maildir of a DELETED account out of /var/mail/vhosts into a quarantine directory
-# (/var/mail/deleted, mode 700; install.sh section 11 adds a cron job that purges entries older than 30 days).
+# (/var/mail/deleted, mode 700; install.sh section 11 adds the systemd timer mailpanel-purge-deleted that purges
+# entries older than 30 days). The quarantine name carries the DELETION time (<domain>__<user>__<YYYYmmddHHMMSS>):
+# the purge reads it from there, because `mv` keeps the maildir's old mtime.
 # A quarantine instead of `rm -rf`: this script is reachable by any code running as www-data (sudoers cannot say
 # WHICH mailbox), so a wrong or hostile call must be recoverable.
 #
@@ -80,6 +82,9 @@ fi
 if [ ! -x "$DOVEADM" ]; then
     die 7 "Error: cannot verify the account with doveadm ($DOVEADM missing) - refusing"
 fi
+# With auth_cache_size > 0 Dovecot could still answer from its cache for a while after the database row is gone
+# (the lookup would then say "exists" and we would refuse). Dropping this one user from the cache is harmless.
+"$DOVEADM" auth cache flush "$EMAIL" >/dev/null 2>&1 || true
 dove_out=$("$DOVEADM" user "$EMAIL" 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ]; then

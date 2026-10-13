@@ -98,6 +98,49 @@ install_f2b_helper() {
   ok "helper /usr/local/sbin/mailpanel-f2b-apply (755 root)"
 }
 
+# Kopie plików z sekretami zostawione ręcznie albo przez starsze instalatory (config.inc.php.bak-*, config.old.php,
+# .env.bak ...): tylko dla roota (600). Proces PHP ich nie potrzebuje, a czytelne dla wszystkich (755 po kopiowaniu)
+# zdradzają hasło bazy i des_key Roundcube każdemu lokalnemu kontu.
+SECRET_COPY_NAMES=(-name 'config.inc.php.bak*' -o -name 'config.inc.php.save' -o -name 'config.inc.php.orig'
+                   -o -name 'config.old.php' -o -name '.env.*' ! -name '.env.example')
+secure_secret_copies() {
+  local d f n=0
+  for d in "$RC_DIR" "$RC_DIR/config" "$RC_DIR/plugins/password"; do
+    [ -d "$d" ] || continue
+    while IFS= read -r -d '' f; do
+      chown root:root "$f" && chmod 600 "$f" && n=$((n + 1))
+    done < <(find "$d" -maxdepth 1 -type f \( "${SECRET_COPY_NAMES[@]}" \) -print0 2>/dev/null)
+  done
+  ok "kopie plików z sekretami (config.inc.php.bak*, config.old.php, .env.*): $n szt. — root:root 600"
+}
+
+# Instaluje plik reguł jako /etc/sudoers.d/mailpanel tak, żeby sudo NIGDY nie zostało zepsute: plik sprawdzany sam
+# (visudo -cf), kładziony pod nazwą z kropką (sudo takie pliki pomija), przenoszony na miejsce i dopiero wtedy sprawdzana
+# jest CAŁA konfiguracja (visudo -c widzi np. zduplikowany alias w dwóch plikach — tego visudo -cf PLIK nie zobaczy, a to
+# błąd składni całego sudo). Przy błędzie wraca poprzedni plik (albo nowy jest usuwany) i funkcja zwraca 1.
+install_sudoers_file() {
+  local src=$1 dst=/etc/sudoers.d/mailpanel stage=/etc/sudoers.d/mailpanel.rc-new prev="" why
+  if ! visudo -c >/dev/null 2>&1; then
+    warn "visudo -c zgłasza błąd JUŻ PRZED zmianą — nie ruszam sudoers, najpierw napraw: visudo -c"
+    return 1
+  fi
+  visudo -cf "$src" >/dev/null 2>&1 || { warn "visudo -cf odrzuca plik reguł ($src)"; return 1; }
+  install -o root -g root -m 440 "$src" "$stage" || { rm -f "$stage"; return 1; }
+  if [ -f "$dst" ]; then
+    prev=$(mktemp /root/sudoers-mailpanel.prev.XXXXXX) && cp -p "$dst" "$prev" || { rm -f "$stage"; return 1; }
+  fi
+  mv -f "$stage" "$dst" || { rm -f "$stage"; return 1; }
+  if visudo -c >/dev/null 2>&1; then
+    [ -n "$prev" ] && rm -f "$prev"
+    return 0
+  fi
+  why=$(visudo -c 2>&1 | grep -v -E 'parsed OK$' | head -3 | tr '\n' ' ')
+  if [ -n "$prev" ]; then cp -p "$prev" "$dst" && rm -f "$prev"; else rm -f "$dst"; fi
+  warn "z nowym plikiem CAŁA konfiguracja sudo nie przechodzi visudo -c — przywrócono poprzedni stan. Powód: $why"
+  visudo -c >/dev/null 2>&1 || warn "UWAGA: visudo -c nadal zgłasza błąd — napraw to TERAZ, zanim zamkniesz powłokę roota"
+  return 1
+}
+
 [ "$(id -u)" -eq 0 ] || die "Uruchom jako root (sudo bash install.sh)."
 [[ "$WEB_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "WEB_USER='$WEB_USER' to nie jest zwykła nazwa użytkownika."
 [[ "$RC_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "RC_DIR='$RC_DIR' musi być ścieżką bezwzględną bez spacji i znaków specjalnych."
@@ -203,11 +246,11 @@ if ask "2) Zainstalować helper Fail2Ban i regułę sudoers (/etc/sudoers.d/mail
     tmp=$(mktemp)
     cp "$SRC/system/sudoers.d/mailpanel" "$tmp"
     SUDOERS_OK=0
-    if visudo -cf "$tmp" >/dev/null 2>&1; then
-      install -o root -g root -m 440 "$tmp" /etc/sudoers.d/mailpanel && SUDOERS_OK=1
-      ok "sudoers zainstalowany i zwalidowany (visudo -cf): dokładne argumenty, bez wildcardów"
+    if install_sudoers_file "$tmp"; then
+      SUDOERS_OK=1
+      ok "sudoers zainstalowany: plik (visudo -cf) i CAŁA konfiguracja (visudo -c) poprawne; dokładne argumenty, bez wildcardów"
     else
-      warn "Walidacja sudoers nie przeszła — pomijam (sprawdź $SRC/system/sudoers.d/mailpanel)"
+      warn "sudoers NIE zainstalowany (patrz komunikat wyżej; sprawdź $SRC/system/sudoers.d/mailpanel i: visudo -c)"
     fi
     rm -f "$tmp"
     # sudo przyznaje polecenie, gdy pasuje KTÓRAKOLWIEK reguła: jedna stara reguła z wildcardem (1.0: fail2ban-client,
@@ -468,6 +511,7 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
     [ -f "$ENVF" ] && { chown root:"$WEB_USER" "$ENVF"; chmod 640 "$ENVF"; ok "$ENVF 640 root:$WEB_USER"; }
   done
   [ -d /etc/mailpanel ] && { chown root:"$WEB_USER" /etc/mailpanel; chmod 750 /etc/mailpanel; }
+  secure_secret_copies
 
   if ask "   Cała reszta Roundcube (program/, vendor/, skins/, plugins/, config/...) też root:root — zapisywalne dla $WEB_USER zostają tylko temp/ i logs/"; then
     chown -R root:root "$RC_DIR"
@@ -488,7 +532,8 @@ if ask "7) Wystawić portal/panel/assets w webroot (public_html) i ustawić wła
       warn "nadal należą do $WEB_USER albo są zapisywalne dla wszystkich: $(echo "$LEFT" | tr '\n' ' ')"
     fi
     # plik 600/640, który należał do www-data, jest teraz roota — proces PHP przestaje go czytać (np. konfiguracja pluginu)
-    UNREAD=$(sudo -u "$WEB_USER" find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type f ! -readable -print 2>/dev/null | head -5)
+    UNREAD=$(sudo -u "$WEB_USER" find "$RC_DIR" \( -path "$RC_DIR/temp" -o -path "$RC_DIR/logs" \) -prune -o -type f ! -readable \
+               ! \( "${SECRET_COPY_NAMES[@]}" \) -print 2>/dev/null | head -5)
     if [ -z "$UNREAD" ]; then
       ok "$WEB_USER czyta wszystkie pliki drzewa (poza temp/ i logs/)"
     else
@@ -625,10 +670,20 @@ fi
 
 # --- 11. Kwarantanna usuniętych skrzynek ---
 hr
-if ask "11) Utworzyć /var/mail/deleted (kwarantanna 700) i cron czyszczący wpisy starsze niż 30 dni"; then
+# Czyszczenie robi timer systemd (Debian 13 z tego poradnika nie ma pakietu cron — /etc/cron.daily nikt by nie uruchomił).
+# Wiek wpisu = czas usunięcia zapisany w nazwie katalogu (mv zachowuje mtime skrzynki, więc nie mtime).
+if ask "11) Utworzyć /var/mail/deleted (kwarantanna 700) i timer systemd czyszczący wpisy starsze niż 30 dni"; then
   install -d -o root -g root -m 700 /var/mail/deleted && ok "/var/mail/deleted (700 root)"
-  install -o root -g root -m 755 "$SRC/scripts/mailpanel-purge-deleted" /etc/cron.daily/mailpanel-purge-deleted \
-    && ok "/etc/cron.daily/mailpanel-purge-deleted (retencja 30 dni; zmień RETENTION_DAYS w pliku)"
+  if install -o root -g root -m 755 "$SRC/scripts/mailpanel-purge-deleted" /usr/local/sbin/mailpanel-purge-deleted \
+     && install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-purge-deleted.service" /etc/systemd/system/ \
+     && install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-purge-deleted.timer" /etc/systemd/system/ \
+     && systemctl daemon-reload && systemctl enable --now mailpanel-purge-deleted.timer >/dev/null 2>&1; then
+    ok "timer mailpanel-purge-deleted (codziennie, Persistent=true; retencja 30 dni — RETENTION_DAYS w /usr/local/sbin/mailpanel-purge-deleted)"
+  else
+    warn "timer mailpanel-purge-deleted NIE działa — sprawdź: systemctl status mailpanel-purge-deleted.timer"
+  fi
+  # 1.1.0 przed poprawką kładło skrypt do /etc/cron.daily (bez crona nigdy nie ruszał); stara kopia jest zbędna
+  [ -e /etc/cron.daily/mailpanel-purge-deleted ] && rm -f /etc/cron.daily/mailpanel-purge-deleted && ok "usunięto /etc/cron.daily/mailpanel-purge-deleted"
 fi
 
 hr
