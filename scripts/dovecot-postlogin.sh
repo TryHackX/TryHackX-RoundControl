@@ -33,7 +33,7 @@ if ! echo "$CLIENT_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^([0-9a-fA-F]{0
 fi
 
 # === SANITYZACJA ===
-SAFE_EMAIL=$(echo "$EMAIL" | tr -cd 'a-zA-Z0-9@._+-')
+SAFE_EMAIL=$(echo "$EMAIL" | tr -cd 'a-zA-Z0-9@._+-' | tr 'A-Z' 'a-z')   # adresy zawsze małymi literami (1.1.0)
 SAFE_IP=$(echo "$CLIENT_IP" | tr -cd '0-9a-fA-F.:')
 
 if [ ${#SAFE_EMAIL} -gt 190 ] || [ ${#SAFE_IP} -gt 45 ]; then
@@ -42,11 +42,13 @@ if [ ${#SAFE_EMAIL} -gt 190 ] || [ ${#SAFE_IP} -gt 45 ]; then
 fi
 
 # === ASYNCHRONICZNE LOGOWANIE ===
+# 1.1.0: konto `mailpostlogin` ma wyłącznie EXECUTE na tej jednej procedurze (sql/postlogin_grants.sql), więc
+# wywołanie jest w pełni kwalifikowane i nie ustawia domyślnej bazy (nie wymaga żadnych praw do tabel).
 (
     mysql --defaults-extra-file=/etc/dovecot/mysql-mailpanel.cnf \
           --batch --skip-column-names \
           --connect-timeout=2 \
-          mailserver -e "CALL sp_register_login('${SAFE_EMAIL}', '${SAFE_IP}');"
+          -e "CALL mailserver.sp_register_login('${SAFE_EMAIL}', '${SAFE_IP}');"
 ) &
 
 exec "$@"

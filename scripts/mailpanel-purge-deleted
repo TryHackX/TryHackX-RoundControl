@@ -1,0 +1,13 @@
+#!/bin/sh
+# /etc/cron.daily/mailpanel-purge-deleted  (install.sh section 11)
+# Removes quarantined mailboxes (moved here by mailpanel-delete-user.sh when an account is deleted in the panel)
+# once they are older than RETENTION_DAYS. The quarantine directory is root-only (700); the timestamp of an entry is
+# the moment it was moved. Set RETENTION_DAYS=0 to keep everything until you delete it yourself.
+QUARANTINE_DIR="/var/mail/deleted"
+RETENTION_DAYS=30
+
+[ -d "$QUARANTINE_DIR" ] || exit 0
+[ -L "$QUARANTINE_DIR" ] && exit 1
+[ "$RETENTION_DAYS" -gt 0 ] 2>/dev/null || exit 0
+
+find "$QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -mtime +"$RETENTION_DAYS" -exec rm -rf -- {} +

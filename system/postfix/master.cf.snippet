@@ -6,6 +6,10 @@
 
 # 1) W blokach `submission` i `submissions` dopisz:
 #      -o smtpd_data_restrictions=$mua_data_restrictions
+#      -o smtpd_recipient_limit=50
+#    (1.1.0) Limit dzienny liczy ODBIORCÓW (atrybut recipient_count na etapie DATA). smtpd_recipient_limit
+#    ogranicza liczbę odbiorców JEDNEJ wiadomości na tych portach (domyślnie Postfix pozwala na 1000); 50 to
+#    wartość z kodu panelu (smtp_max_rcpt_per_msg) — dostosuj do swoich potrzeb, ale nie zostawiaj 1000.
 #
 # 2) W main.cf:
 #      mua_data_restrictions = reject_unauth_pipelining, check_policy_service unix:private/policy-daily
@@ -17,3 +21,11 @@ policy-daily unix  -       n       n       -       0       spawn
 
 # Po zmianach:  postfix check && systemctl reload postfix
 # Limit dotyczy TYLKO uwierzytelnionych wysyłek (587/465). Port 25 nietknięty.
+# Roundcube MUSI wysyłać przez 587 z uwierzytelnieniem (config.inc.php: smtp_host = 'tls://localhost:587',
+# smtp_user = '%u', smtp_pass = '%p'); bez SASL pole sasl_username jest puste i polityka odpowiada DUNNO —
+# limit nie obowiązuje.
+#
+# Uwaga: smtpd_client_message_rate_limit / _connection_* ustawiane z panelu (zakładka "Bezpieczeństwo") trafiają
+# do main.cf, czyli dotyczą WSZYSTKICH usług smtpd, także portu 25 (poczta przychodząca). Chcąc ograniczyć je do
+# submission, zostaw w main.cf wartości domyślne i ustaw je przez  -o smtpd_client_message_rate_limit=...
+# w blokach submission/submissions.

@@ -5,36 +5,37 @@
 #
 # Without an entry the matching panel feature shows a readable message, the rest works.
 # One line = one capability (least privilege).
+#
+# In sudoers arguments a `*` also matches spaces, and sudo grants a command if ANY rule matches - so one leftover
+# wildcard rule for the same command (from 1.0, in /etc/sudoers or another /etc/sudoers.d/ file) makes every exact rule
+# below worthless. install.sh section 2 / scripts/mailpanel-sudoers-cleanup.sh find and remove such leftovers.
+# In a `^regex$` argument the sudoers special characters `,` `:` `=` `\` must be escaped with a backslash (hence `\:`
+# below). The regexes avoid `{m,n}` quantifiers on purpose, so no comma has to be escaped at all.
 
-# Fail2Ban - EXACT arguments only (1.0.1, security fix).
-# In sudoers a `*` inside arguments also matches spaces, so the old rules ("set * banip *" and friends)
-# let www-data (= any PHP code on the box) run ANY fail2ban-client command that merely contained " banip ",
-# e.g. replace a jail's actionban with a command that fail2ban then runs as root. `^...$` arguments are
-# regular expressions matched against the WHOLE argument string - nothing can be appended or inserted.
+# Fail2Ban - EXACT arguments only.
 #   status                  - jail list / ban list in the "IP blocks" tab
 #   set J banip|unbanip IP  - manual ban / unban, bans from the scanner
-#   set J bantime N         - timed bans from the scanner (jail panel-tempban)
+#   set panel-tempban bantime N - timed bans (jail panel-tempban ONLY: a rule for "any jail" would let www-data set
+#                             the bantime of sshd or recidive to one second and disable brute-force protection)
 #   get J banip --with-time - the "Expires" column
-#   reload                  - reload after saving the "Fail2Ban" tab
-#   mailpanel-f2b-apply     - root helper that installs the panel's PROPOSED jail.local after checking that only the
-#                             panel-editable values changed (jail.local itself is root:root 644, not writable by www-data)
+#   mailpanel-f2b-apply     - root helper that installs the panel's PROPOSED jail.local (read from stdin) after
+#                             checking that only the panel-editable values changed; it reloads Fail2Ban itself, so
+#                             there is no `fail2ban-client reload` rule any more. "" = it takes NO arguments.
 Cmnd_Alias MAILPANEL_F2B = /usr/bin/fail2ban-client ping, \
     /usr/bin/fail2ban-client status, \
-    /usr/bin/fail2ban-client reload, \
     /usr/bin/fail2ban-client ^status [A-Za-z0-9_-]+$, \
     /usr/bin/fail2ban-client ^set [A-Za-z0-9_-]+ (banip|unbanip) [0-9A-Fa-f.\:]+$, \
-    /usr/bin/fail2ban-client ^set [A-Za-z0-9_-]+ bantime -?[0-9]+$, \
+    /usr/bin/fail2ban-client ^set panel-tempban bantime [0-9]{2}[0-9]?[0-9]?[0-9]?[0-9]?[0-9]?$, \
     /usr/bin/fail2ban-client ^get [A-Za-z0-9_-]+ banip --with-time$, \
-    /usr/local/sbin/mailpanel-f2b-apply
+    /usr/local/sbin/mailpanel-f2b-apply ""
 www-data ALL=(root) NOPASSWD: MAILPANEL_F2B
 
-# Postfix anti-spam limits ("Security" tab); the script accepts integers only
+# Postfix anti-spam limits ("Security" tab); the script accepts exactly three integers and checks what it wrote
 www-data ALL=(root) NOPASSWD: /usr/local/bin/update-postfix-limits.sh
-# Deleting mailbox files when an account is removed; the script validates the e-mail and the path
+# Deleting mailbox files when an account is removed; the script validates the e-mail, asks Dovecot whether the
+# account still exists, checks the real path and MOVES the maildir to a quarantine (it never rm -rf's)
 www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-delete-user.sh
 # Quota usage on the account list (doveadm) - exact arguments, one user name
-www-data ALL=(root) NOPASSWD: /usr/bin/doveadm ^-f flow quota get -u [A-Za-z0-9._@+-]+$
-# Suspicious-IP scanner: SINCE UNTIL [ssh|dovecot|postfix]. The `*` is acceptable HERE because the script
-# validates strictly (both dates must match ^YYYY-MM-DD$, the source is a whitelist, extra arguments are
-# ignored) and only passes the validated values, quoted, to journalctl.
-www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh *
+www-data ALL=(root) NOPASSWD: /usr/bin/doveadm ^-f flow quota get -u [A-Za-z0-9][A-Za-z0-9._@+-]+$
+# Suspicious-IP scanner: SINCE UNTIL [ssh|dovecot|postfix] - exact arguments (two ISO dates, optional source)
+www-data ALL=(root) NOPASSWD: /usr/local/bin/mailpanel-scan.sh ^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{4}-[0-9]{2}-[0-9]{2}( (ssh|dovecot|postfix))?$

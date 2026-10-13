@@ -144,7 +144,14 @@ if (file_exists($envPath) && !askYes('.env już istnieje — nadpisać?', false)
     @chmod($envPath, 0640);
     file_put_contents($envPath, implode("\n", $lines) . "\n");
     umask($old);
-    ok('.env zapisany (0640; pamiętaj: chown root:www-data .env)');
+    // uruchomione przez root (sudo php install.php) plik byłby root:root 640 i panel (www-data) nie mógłby go czytać
+    // aż do install.sh sekcja 7 — ustawiamy grupę od razu, jeśli się da
+    $chgrpDone = false;
+    if (function_exists('posix_getuid') && posix_getuid() === 0 && function_exists('posix_getgrnam') && posix_getgrnam('www-data') !== false) {
+        $chgrpDone = @chgrp($envPath, 'www-data');
+    }
+    ok('.env zapisany (0640' . ($chgrpDone ? ', grupa www-data' : '; pamiętaj: chown root:www-data .env') . ')');
+    out('   Najlepiej przenieś go poza katalog aplikacji:  install -d -o root -g www-data -m 750 /etc/mailpanel && mv .env /etc/mailpanel/panel.env');
 }
 
 /* --- 3. Połączenie z bazą --- */
@@ -184,12 +191,15 @@ if (file_exists($schema) && askYes('Zaimportować schemat bazy (sql/panel_schema
 /* --- 5. Pierwszy administrator --- */
 hr();
 if (askYes('Utworzyć / zaktualizować konto administratora panelu?')) {
-    $adminEmail = ask('E-mail administratora');
+    $adminEmail = strtolower(trim(ask('E-mail administratora')));
     while (!filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
-        err('Nieprawidłowy e-mail.'); $adminEmail = ask('E-mail administratora');
+        err('Nieprawidłowy e-mail.'); $adminEmail = strtolower(trim(ask('E-mail administratora')));
     }
-    $p1 = askSecret('Hasło administratora (min. 10 znaków)');
-    while (strlen($p1) < 10) { err('Za krótkie.'); $p1 = askSecret('Hasło administratora'); }
+    // jedna polityka z panelem (Password::meetsAdminPolicy): min. 12 znaków, wielka litera, cyfra, znak specjalny
+    $adminPolicy = static fn(string $p): bool => mb_strlen($p) >= 12 && preg_match('/[A-Z]/', $p) === 1
+        && preg_match('/\d/', $p) === 1 && preg_match('/[^a-zA-Z0-9]/', $p) === 1;
+    $p1 = askSecret('Hasło administratora (min. 12 znaków, wielka litera, cyfra, znak specjalny)');
+    while (!$adminPolicy($p1)) { err('Hasło za słabe (min. 12 znaków, wielka litera, cyfra, znak specjalny).'); $p1 = askSecret('Hasło administratora'); }
     $p2 = askSecret('Powtórz hasło');
     if ($p1 !== $p2) { err('Hasła różnią się — pomijam tworzenie admina.'); }
     else {
@@ -221,8 +231,9 @@ ok('Warstwa aplikacji gotowa.');
 out('');
 out('Następne kroki:');
 out('  1) Integracje systemowe (jako root):   sudo bash install.sh');
-out('     (sekcje 2-3: helper Fail2Ban + sudoers z dokładnymi argumentami, jail.local = root:root 644;');
-out('      sekcja 7 ustawi uprawnienia .env, sekcja 9 wepnie panel w config.inc.php)');
+out('     (sekcja 0: baza + uprawnienia per tabela z sql/panel_grants.sql; sekcje 2-3: helper Fail2Ban + sudoers z dokładnymi');
+out('      argumentami, jail.local = root:root 644; sekcja 7: kod root:root, tylko temp/ i logs/ zapisywalne dla www-data,');
+out('      .env 640 root:www-data; sekcja 9: wpięcie panelu w config.inc.php; sekcja 10: drop-in php-fpm ReadWritePaths)');
 out('     F2B_JAIL_LOCAL w .env zostaw /etc/fail2ban/jail.local — tylko ten plik obsługuje helper.');
 out('  2) Zaloguj się do panelu przez portal (admin → Panel Admina).');
 out('');

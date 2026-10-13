@@ -35,3 +35,17 @@ bantime = 24h
 bantime.increment = false
 findtime = 1d
 maxretry = 1000000
+
+# (1.1.0) Failed portal logins (webmail + admin panel) -> firewall ban, instead of the old sleep() in PHP.
+# DISABLED by default: enable (enabled = true, then fail2ban-client reload) once you have checked with
+#   journalctl -t mailpanel -n 5   (after one wrong password at the portal)
+# that the lines "auth-failure ip=... kind=... user=..." arrive. Keep your own address in ignoreip.
+[mailpanel-portal]
+enabled = false
+filter = mailpanel-portal
+backend = systemd
+maxretry = 10
+findtime = 10m
+bantime = 1h
+banaction = nftables-multiport
+port = http,https

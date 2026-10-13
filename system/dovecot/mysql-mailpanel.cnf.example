@@ -1,9 +1,10 @@
 # /etc/dovecot/mysql-mailpanel.cnf — dane dostępowe dla dovecot-postlogin.sh
-# (rejestracja logowań IMAP/POP3 przez CALL sp_register_login).
+# (rejestracja logowań IMAP/POP3 przez CALL mailserver.sp_register_login).
 # Instalacja: install.sh sekcja 6 (400 dovecot:dovecot).
-# Użytkownik 'mailpanel' musi mieć GRANT EXECUTE na procedurę sp_register_login.
+# 1.1.0: osobne konto 'mailpostlogin' z JEDNYM uprawnieniem — EXECUTE na procedurze sp_register_login
+# (sql/postlogin_grants.sql). Wcześniej skrypt używał konta 'mailpanel' (pełny dostęp do bazy panelu), więc
+# przejęcie użytkownika dovecot oznaczało przejęcie panelu. Brak `database=`: wywołanie jest w pełni kwalifikowane.
 [client]
-user=mailpanel
-password=HASLO_MAILPANEL
+user=mailpostlogin
+password=HASLO_MAILPOSTLOGIN
 host=localhost
-database=mailserver
