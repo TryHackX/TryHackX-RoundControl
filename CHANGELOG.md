@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Tests only — nothing deployed changes, 1.3.2 stays the release:
+
+- `tests/db_test.php` no longer calls `Reflection*::setAccessible()`, deprecated in PHP 8.5 (a no-op since 8.1): the
+  suite's error handler turned the deprecation into a failure, so the database tests stopped on PHP 8.5. All suites pass
+  on PHP 8.4 and 8.5 (MariaDB 11.4).
+
 ## 1.3.2 — 2026-10-13 — log retention
 
 **Code plus `sql/upgrade_1.3.2.sql`** (one stored procedure, one EXECUTE grant, the setting stored explicitly). No sudo /
