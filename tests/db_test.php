@@ -350,11 +350,10 @@ try {
     $panel = new App\Panel\PanelController();
     $inv = static function (string $method) use ($panel): array {
         $m = new ReflectionMethod($panel, $method);
-        $m->setAccessible(true);
-        foreach (['success', 'error'] as $p) { $rp = new ReflectionProperty($panel, $p); $rp->setAccessible(true); $rp->setValue($panel, ''); }
+        foreach (['success', 'error'] as $p) { $rp = new ReflectionProperty($panel, $p); $rp->setValue($panel, ''); }
         $m->invoke($panel);
         $out = [];
-        foreach (['success', 'error'] as $p) { $rp = new ReflectionProperty($panel, $p); $rp->setAccessible(true); $out[$p] = $rp->getValue($panel); }
+        foreach (['success', 'error'] as $p) { $rp = new ReflectionProperty($panel, $p); $out[$p] = $rp->getValue($panel); }
         return $out;
     };
     $_POST = ['nu_local' => 'Admin', 'nu_domain' => 'example.test', 'nu_password' => 'Silne-Haslo-99!', 'nu_password2' => 'Silne-Haslo-99!', 'nu_quota_value' => '10', 'nu_quota_unit' => 'MB'];
@@ -450,7 +449,6 @@ try {
 
     // render całej strony panelu: bez notice/warning, z nowymi polami, bez sekretu
     $render = new ReflectionMethod($panel, 'renderPage');
-    $render->setAccessible(true);
     $_SESSION['flash_success'] = 'Konto <b>x</b>'; $_SESSION['csrf'] = 'TESTTOKEN';
     ob_start();
     try { $render->invoke($panel); $html = (string) ob_get_clean(); } catch (Throwable $e) { ob_end_clean(); $html = ''; ok(false, 'renderPage rzuca: ' . $e->getMessage()); }
@@ -473,7 +471,6 @@ try {
     /* -------------------------------------------------------------- sesja admina */
     group('AdminGuard: ważność sesji');
     $guard = new ReflectionMethod(App\Admin\AdminGuard::class, 'stillValid');
-    $guard->setAccessible(true);
     $row = (new App\Admin\AdminRepository($pdo))->findByEmail('boss@example.test');
     $sess = ['admin_id' => (int) $row['id'], 'admin_fp' => hash('sha256', $row['pwd_hash']), 'admin_login_at' => time() - 60, 'admin_last_seen' => time() - 10];
     $_SESSION = $sess;
