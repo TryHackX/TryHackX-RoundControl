@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  # Branches are tested through their pull request; main and the release tags on push.
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+# A newer commit on the same pull request makes the older run pointless. Runs for main and tags
+# always finish, so a release commit is never left without a verdict.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (PHP ${{ matrix.php }}, MariaDB ${{ matrix.mariadb }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.1 is the declared minimum (with the oldest LTS covered, MariaDB 11.4), 8.4 + 11.8 what
+        # Debian 13 ships, 8.5 + 11.8 what production runs.
+        include:
+          - php: '8.1'
+            mariadb: '11.4'
+          - php: '8.4'
+            mariadb: '11.8'
+          - php: '8.5'
+            mariadb: '11.8'
+
+    services:
+      database:
+        image: mariadb:${{ matrix.mariadb }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+
+    env:
+      MP_TEST_DB_DSN: mysql:host=127.0.0.1;port=3306
+      MP_TEST_DB_USER: root
+      MP_TEST_DB_PASS: root
+      # The database sees the runner through the container network, not as localhost: the suites
+      # create their scratch accounts for any host, and a missing database fails instead of skipping.
+      MP_TEST_DB_ACCOUNT_HOST: '%'
+      MP_TEST_REQUIRE_DB: '1'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, pdo_mysql, curl, intl, sodium, posix
+          ini-values: error_reporting=-1, display_errors=On
+          coverage: none
+          tools: none
+        env:
+          fail-fast: true
+
+      - name: Suites without a database
+        run: |
+          php tests/security_test.php
+          php tests/sudoers_test.php
+          php tests/i18n_test.php
+
+      # The Fail2Ban root helper insists on a root-owned jail.local, the scratch one included, so on
+      # Linux this suite runs as root (it then skips its read-only-file check, and says so).
+      - name: Scripts and installers (as root)
+        run: sudo env "PATH=$PATH" "$(command -v php)" tests/scripts_test.php
+
+      - name: Wait for MariaDB
+        run: |
+          for attempt in {1..60}; do
+            if php -r 'new PDO(getenv("MP_TEST_DB_DSN"), "root", "root", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);' 2>/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MariaDB did not become ready" >&2
+          exit 1
+
+      - name: Database suite (scratch database, the panel account with exactly sql/panel_grants.sql)
+        run: php tests/db_test.php
+
+      - name: HTTP suite (php -S against a scratch database)
+        run: php tests/http_test.php
