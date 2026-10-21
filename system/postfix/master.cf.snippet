@@ -1,31 +1,30 @@
 # =====================================================================
-# Fragment /etc/postfix/master.cf — dzienny limit wysyłki (policy service).
-# Wymaga: scripts/mailpanel-policy-daily.php w /usr/local/bin/ oraz
-# /etc/mailpanel-policy.cf (patrz system/mailpanel-policy.cf.example).
+# Part of /etc/postfix/master.cf — the daily send limit (policy service).
+# Needs: scripts/mailpanel-policy-daily.php in /usr/local/bin/ and
+# /etc/mailpanel-policy.cf (see system/mailpanel-policy.cf.example).
 # =====================================================================
 
-# 1) W blokach `submission` i `submissions` dopisz:
+# 1) In the `submission` and `submissions` blocks add:
 #      -o smtpd_data_restrictions=$mua_data_restrictions
 #      -o smtpd_recipient_limit=50
-#    (1.1.0) Limit dzienny liczy ODBIORCÓW (atrybut recipient_count na etapie DATA). smtpd_recipient_limit
-#    ogranicza liczbę odbiorców JEDNEJ wiadomości na tych portach (domyślnie Postfix pozwala na 1000); 50 to
-#    wartość z kodu panelu (smtp_max_rcpt_per_msg) — dostosuj do swoich potrzeb, ale nie zostawiaj 1000.
+#    (1.1.0) The daily limit counts RECIPIENTS (the recipient_count attribute at the DATA stage). smtpd_recipient_limit
+#    caps the recipients of ONE message on these ports (Postfix allows 1000 by default); 50 is the panel's value
+#    (smtp_max_rcpt_per_msg) — adjust it to your needs, but do not leave 1000.
 #
-# 2) W main.cf:
+# 2) In main.cf:
 #      mua_data_restrictions = reject_unauth_pipelining, check_policy_service unix:private/policy-daily
 #
-# 3) Na końcu master.cf dodaj usługę spawn:
+# 3) At the end of master.cf add the spawn service:
 
 policy-daily unix  -       n       n       -       0       spawn
   user=nobody argv=/usr/bin/php /usr/local/bin/mailpanel-policy-daily.php
 
-# Po zmianach:  postfix check && systemctl reload postfix
-# Limit dotyczy TYLKO uwierzytelnionych wysyłek (587/465). Port 25 nietknięty.
-# Roundcube MUSI wysyłać przez 587 z uwierzytelnieniem (config.inc.php: smtp_host = 'tls://localhost:587',
-# smtp_user = '%u', smtp_pass = '%p'); bez SASL pole sasl_username jest puste i polityka odpowiada DUNNO —
-# limit nie obowiązuje.
+# Afterwards:  postfix check && systemctl reload postfix
+# The limit applies ONLY to authenticated sending (587/465). Port 25 is not touched.
+# Roundcube MUST send through 587 with authentication (config.inc.php: smtp_host = 'tls://localhost:587',
+# smtp_user = '%u', smtp_pass = '%p'); without SASL sasl_username is empty and the policy answers DUNNO —
+# no limit applies.
 #
-# Uwaga: smtpd_client_message_rate_limit / _connection_* ustawiane z panelu (zakładka "Bezpieczeństwo") trafiają
-# do main.cf, czyli dotyczą WSZYSTKICH usług smtpd, także portu 25 (poczta przychodząca). Chcąc ograniczyć je do
-# submission, zostaw w main.cf wartości domyślne i ustaw je przez  -o smtpd_client_message_rate_limit=...
-# w blokach submission/submissions.
+# Note: smtpd_client_message_rate_limit / _connection_* set from the panel ("Security" tab) go to main.cf, so they apply
+# to ALL smtpd services, port 25 (incoming mail) included. To limit them to submission, keep the defaults in main.cf
+# and set them with  -o smtpd_client_message_rate_limit=...  in the submission/submissions blocks.

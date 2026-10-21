@@ -1,9 +1,9 @@
-; /etc/mailpanel-policy.cf  —  konfiguracja dziennego limitu wysyłki.
-; Czytany przez /usr/local/bin/mailpanel-policy-daily.php (spawn jako nobody).
-; Uprawnienia:  chown root:nogroup  &&  chmod 640
-; Podmień HASLO_MAILPOLICY na wygenerowane (openssl rand -hex 24).
+; /etc/mailpanel-policy.cf  —  configuration of the daily send limit.
+; Read by /usr/local/bin/mailpanel-policy-daily.php (spawned as nobody).
+; Permissions:  chown root:nogroup  &&  chmod 640
+; Replace HASLO_MAILPOLICY with a generated password (openssl rand -hex 24); install.sh section 4 does it.
 ;
-; Użytkownik DB `mailpolicy` — minimalne granty:
+; Database account `mailpolicy` — the minimal grants:
 ;   GRANT SELECT ON mailserver.virtual_users TO 'mailpolicy'@'localhost';
 ;   GRANT SELECT ON mailserver.app_settings  TO 'mailpolicy'@'localhost';
 ;   GRANT SELECT, INSERT, UPDATE ON mailserver.send_counters TO 'mailpolicy'@'localhost';
@@ -11,5 +11,7 @@
 dsn = "mysql:host=127.0.0.1;dbname=mailserver;charset=utf8mb4"
 user = mailpolicy
 password = "HASLO_MAILPOLICY"
+; PHP's time zone of the script. Since 1.4.0 the day of the counter comes from the database clock (CURDATE()), the
+; same one the panel reads, so this setting no longer moves the daily limit.
 timezone = Europe/Warsaw
-; notify = 1  ; (opcjonalnie) 0 = wyłącz e-mail informujący nadawcę o wyczerpaniu limitu
+; notify = 1  ; (optional) 0 = no e-mail telling the sender that the limit is used up

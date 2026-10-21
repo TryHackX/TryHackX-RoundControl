@@ -7,6 +7,8 @@
 * Released under the Apache License Version 2.0
 *
 * Date: 2023-07-30
+*
+* Changed for TryHackX RoundControl: the @font-face lists only the WOFF2 font (the other formats are not shipped).
 */
 @font-face{font-family:"remixicon";src:url("remixicon.woff2") format("woff2");font-display:swap}
 

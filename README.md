@@ -4,18 +4,22 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.3.2** (2026-10-13, [CHANGELOG](CHANGELOG.md)) — **log retention** (90 / 180 / 365 / 730 days or no limit,
-applied once a day without cron and on demand; the database never lets the panel remove entries younger than 90 days).
-1.3.1 made new installations **English by default** (installer in English with `--lang=pl`, default interface language
-asked during installation, English output of `install.sh` and the root helpers); 1.3.0 brought **Polish and English** (switcher on every page, language management
-and JSON language packs in the panel), **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile, hCaptcha)
-and a **footer** with the version shown only to administrators.
-If you run 1.3.1: [Upgrading from 1.3.1](#upgrading-from-131-to-132). If you run 1.3.0: [Upgrading from 1.3.0](#upgrading-from-130-to-131)
-(**keeps your language**), then the 1.3.2 steps. If you run 1.2.0: [Upgrading from 1.2.0](#upgrading-from-120-to-130), then the 1.3.1
-and 1.3.2 steps. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120),
-then the 1.3.0, 1.3.1 and 1.3.2 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package
-(it installs the current version directly) plus `install.sh` section 12. If you run 1.0: run `install.sh` from this
-package (it covers every older version).
+**Version 1.4.0** (2026-10-21, [CHANGELOG](CHANGELOG.md)) — the result of a second full review: **one database
+collation** (MariaDB 11.5+ created the panel's tables in a collation the older mail tables cannot be compared with),
+**Fail2Ban values a jail can live with** (no `ignoreip 0.0.0.0/0`, no `maxretry 999999`, no one-second bans — also
+refused by the root helper), **timed bans that survive a Fail2Ban restart**, **mailbox files left on disk are
+remembered** (such a name is never given out again until they are moved), the administrator's password before a
+mailbox password reset or a reserved name, trusted addresses that skip the sign-in CAPTCHA and can never be banned,
+safer numbers everywhere (an empty field no longer means "no limit"), and many fixes in the panel's pages.
+1.3.2 added **log retention**; 1.3.1 made new installations **English by default**; 1.3.0 brought **Polish and
+English**, **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile, hCaptcha) and the admin-only footer.
+If you run 1.3.2: [Upgrading from 1.3.2](#upgrading-from-132-to-140). If you run 1.3.1: [Upgrading from 1.3.1](#upgrading-from-131-to-132),
+then the 1.4.0 steps. If you run 1.3.0: [Upgrading from 1.3.0](#upgrading-from-130-to-131) (**keeps your language**), then
+the 1.3.2 and 1.4.0 steps. If you run 1.2.0: [Upgrading from 1.2.0](#upgrading-from-120-to-130), then the 1.3.1, 1.3.2
+and 1.4.0 steps. If you run 1.1.0: [Upgrading from 1.1.0](#upgrading-from-110-to-120), then the 1.3.0, 1.3.1, 1.3.2 and
+1.4.0 steps. If you run 1.0.1: [Upgrading from 1.0.1](#upgrading-from-101-to-110) with this package (it installs the
+current version directly) plus `install.sh` section 12. If you run 1.0: run `install.sh` from this package (it covers
+every older version).
 **Any existing installation that should stay Polish — first, before the new code:**
 `mysql mailserver -e "INSERT IGNORE INTO app_settings (k, v) VALUES ('default_language', 'pl')"` (1.3.1 falls back to
 English when no language is stored).
@@ -55,6 +59,46 @@ sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban
 
 Both installers are **interactive and idempotent** (a confirmation gate per step,
 backups before editing). Details and manual installation — see the sections below.
+
+## Upgrading from 1.3.2 to 1.4.0
+
+**Code, the two root helpers, one SQL file and one Fail2Ban value.** Details: [CHANGELOG](CHANGELOG.md).
+
+- `sql/upgrade_1.4.0.sql` (as root): gives the panel's tables the collation of `virtual_users.email` where they differ
+  (tables created on MariaDB 11.5+ got `utf8mb4_uca1400_ai_ci`; tables that already match are not touched), adds
+  `deleted_accounts.files_left` and an index on `virtual_aliases.source`, and re-creates both procedures. No grant
+  changes. **Run it before the new code** — the new code joins tables the old collations could not compare.
+- The root helpers changed: `mailpanel-f2b-apply` (value ranges, host names in `ignoreip`) and
+  `mailpanel-policy-daily.php` (the day of the counter from the database clock, English log lines).
+- `[panel-tempban]` needs `bantime = 90d` (the longest ban the panel hands out): after a Fail2Ban restart a jail
+  restores only bans younger than its configured bantime. It lives in `/etc/fail2ban/jail.d/mailpanel.local`, or in
+  `jail.local` on installations of the 1.0 layout — change the one line where it is, never both files.
+- Nothing else: no sudoers, php-fpm, Apache or unit change; `install.sh` is not needed.
+
+```bash
+PKG=/root/rc-1.4.0 ; RC=/var/www/roundcube ; TS=$(date +%F-%H%M%S)
+tar czf /root/roundcube-pre-1.4.0-$TS.tgz -C "$(dirname $RC)" "$(basename $RC)"        # backup (owners and modes kept)
+mysqldump --single-transaction --routines mailserver | gzip > /root/mailserver-pre-1.4.0-$TS.sql.gz
+mkdir -p /root/helpers-pre-1.4.0-$TS && cp -a /usr/local/sbin/mailpanel-f2b-apply /usr/local/bin/mailpanel-policy-daily.php /root/helpers-pre-1.4.0-$TS/
+# 1) database first (collation, files_left, index, procedures)
+mysql mailserver < $PKG/sql/upgrade_1.4.0.sql
+mysql -N -e "SELECT DISTINCT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA='mailserver'"   # one family (x_general_ci or uca1400)
+# 2) code (root:root) and the two helpers
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/app $PKG/assets $PKG/panel $PKG/portal.php $PKG/.htaccess $RC/
+rsync -a --chown=root:root --chmod=D755,F644 $PKG/config/panel_config.php $RC/config/
+rsync -a --chown=root:root --chmod=D755,F644 --delete $PKG/plugins/custom_auth/ $RC/plugins/custom_auth/
+rm -rf $RC/assets/vendor/fontawesome                                                    # removed in 1.4.0 (it was never used)
+install -o root -g root -m 755 $PKG/scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
+install -o root -g root -m 755 $PKG/scripts/mailpanel-policy-daily.php /usr/local/bin/
+find $RC/app $RC/panel $RC/portal.php -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors'   # prints nothing
+# 3) the timed-ban jail keeps 90 days (the file that holds [panel-tempban]):
+grep -l '^\[panel-tempban\]' /etc/fail2ban/jail.local /etc/fail2ban/jail.d/*.local
+#    in that file, inside [panel-tempban]: bantime = 90d   then:
+fail2ban-client -t && fail2ban-client reload panel-tempban && fail2ban-client get panel-tempban bantime   # 7776000
+```
+
+Going back: unpack the tarball over the same paths and copy the two helpers back; the new column, the index and the
+aligned collation can stay (1.3.2 ignores them).
 
 ## Upgrading from 1.3.1 to 1.3.2
 
@@ -112,8 +156,7 @@ paths and copy the two helpers back; the stored `default_language` can stay (1.3
 
 **Code** plus one data directory and the reinstalled policy script. No database change (new settings are created when
 first saved), no new grant, no sudo / php-fpm / Apache / Fail2Ban change; the code stays `root:root`. Details:
-[CHANGELOG](CHANGELOG.md). A ready, checked script for the production server does the same (with backups, `--check`
-and a restore script).
+[CHANGELOG](CHANGELOG.md).
 
 What you will notice:
 
@@ -491,6 +534,7 @@ that is the hole this release closes (an error message from the helper says what
 ├── sql/panel_schema.sql          # database schema (IF NOT EXISTS) — also upgrades an existing one
 ├── sql/panel_grants.sql          # least-privilege grants for the panel DB account (+ postlogin_grants.sql)
 ├── sql/upgrade_1.1.0.sql         # data migration 1.0.x → 1.1.0 (lower-case addresses) + reports
+├── sql/upgrade_1.3.2.sql  sql/upgrade_1.4.0.sql   # log retention; collation, files_left, index, procedures
 ├── tests/                        # run.php (dev DB), db_test.php + http_test.php (own scratch DB), security_test.php,
 │                                 #   scripts_test.php, sudoers_test.php — the last three need no database and no sudo
 ├── CHANGELOG.md
@@ -509,7 +553,7 @@ that is the hole this release closes (an error message from the helper says what
 |---|---|
 | OS | **Debian 13 (trixie)** — the target of the installers and templates (Dovecot 2.4, Postfix 3.10, Fail2Ban 1.1); on Windows/dev the system integrations disable themselves |
 | Roundcube | 1.6+ (tested on 1.7.2), installed and running |
-| PHP | 8.1+ with extensions: pdo_mysql, sodium/argon2 (standard in distributions) |
+| PHP | 8.1+ with extensions: pdo_mysql, mbstring, openssl, curl (CAPTCHA verification), sodium/argon2 (standard in distributions) |
 | MariaDB / MySQL | a `mailserver` database (Postfix/Dovecot virtual users) |
 | Apache | `mod_rewrite` + `AllowOverride All` for the Roundcube directory |
 | HTTPS | required in production (session with the Secure flag, HSTS) |
@@ -537,7 +581,7 @@ roundcube/                        ← your Roundcube root directory
 │   └── templates/                ←   HTML templates (portal + panel)
 ├── assets/                       ← NEW: CSS/JS/icons (the only public directory)
 │   ├── design-system.css  portal.css  portal.js  panel.css  panel.js
-│   └── vendor/remixicon/         ←   self-hosted icons (no CDN)
+│   └── vendor/remixicon/         ←   self-hosted icons (no CDN; Apache-2.0, LICENSE next to them)
 ├── panel/                        ← REPLACE contents (3 files)
 │   ├── index.php  logout.php  user_ips.php
 ├── config/
@@ -640,8 +684,8 @@ require_once __DIR__ . '/panel_config.php';
 ```
 
 `panel_config.php` maps the `rc_*` keys from the database (editable in the panel) to Roundcube
-options (send delay, recipient limit, etc.) and enforces
-`force_https`, `ip_check`, `identities_level=3`.
+options (send delay, recipient limit, etc.) and sets `force_https = true`, `identities_level = 3` and
+`ip_check = false` (the webmail session is not tied to one client address — phones change networks).
 
 ### Password self-service (the `password` plugin)
 
@@ -839,7 +883,9 @@ file back and compare byte for byte → `fail2ban-client -t` → `reload`. Every
 checked. If the write, the read-back or `-t` fails, the previous content is restored in place and the helper exits
 non-zero with a message; if the reload fails after a good test it exits 2. The panel shows the message — it never
 says "saved" for something that was not written. A new line, a changed section header or a changed jail outside the
-list is refused with `odrzucone: …` and nothing changes. Edit everything else in `jail.local` as root, by hand.
+list is refused with `refused: …` and nothing changes — so is a value outside the ranges the panel itself allows (1.4.0:
+`maxretry` 1..100, times from a minute to a year or `bantime = -1`, `ignoreip` networks no broader than IPv4 /8 or
+IPv6 /32, host names allowed). Edit everything else in `jail.local` as root, by hand.
 `F2B_JAIL_LOCAL` in `.env` must stay `/etc/fail2ban/jail.local` (the only file the helper handles).
 
 There is no reload timer any more: the helper reloads Fail2Ban itself. (1.0 shipped `mailpanel-f2b-reload`, a
@@ -1000,6 +1046,9 @@ file (`.env.bak`, `.env.save`, `panel.env` …), backups / dumps / keys / logs b
 | the "Security" tab | no warning about sudo for Postfix |
 | log in with a regular account → "Webmail" | Roundcube mailbox |
 | visit `https://domain/` without a session | redirect to the portal (custom_auth plugin) |
+| `mysql -N -e "SELECT DISTINCT REPLACE(TABLE_COLLATION,'utf8mb3_','utf8mb4_') FROM information_schema.TABLES WHERE TABLE_SCHEMA='mailserver'"` | **one** line (1.4.0: the schema aligns the panel's tables to `virtual_users.email`) |
+| `mysql -N -e "SELECT ROUTINE_NAME, DEFINER FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='mailserver'"` | both procedures, DEFINER an account that exists (normally `root@localhost`; if it is dropped, both procedures fail) |
+| `mysql -N -e "SELECT MAX(created_at) FROM mailserver.user_login_events"` after an IMAP login | a fresh time (the Dovecot post-login script records sign-ins) |
 
 ## 9. CAPTCHA (optional)
 
@@ -1059,7 +1108,8 @@ Behaviour worth knowing (1.1.0, updated for 1.2.0):
 - **Login limits** are per *(account, client)* and per *client* (IPv4 address or IPv6 `/64`), 4× higher for the client as
   a whole; **never per account alone**, so strangers cannot lock the administrator out. Failures go to their own table
   (`throttle_events`) — a successful IMAP login (which trims `user_login_events`) cannot reset them — and the admin login
-  log (`admin_login_attempts`) is never pruned. A blocked client is refused immediately: nothing sleeps in PHP (one FPM
+  log (`admin_login_attempts`) is never pruned by the panel itself, only by the log retention (1.3.2: not before 90
+  days). A blocked client is refused immediately: nothing sleeps in PHP (one FPM
   pool serves every site on the server). Addresses in `SCAN_TRUSTED_IPS` (exact or CIDR) are not limited and skip the CAPTCHA at sign-in.
 - **No enumeration:** the first login step answers the same for any well-formed address, existing or not, administrator
   or not, and so does a wrong password: every password is first checked as the panel password (one Argon2id
@@ -1126,7 +1176,7 @@ Your responsibilities:
 | "No sudo permission" on Postfix | missing sudoers entry for `update-postfix-limits.sh` |
 | Fail2Ban save: "Fail2Ban: sudo: a password is required" / "…not allowed to execute…" | the helper or its sudoers rule is missing: `install.sh` section 2 (or "Upgrading from 1.0.1 to 1.1.0", step 3). The rule is `mailpanel-f2b-apply ""` — the helper takes no arguments |
 | Fail2Ban save: "refused: cannot open /etc/fail2ban/jail.local for writing" (before 1.3.1: "odrzucone: nie mogę otworzyć …") / any `read-only file system` | the php-fpm drop-in is missing or php-fpm was not restarted: "php-fpm sandbox" above (`ReadWritePaths=/etc/fail2ban/jail.local`, `systemctl restart`) |
-| Fail2Ban save: "odrzucone: …" | the helper refused the proposal (the text says which line/value) or Fail2Ban rejected it (`fail2ban-client -t`; the previous file was restored); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
+| Fail2Ban save: "refused: …" (before 1.3.1: "odrzucone: …") | the helper refused the proposal (the text says which line/value) or Fail2Ban rejected it (`fail2ban-client -t`; the previous file was restored); it changed nothing. `jail.local` must be the original with only the edited values changed — see "Editing Fail2Ban from the panel" |
 | Fail2Ban save: "FAILED: …" (before 1.3.1: "BŁĄD: …"; exit 3) | the write could not be completed **and** the previous content could not be restored: the message names the backup in `/var/backups/mailpanel-f2b/` — copy it back as root and run `fail2ban-client -t` |
 | Postfix limits: "Postfix was NOT changed: … ReadWritePaths=/etc/postfix" (pl: "Postfix NIE został zmieniony") | the drop-in lacks `/etc/postfix` (or no restart): "php-fpm sandbox" above |
 | Deleting an account: "the mail files were NOT moved to the quarantine (code N)" (pl: "pliki poczty NIE zostały przeniesione do kwarantanny") | the account is gone from the database but the maildir is still in place; codes: 4 no such directory, 6 the account still exists in Dovecot, 7 `doveadm` could not confirm, 3 path outside `/var/mail/vhosts`, 5/8 move or quarantine failed — see the header of `scripts/mailpanel-delete-user.sh` |
@@ -1138,3 +1188,12 @@ Your responsibilities:
 | Fail2Ban tab: "no read permission" | `jail.local` must be readable by the PHP user: `root:root` **644** (do **not** make it writable for it) |
 | Webmail login fails, panel works | check `imap_host` in `config.inc.php` (that's plain RC login) |
 | After login it returns to the portal | cookies: HTTPS required in prod (the session has the Secure flag) |
+
+## Third-party components
+
+| Component | Where | Licence |
+|---|---|---|
+| Remix Icon 3.5.0 | `assets/vendor/remixicon/` — the CSS and the WOFF2 font (the `@font-face` lists only WOFF2; noted in the CSS header) | Apache-2.0, `assets/vendor/remixicon/LICENSE` |
+| Fail2Ban filter `roundcube-auth` | `system/fail2ban/filter.d/roundcube-auth.conf` — the filter Fail2Ban ships; `install.sh` installs it only when the distribution's copy is missing | GPL-2.0-or-later (Fail2Ban) |
+
+Everything else is this project's own code under the MIT licence ([LICENSE](LICENSE)).

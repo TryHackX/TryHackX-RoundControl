@@ -1,9 +1,9 @@
-# /etc/dovecot/mysql-mailpanel.cnf — dane dostępowe dla dovecot-postlogin.sh
-# (rejestracja logowań IMAP/POP3 przez CALL mailserver.sp_register_login).
-# Instalacja: install.sh sekcja 6 (400 dovecot:dovecot).
-# 1.1.0: osobne konto 'mailpostlogin' z JEDNYM uprawnieniem — EXECUTE na procedurze sp_register_login
-# (sql/postlogin_grants.sql). Wcześniej skrypt używał konta 'mailpanel' (pełny dostęp do bazy panelu), więc
-# przejęcie użytkownika dovecot oznaczało przejęcie panelu. Brak `database=`: wywołanie jest w pełni kwalifikowane.
+# /etc/dovecot/mysql-mailpanel.cnf — credentials of dovecot-postlogin.sh
+# (records IMAP/POP3 sign-ins with CALL mailserver.sp_register_login).
+# Installed by install.sh section 6 (400 dovecot:dovecot).
+# 1.1.0: a separate account 'mailpostlogin' with ONE privilege — EXECUTE on the procedure sp_register_login
+# (sql/postlogin_grants.sql). The script used to connect as 'mailpanel' (full access to the panel's database), so
+# whoever took over the dovecot user took over the panel. No `database=`: the call is fully qualified.
 [client]
 user=mailpostlogin
 password=HASLO_MAILPOSTLOGIN

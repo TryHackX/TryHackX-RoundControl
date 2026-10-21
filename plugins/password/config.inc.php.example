@@ -1,23 +1,22 @@
 <?php
 /**
- * Konfiguracja pluginu Roundcube `password` — samoobsługa zmiany hasła
- * skrzynki przez użytkownika (Ustawienia → Hasło).
+ * Configuration of Roundcube's `password` plugin — users change their mailbox password themselves
+ * (Settings → Password).
  *
- * Sterownik SQL zapisuje hash $6$ (SHA512-CRYPT) do mailserver.virtual_users,
- * zgodnie z `default_pass_scheme = SHA512-CRYPT` Dovecota. Połączenie idzie
- * dedykowanym użytkownikiem DB `roundcubepw` z uprawnieniami TYLKO
- * SELECT/UPDATE na virtual_users (least privilege).
+ * The SQL driver writes a $6$ hash (SHA512-CRYPT) into mailserver.virtual_users, matching Dovecot's
+ * `default_pass_scheme = SHA512-CRYPT`. It connects as the dedicated database user `roundcubepw`, which has ONLY
+ * SELECT/UPDATE on virtual_users (least privilege).
  *
- * Ten plik trafia do /var/www/roundcube/plugins/password/config.inc.php
- * (poza webrootem public_html). chmod 640, root:<użytkownik puli PHP panelu> (mailweb). Podmień
- * SILNE_HASLO_POLICY na wygenerowane (openssl rand -hex 24).
+ * This file goes to /var/www/roundcube/plugins/password/config.inc.php (outside the public_html web root),
+ * chmod 640, root:<the panel's PHP pool user> (mailweb). install.sh section 5 replaces SILNE_HASLO_POLICY with a
+ * generated password (openssl rand -hex 24) and keeps it on later runs.
  */
 $config['password_driver'] = 'sql';
-$config['password_confirm_current'] = true;        // wymagaj obecnego hasła
-$config['password_minimum_length'] = 10;           // spójne z pwd_min_length panelu
-$config['password_require_nonalpha'] = true;       // min. cyfra / znak specjalny
+$config['password_confirm_current'] = true;        // ask for the current password
+$config['password_minimum_length'] = 10;           // the same as the panel's pwd_min_length
+$config['password_require_nonalpha'] = true;       // at least one digit / special character
 $config['password_force_save'] = true;
 $config['password_algorithm'] = 'sha512-crypt';
-$config['password_algorithm_prefix'] = '';         // Dovecot trzyma $6$ bez prefiksu {SHA512-CRYPT}
+$config['password_algorithm_prefix'] = '';         // Dovecot keeps $6$ without the {SHA512-CRYPT} prefix
 $config['password_db_dsn'] = 'mysql://roundcubepw:SILNE_HASLO_POLICY@localhost/mailserver';
 $config['password_query'] = 'UPDATE virtual_users SET password=%P WHERE email=%u';

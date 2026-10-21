@@ -1,18 +1,18 @@
 # =====================================================================
-# Jaile panelu Roundcube — instalowane przez install.sh do
-# /etc/fail2ban/jail.d/mailpanel.local (Fail2Ban czyta jail.d/*.local
-# automatycznie; plik można bezpiecznie nadpisywać = idempotencja).
+# Jails of the Roundcube panel — installed by install.sh as
+# /etc/fail2ban/jail.d/mailpanel.local (Fail2Ban reads jail.d/*.local
+# by itself; the file can be overwritten safely = idempotent).
 #
-# Panel edytuje z zakładki „Fail2Ban" plik jail.local: [DEFAULT] + jaile
-# roundcube-auth, dovecot, postfix-sasl, recidive. Poniższe DWA jaile
-# obsługują ręczne blokady z panelu (stałe i czasowe) — bez nich przyciski
-# „Permaban"/bany ze skanera nie mają gdzie trafić.
+# The panel's "Fail2Ban" tab edits jail.local: [DEFAULT] + the jails
+# roundcube-auth, dovecot, postfix-sasl, recidive. The TWO jails below
+# take the panel's manual blocks (permanent and timed) — without them the
+# "Permaban" button and the scanner's bans have nowhere to go.
 #
-# Wymagane puste logi (tworzy install.sh):
+# They need empty logs (install.sh creates them):
 #   touch /var/log/mailpanel-permaban.log /var/log/mailpanel-tempban.log
 # =====================================================================
 
-# Blokady STAŁE z panelu (ręczny permaban)
+# PERMANENT blocks from the panel (manual permaban)
 [panel-permaban]
 enabled = true
 filter = panel-permaban
@@ -24,7 +24,7 @@ bantime.increment = false
 findtime = 1d
 maxretry = 1000000
 
-# Blokady CZASOWE z panelu (skaner: ban 1h..3 miesiące)
+# TIMED blocks from the panel (scanner and "Manage": 1 hour .. 90 days)
 # (1.4.0) The panel sets bantime right before every banip, but after a Fail2Ban restart (package upgrade, reboot) the
 # jail restores only the bans younger than the bantime written HERE, capped to it. So this is the longest ban the panel
 # hands out (90 days); with 24h (up to 1.3.2) a 30-day ban vanished on the first restart.
