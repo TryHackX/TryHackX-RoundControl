@@ -12,6 +12,13 @@ declare(strict_types=1);
  *  - funkcje pomocnicze install.sh (file_kv, render_template, valid_secret),
  *  - kontrole statyczne (php -l, bash -n, brak sleep, strażnicy CLI, brak czytania .env przez root).
  * Ścieżki w skryptach (BASE_DIR, LIVE, ...) są podmieniane na katalog tymczasowy; polecenia systemowe — na atrapy.
+ *
+ * Skipped checks are counted one by one: "SKIP (N checks)" says how many checks did not run, and the summary adds them
+ * up. A block skipped as a whole (no bash) declares its size; whenever the block runs, blockSize() checks that it still
+ * runs exactly that many checks, so the count stays true when checks are added. The symbolic-link checks run only where
+ * symlink() works (Linux; Windows needs the privilege). On Linux run this suite as root (CI: sudo): the Fail2Ban helper
+ * insists on a root-owned jail.local, also the scratch one; as root the read-only check is the one that is skipped.
+ * Ctrl+C / SIGTERM still remove the temporary directory.
  */
 
 $root = dirname(__DIR__);
@@ -26,7 +33,33 @@ function eq(mixed $a, mixed $b, string $label): void
     ok($a === $b, $label . ($a === $b ? '' : ' (got=' . var_export($a, true) . ' exp=' . var_export($b, true) . ')'));
 }
 function group(string $name): void { echo "\n# $name\n"; }
-function skip(string $why): void { global $T; $T['skip']++; echo "  SKIP: $why\n"; }
+/** $checks = how many checks this skip leaves out (they are counted as skipped, never as passed). */
+function skip(string $why, int $checks): void
+{
+    global $T;
+    $T['skip'] += $checks;
+    echo "  SKIP ($checks " . ($checks === 1 ? 'check' : 'checks') . "): $why\n";
+}
+/** Checks seen so far: passed, failed and skipped. */
+function seen(): int { global $T; return $T['pass'] + $T['fail'] + $T['skip']; }
+/** A block that skip() may leave out as a whole must still run exactly as many checks as its skip() counts. */
+function blockSize(int $start, int $declared, string $block): void
+{
+    $ran = seen() - $start;
+    if ($ran !== $declared) { ok(false, "$block: ran $ran checks but its skip() counts $declared — update the count"); }
+}
+/** Ctrl+C, SIGTERM and SIGHUP (pcntl) or Ctrl+C / Ctrl+Break (Windows) end the run through exit(): the cleanup runs. */
+function cleanupOnInterrupt(): void
+{
+    if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
+        pcntl_async_signals(true);
+        foreach ([SIGINT, SIGTERM, SIGHUP] as $sig) {
+            pcntl_signal($sig, static function (int $signo): void { exit(128 + $signo); });
+        }
+    } elseif (function_exists('sapi_windows_set_ctrl_handler')) {
+        sapi_windows_set_ctrl_handler(static function (int $event): void { exit(130); });
+    }
+}
 
 function toPosix(string $p): string
 {
@@ -73,6 +106,7 @@ function write(string $path, string $content): void
 $work = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mp_scripts_' . bin2hex(random_bytes(4));
 mkdir($work, 0777, true);
 register_shutdown_function(static function () use ($work): void { rrmdir($work); });
+cleanupOnInterrupt();
 $bash = findBash();
 
 /* ====================================================================== mailpanel-f2b-apply.php */
@@ -239,7 +273,7 @@ eq(file_get_contents($live), $new, 'błąd reload: nowa treść zostaje (przesz�
 // jail.local niezapisywalny (read-only): zapis się nie udaje => odmowa, nie "sukces"
 $isRoot = function_exists('posix_geteuid') && posix_geteuid() === 0;
 if ($isRoot) {
-    skip('uruchomiono jako root — test read-only pominięty');
+    skip('uruchomiono jako root — test read-only pominięty', 2);
 } else {
     reset_state($base);
     chmod($live, 0444);
@@ -285,9 +319,11 @@ ok(str_contains($src, "fopen(LIVE, 'c+')") && str_contains($src, 'LOCK_EX') && s
 /* ====================================================================== mailpanel-delete-user.sh */
 group('mailpanel-delete-user.sh');
 
+$size = 49;     // checks in this block and the purge block below (blockSize() verifies it whenever bash is there)
 if ($bash === null) {
-    skip('brak bash — testy skryptów powłoki pominięte');
+    skip('brak bash — testy skryptów powłoki pominięte', $size);
 } else {
+    $start = seen();
     $d = $work . '/del';
     $mail = $d . '/vhosts';
     $quar = $d . '/deleted';
@@ -376,7 +412,7 @@ if ($bash === null) {
         [$rc, ] = $del('zed@linked.org');
         ok($rc === 3 && is_dir($d . '/outside/zed'), 'domena będąca dowiązaniem poza vhosts: exit 3, katalog poza nietknięty');
     } else {
-        skip('symlink() niedostępny (Windows bez uprawnień) — testy dowiązań pominięte');
+        skip('symlink() niedostępny (Windows bez uprawnień) — testy dowiązań pominięte', 2);
     }
 
     // kwarantanna będąca dowiązaniem
@@ -386,6 +422,8 @@ if ($bash === null) {
         [$rc, ] = $del('ala@example.org');
         ok($rc === 8 && is_dir($mail . '/example.org/ala'), 'kwarantanna jako dowiązanie: exit 8, skrzynka nietknięta');
         @unlink($quar);
+    } else {
+        skip('symlink() unavailable — the symlinked quarantine (exit 8) not tested', 1);
     }
     [$rc, $out] = $del('ala@example.org');
     ok($rc === 0 && !is_dir($mail . '/example.org/ala'), 'kolejna skrzynka: przeniesiona (kwarantanna odtworzona)');
@@ -416,14 +454,17 @@ if ($bash === null) {
     mkdir($quar . '/example.org__zero__20000101000000', 0777, true);
     [$rc, ] = runProc([$bash, toPosix($d . '/purge0.sh')]);
     ok($rc === 0 && is_dir($quar . '/example.org__zero__20000101000000'), 'RETENTION_DAYS=0: nic nie jest kasowane');
+    blockSize($start, $size, 'mailpanel-delete-user.sh + mailpanel-purge-deleted');
 }
 
 /* ====================================================================== update-postfix-limits.sh */
 group('update-postfix-limits.sh');
 
+$size = 19;
 if ($bash === null) {
-    skip('brak bash');
+    skip('brak bash', $size);
 } else {
+    $start = seen();
     $p = $work . '/pf';
     mkdir($p . '/state', 0777, true);
     $sdir = toPosix($p . '/state');
@@ -494,14 +535,17 @@ SH);
     file_put_contents($p . '/state/reload_rc', '1');
     [$rc, $out] = $upl('20', '5', '7');
     ok($rc === 5 && !str_contains($out, 'Postfix limits updated'), 'reload nie działa: exit 5, bez sukcesu');
+    blockSize($start, $size, 'update-postfix-limits.sh');
 }
 
 /* ====================================================================== mailpanel-sudoers-cleanup.sh */
 group('mailpanel-sudoers-cleanup.sh');
 
+$size = 29;
 if ($bash === null) {
-    skip('brak bash');
+    skip('brak bash', $size);
 } else {
+    $start = seen();
     $s = $work . '/sudo';
     $dir = $s . '/sudoers.d';
     mkdir($dir, 0777, true);
@@ -587,14 +631,17 @@ if ($bash === null) {
     [$rc, $out] = $clean();
     eq($rc, 0, 'po sprzątaniu: exit 0');
     ok(str_contains($out, 'No leftover'), 'po sprzątaniu: komunikat "No leftover"');
+    blockSize($start, $size, 'mailpanel-sudoers-cleanup.sh');
 }
 
 /* ====================================================================== funkcje pomocnicze install.sh */
 group('install.sh: file_kv / render_template / valid_secret');
 
+$size = 24;
 if ($bash === null) {
-    skip('brak bash');
+    skip('brak bash', $size);
 } else {
+    $start = seen();
     $inst = str_replace("\r\n", "\n", (string) file_get_contents($root . '/install.sh'));
     ok(preg_match('/# --- helpers begin.*?\n(.*?)\n# --- helpers end/s', $inst, $hm) === 1, 'blok funkcji pomocniczych znaleziony');
     $i = $work . '/inst';
@@ -631,6 +678,8 @@ if ($bash === null) {
     if ($lnk) {
         [$rc, ] = $call('file_kv ' . escapeshellarg(toPosix($i . '/link.cf')) . ' password');
         ok($rc !== 0, 'file_kv: dowiązanie symboliczne odrzucone');
+    } else {
+        skip('symlink() unavailable — the file_kv refusal of a symbolic link not tested', 1);
     }
 
     // render_template: wartości dosłowne
@@ -639,14 +688,17 @@ if ($bash === null) {
         [$rc, $out] = $call('render_template ' . escapeshellarg(toPosix($i . '/t.tpl')) . ' HASLO_X "$V"', ['V' => $val]);
         eq($out, "password = \"$val\"\nagain=$val $val", "render_template wstawia dosłownie [$val]");
     }
+    blockSize($start, $size, 'install.sh: file_kv / render_template / valid_secret');
 }
 
 /* ====================================================================== install.sh: osobna pula PHP-FPM (sekcja 1b) */
 group('install.sh: pula PHP-FPM — log_dir, logrotate, vhosty Apache, szablon puli');
 
+$size = 21;
 if ($bash === null) {
-    skip('brak bash');
+    skip('brak bash', $size);
 } else {
+    $start = seen();
     $inst = str_replace("\r\n", "\n", (string) file_get_contents($root . '/install.sh'));
     ok(preg_match('/# --- helpers begin.*?\n(.*?)\n# --- helpers end/s', $inst, $hm1) === 1
         && preg_match('/# --- pool helpers begin.*?\n(.*?)\n# --- pool helpers end/s', $inst, $hm2) === 1, 'bloki funkcji install.sh znalezione');
@@ -730,6 +782,7 @@ if ($bash === null) {
     ok(str_contains($out, "listen = $sock\nlisten.owner = www-data\nlisten.group = www-data\nlisten.mode = 0660"), 'szablon puli: gniazdo tylko dla Apache (0660 www-data)');
     ok(str_contains($out, 'php_admin_value[session.save_path] = /var/lib/php/sessions-mailweb') && str_contains($out, 'php_value[session.gc_probability] = 1'), 'szablon puli: własny katalog sesji + własne GC (phpsessionclean go nie czyści)');
     ok((bool) preg_match('/^pm = ondemand$/m', $out) && (bool) preg_match('/^pm\.max_children = \d+$/m', $out), 'szablon puli: pm ondemand z limitem procesów');
+    blockSize($start, $size, 'install.sh: pool helpers');
 }
 
 /* ====================================================================== kontrole statyczne */
@@ -756,6 +809,8 @@ if ($bash !== null) {
         if ($rc !== 0) { $badSh[] = basename($f) . ': ' . $out; }
     }
     ok($badSh === [], 'bash -n: ' . count($shFiles) . ' skryptów' . ($badSh ? ' — ' . implode('; ', $badSh) : ''));
+} else {
+    skip('no bash — bash -n of the shell scripts not run', 1);
 }
 
 $appCode = '';   // kod aplikacji bez komentarzy (komentarze wolno wspominać o dawnych rozwiązaniach)

@@ -11,12 +11,33 @@ declare(strict_types=1);
  * uprawnieniami, które nadaje sql/panel_grants.sql (po podmianie nazw), więc test sprawdza także, że minimalne granty
  * wystarczają kodowi (portal, rejestracja, usuwanie, limity), a niedozwolone operacje są odrzucane.
  * Skrypty: polityka dziennego limitu (odbiorcy, atomowy licznik) uruchamiana jako osobny proces.
+ *
+ * More environment variables (CI):
+ *   MP_TEST_DB_ACCOUNT_HOST  host part of the scratch accounts (default localhost; '%' when the database runs in a
+ *                            container and sees the runner's address instead of localhost — '%' works only on a server
+ *                            without anonymous accounts: an ''@'localhost' row wins over 'user'@'%' for local clients)
+ *   MP_TEST_REQUIRE_DB=1     no database is a failure (exit 1) instead of a SKIP
+ *
+ * Interrupted runs: Ctrl+C and SIGTERM still drop the scratch database and accounts and remove the temporary directory
+ * (the cleanup is a shutdown function and the signal handlers exit through it). A hard kill (SIGKILL, TerminateProcess,
+ * a closed console window) cannot be caught; remove what such a run left behind by hand, as the database administrator:
+ *   SHOW DATABASES LIKE 'mp\_test\_%';                          -- DROP DATABASE `mp_test_<suffix>`;
+ *   SELECT User, Host FROM mysql.user WHERE User LIKE 'mp\_t\_%';  -- DROP USER 'mp_t_panel_<suffix>'@'<host>'; (and
+ *                                                                --   mp_t_policy_<suffix>, mp_t_login_<suffix>)
+ * and the directory <system temp>/mp_db_<suffix>/ (its app.env and policy.cf hold the scratch accounts' password).
  */
 
 $root = dirname(__DIR__);
 $dsnBase = getenv('MP_TEST_DB_DSN') ?: 'mysql:host=127.0.0.1;port=3307';
 $dbUser  = getenv('MP_TEST_DB_USER') !== false ? (string) getenv('MP_TEST_DB_USER') : 'root';
 $dbPass  = getenv('MP_TEST_DB_PASS') !== false ? (string) getenv('MP_TEST_DB_PASS') : '';
+$acctHost  = getenv('MP_TEST_DB_ACCOUNT_HOST') ?: 'localhost';
+$requireDb = getenv('MP_TEST_REQUIRE_DB') === '1';
+if (preg_match('/^[A-Za-z0-9.%_:-]{1,255}$/D', $acctHost) !== 1) {
+    fwrite(STDERR, "MP_TEST_DB_ACCOUNT_HOST: not a host name, address or pattern\n");
+    exit(2);
+}
+umask(0077);      // the scratch files (app.env, policy.cf) hold the scratch accounts' password: owner only
 
 $T = ['pass' => 0, 'fail' => 0, 'fails' => []];
 function ok(bool $cond, string $label): void
@@ -33,8 +54,9 @@ function group(string $name): void { echo "\n# $name\n"; }
 try {
     $admin = new PDO($dsnBase, $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 } catch (Throwable $e) {
-    echo "SKIP: brak dostępu do bazy testowej ({$e->getMessage()}) — ustaw MP_TEST_DB_DSN / MP_TEST_DB_USER / MP_TEST_DB_PASS\n";
-    exit(0);
+    echo ($requireDb ? 'FAIL' : 'SKIP') . ": no access to the test database ({$e->getMessage()}) — none of this suite's checks ran;"
+        . " set MP_TEST_DB_DSN / MP_TEST_DB_USER / MP_TEST_DB_PASS" . ($requireDb ? ' (MP_TEST_REQUIRE_DB=1: a missing database is a failure)' : '') . "\n";
+    exit($requireDb ? 1 : 0);
 }
 
 /** Dzieli plik SQL na instrukcje (obsługa DELIMITER, komentarzy --) — jak install.php. */
@@ -57,6 +79,32 @@ function splitSql(string $sql): array
 }
 function runSql(PDO $pdo, string $sql): void { foreach (splitSql($sql) as $stmt) { $pdo->exec($stmt); } }
 
+/** Removes a scratch directory with everything in it. */
+function rmTree(string $d): void
+{
+    if (is_link($d) || is_file($d)) { @unlink($d); return; }
+    foreach (is_dir($d) ? (scandir($d) ?: []) : [] as $f) {
+        if ($f !== '.' && $f !== '..') { rmTree($d . DIRECTORY_SEPARATOR . $f); }
+    }
+    @rmdir($d);
+}
+
+/**
+ * Ctrl+C, SIGTERM and SIGHUP (pcntl) or Ctrl+C / Ctrl+Break (the Windows console) end the run through exit(), so the
+ * shutdown functions — the cleanup — still run. While the cleanup runs, further interrupts are ignored.
+ */
+function cleanupOnInterrupt(bool $ignore = false): void
+{
+    if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
+        pcntl_async_signals(true);
+        foreach ([SIGINT, SIGTERM, SIGHUP] as $sig) {
+            pcntl_signal($sig, $ignore ? SIG_IGN : static function (int $signo): void { exit(128 + $signo); });
+        }
+    } elseif (function_exists('sapi_windows_set_ctrl_handler')) {
+        sapi_windows_set_ctrl_handler($ignore ? static function (int $event): void {} : static function (int $event): void { exit(130); });
+    }
+}
+
 $suffix  = bin2hex(random_bytes(3));
 $db      = 'mp_test_' . $suffix;
 $uPanel  = 'mp_t_panel_' . $suffix;
@@ -64,19 +112,20 @@ $uPolicy = 'mp_t_policy_' . $suffix;
 $uLogin  = 'mp_t_login_' . $suffix;
 $pw      = bin2hex(random_bytes(12));
 $tmp     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mp_db_' . $suffix;
-mkdir($tmp, 0777, true);
+mkdir($tmp, 0700, true);
 
-$cleanup = static function () use ($admin, $db, $uPanel, $uPolicy, $uLogin, $tmp): void {
+$cleanup = static function () use ($admin, $db, $uPanel, $uPolicy, $uLogin, $tmp, $acctHost): void {
+    cleanupOnInterrupt(true);
     try {
         $admin->exec("DROP DATABASE IF EXISTS `$db`");
-        foreach ([$uPanel, $uPolicy, $uLogin] as $u) { $admin->exec("DROP USER IF EXISTS '$u'@'localhost'"); }
+        foreach ([$uPanel, $uPolicy, $uLogin] as $u) { $admin->exec("DROP USER IF EXISTS '$u'@'$acctHost'"); }
     } catch (Throwable $e) {
         fwrite(STDERR, "cleanup: " . $e->getMessage() . "\n");
     }
-    foreach (glob($tmp . '/*') ?: [] as $f) { @unlink($f); }
-    @rmdir($tmp);
+    rmTree($tmp);
 };
 register_shutdown_function($cleanup);
+cleanupOnInterrupt();
 
 try {
     /* -------------------------------------------------------------- przygotowanie */
@@ -89,13 +138,13 @@ try {
     $mk = static function (string $file, array $map) use ($root): string {
         return strtr((string) file_get_contents($root . '/sql/' . $file), $map);
     };
-    foreach ([$uPanel, $uPolicy, $uLogin] as $u) { $admin->exec("CREATE USER '$u'@'localhost' IDENTIFIED BY '$pw'"); }
-    $names = ["'mailpanel'@'localhost'" => "'$uPanel'@'localhost'", "'mailpostlogin'@'localhost'" => "'$uLogin'@'localhost'", 'mailserver.' => "`$db`."];
+    foreach ([$uPanel, $uPolicy, $uLogin] as $u) { $admin->exec("CREATE USER '$u'@'$acctHost' IDENTIFIED BY '$pw'"); }
+    $names = ["'mailpanel'@'localhost'" => "'$uPanel'@'$acctHost'", "'mailpostlogin'@'localhost'" => "'$uLogin'@'$acctHost'", 'mailserver.' => "`$db`."];
     runSql($admin, $mk('panel_grants.sql', $names));
     runSql($admin, $mk('postlogin_grants.sql', $names));
-    $admin->exec("GRANT SELECT ON `$db`.virtual_users TO '$uPolicy'@'localhost'");
-    $admin->exec("GRANT SELECT ON `$db`.app_settings TO '$uPolicy'@'localhost'");
-    $admin->exec("GRANT SELECT, INSERT, UPDATE ON `$db`.send_counters TO '$uPolicy'@'localhost'");
+    $admin->exec("GRANT SELECT ON `$db`.virtual_users TO '$uPolicy'@'$acctHost'");
+    $admin->exec("GRANT SELECT ON `$db`.app_settings TO '$uPolicy'@'$acctHost'");
+    $admin->exec("GRANT SELECT, INSERT, UPDATE ON `$db`.send_counters TO '$uPolicy'@'$acctHost'");
 
     // dane
     require_once $root . '/app/src/Security/Password.php';
@@ -958,6 +1007,60 @@ try {
     unset($_SESSION['admin_username']);
 } catch (Throwable $e) {
     ok(false, 'WYJĄTEK: ' . $e::class . ': ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
+}
+
+/* -------------------------------------------------------------- sorting, paging, units (moved from tests/run.php) */
+try {
+    group('Sort whitelists: user input reaches ORDER BY only as a listed column and ASC/DESC (from tests/run.php)');
+    $ur = new App\Panel\UserAdminRepository($pdo);
+    $lr = new App\Panel\LogRepository($pdo);
+    $userCols = array_keys((new ReflectionClassConstant(App\Panel\UserAdminRepository::class, 'SORTS'))->getValue());
+    $logCols  = (new ReflectionClassConstant(App\Panel\LogRepository::class, 'SORTS'))->getValue();
+    eq($ur->parseSort('email:desc,quota:asc,evil:desc'), ['email' => 'DESC', 'quota' => 'ASC'], 'users: listed columns kept in order, an unknown one dropped');
+    eq($ur->parseSort('id:DESC,id:sideways'), ['id' => 'ASC'], 'users: the last direction wins, anything but desc is ASC');
+    $hostile = ['(SELECT SLEEP(3)):desc', 'email`,(SELECT 1):asc', 'email;DROP TABLE virtual_users:asc', 'email desc LIMIT 1:asc',
+                "email':desc", 'v.password:asc', 'email:desc;DELETE FROM x', 'quota:asc) UNION SELECT 1', "id\x00:desc", ' email : desc '];
+    foreach ($hostile as $raw) {
+        $s = $ur->parseSort($raw);
+        ok(array_diff(array_keys($s), $userCols) === [] && array_diff($s, ['ASC', 'DESC']) === [], 'users: hostile sort [' . addcslashes($raw, "\0") . '] -> ' . json_encode($s));
+    }
+    $t0 = microtime(true);
+    [$rows] = $ur->fetch('', $ur->parseSort('(SELECT SLEEP(3)):asc,email:desc'), 100, 0);
+    ok(microtime(true) - $t0 < 2.5, 'users: SLEEP() in sort= never runs');
+    $dbOrder = $admin->query('SELECT email FROM virtual_users ORDER BY email DESC LIMIT 100')->fetchAll(PDO::FETCH_COLUMN);
+    eq(array_column($rows, 'email'), $dbOrder, 'users: email:desc through the restricted account = ORDER BY email DESC');
+    [$rows] = $ur->fetch('', $ur->parseSort('quota:asc,email:asc'), 100, 0);
+    $dbOrder = $admin->query('SELECT email FROM virtual_users ORDER BY quota_mb ASC, email ASC LIMIT 100')->fetchAll(PDO::FETCH_COLUMN);
+    eq(array_column($rows, 'email'), $dbOrder, 'users: two columns (quota, email) in the given order');
+    eq($lr->parseSort('audit', 'created:asc,admin:desc,evil:desc,action:ASC'), ['created' => 'ASC', 'admin' => 'DESC', 'action' => 'ASC'], 'logs: audit columns kept, an unknown one dropped');
+    eq($lr->parseSort('reg', 'admin:desc,action:asc'), [], 'logs: a column of another log is not accepted');
+    eq($lr->parseSort('nosuch', 'created:asc'), [], 'logs: unknown table -> no sort at all');
+    foreach (array_keys($logCols) as $table) {
+        foreach ($hostile as $raw) {
+            $s = $lr->parseSort($table, $raw);
+            ok(array_diff(array_keys($s), array_keys($logCols[$table])) === [] && array_diff($s, ['ASC', 'DESC']) === [], "logs ($table): hostile sort [" . addcslashes($raw, "\0") . ']');
+        }
+    }
+    $page = $lr->auditPage(50, 0, $lr->parseSort('audit', 'action:asc'));
+    $dbOrder = $admin->query('SELECT action_type FROM admin_audit_logs ORDER BY action_type ASC, id DESC LIMIT 50')->fetchAll(PDO::FETCH_COLUMN);
+    ok($page !== [] && array_column($page, 'action_type') === $dbOrder, 'logs: audit sorted by action through the restricted account (id DESC breaks ties)');
+
+    group('Paging and display units (from tests/run.php)');
+    eq([App\Panel\Pagination::perOrDefault(50), App\Panel\Pagination::perOrDefault(7), App\Panel\Pagination::perOrDefault('abc'), App\Panel\Pagination::perOrDefault(-100)],
+        [50, 20, 20, 20], 'per page: only 10/20/50/100, anything else -> 20');
+    eq([App\Panel\Pagination::clamp(99, 100, 20), App\Panel\Pagination::clamp(-3, 100, 20), App\Panel\Pagination::clamp(2, 0, 20)], [5, 1, 1], 'page clamped to 1..last');
+    $pg = App\Panel\Pagination::render(2, 20, 100, 'users');
+    ok(str_contains($pg, 'data-nav="users" data-page="3"') && preg_match('/data-page="2" aria-current="page"/', $pg) === 1, 'pager: data attributes, current page marked');
+    eq([App\Panel\Quota::toBest(2048), App\Panel\Quota::toBest(50), App\Panel\Quota::toBest(1536)], [[2, 'GiB'], [50, 'MiB'], [1536, 'MiB']], 'quota form value: GiB only when divisible');
+    eq([App\Panel\Quota::display(1536), App\Panel\Quota::display(512)], ['1.5 GiB', '512 MiB'], 'quota display: binary units');
+    $h = App\Security\Password::dovecotHash('DevTest123!');
+    ok(str_starts_with($h, '$6$') && App\Security\Password::verifyDovecot('DevTest123!', $h) && !App\Security\Password::verifyDovecot('DevTest123?', $h), 'mailbox hash: SHA-512 crypt ($6$), verifies only the right password');
+    $a = App\Security\Password::adminHash('Zaq12wsx!');
+    ok(str_starts_with($a, '$argon2id$') && App\Security\Password::verifyAdmin('Zaq12wsx!', $a) && !App\Security\Password::verifyAdmin('x', $a), 'admin hash: Argon2id');
+    App\Settings\Settings::set('__test_key', 'abc');
+    ok(App\Settings\Settings::get('__test_key') === 'abc' && App\Settings\Settings::int('__test_key', 7) === 0, 'settings: get after set; int() of text -> 0');
+} catch (Throwable $e) {
+    ok(false, 'EXCEPTION: ' . $e::class . ': ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
 }
 
 echo "\n";

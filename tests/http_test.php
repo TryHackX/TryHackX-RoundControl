@@ -18,21 +18,40 @@ declare(strict_types=1);
  *     php tests/http_test.php --serve[=SEKUNDY]   zamiast testów: zostaw serwer z danymi testowymi do ręcznego
  *                                                 sprawdzania w przeglądarce (domyślnie 1800 s; plik STOP kończy wcześniej)
  * Bez dostępu do bazy wypisuje SKIP i kończy się kodem 0.
+ *
+ * More environment variables (CI): MP_TEST_DB_ACCOUNT_HOST (host part of the scratch account, default localhost; '%'
+ * when the database runs in a container) and MP_TEST_REQUIRE_DB=1 (a missing database or PHP curl is a failure, exit 1,
+ * instead of a SKIP).
+ *
+ * Interrupted runs: Ctrl+C and SIGTERM (also during --serve) still stop the test server, drop the scratch database and
+ * account and remove the temporary directory. A hard kill cannot be caught; remove the leftovers by hand, as the
+ * database administrator:
+ *   SHOW DATABASES LIKE 'mp\_http\_%';                               -- DROP DATABASE `mp_http_<suffix>`;
+ *   SELECT User, Host FROM mysql.user WHERE User LIKE 'mp\_h\_panel\_%';  -- DROP USER 'mp_h_panel_<suffix>'@'<host>';
+ * and the directory <system temp>/mp_http_<suffix>/ (its app.env holds the scratch account's password); a test server
+ * left running (php -S 127.0.0.1:<port>) is stopped like any other process.
  */
 
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
     exit;
 }
+$requireDb = getenv('MP_TEST_REQUIRE_DB') === '1';
 if (!function_exists('curl_init')) {
-    echo "SKIP: brak rozszerzenia curl\n";
-    exit(0);
+    echo ($requireDb ? 'FAIL' : 'SKIP') . ": PHP curl extension missing — none of this suite's checks ran\n";
+    exit($requireDb ? 1 : 0);
 }
 
 $root    = dirname(__DIR__);
 $dsnBase = getenv('MP_TEST_DB_DSN') ?: 'mysql:host=127.0.0.1;port=3307';
 $dbUser  = getenv('MP_TEST_DB_USER') !== false ? (string) getenv('MP_TEST_DB_USER') : 'root';
 $dbPass  = getenv('MP_TEST_DB_PASS') !== false ? (string) getenv('MP_TEST_DB_PASS') : '';
+$acctHost = getenv('MP_TEST_DB_ACCOUNT_HOST') ?: 'localhost';
+if (preg_match('/^[A-Za-z0-9.%_:-]{1,255}$/D', $acctHost) !== 1) {
+    fwrite(STDERR, "MP_TEST_DB_ACCOUNT_HOST: not a host name, address or pattern\n");
+    exit(2);
+}
+umask(0077);      // the scratch app.env holds the scratch account's password: owner only
 $serve   = null;
 foreach (array_slice($argv, 1) as $a) {
     if (preg_match('/^--serve(?:=(\d+))?$/', $a, $m)) {
@@ -55,8 +74,9 @@ function group(string $name): void { echo "\n# $name\n"; }
 try {
     $admin = new PDO($dsnBase, $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 } catch (Throwable $e) {
-    echo "SKIP: brak dostępu do bazy testowej ({$e->getMessage()}) — ustaw MP_TEST_DB_DSN / MP_TEST_DB_USER / MP_TEST_DB_PASS\n";
-    exit(0);
+    echo ($requireDb ? 'FAIL' : 'SKIP') . ": no access to the test database ({$e->getMessage()}) — none of this suite's checks ran;"
+        . " set MP_TEST_DB_DSN / MP_TEST_DB_USER / MP_TEST_DB_PASS" . ($requireDb ? ' (MP_TEST_REQUIRE_DB=1: a missing database is a failure)' : '') . "\n";
+    exit($requireDb ? 1 : 0);
 }
 
 function splitSql(string $sql): array
@@ -137,15 +157,32 @@ final class Client
     }
 }
 
+/**
+ * Ctrl+C, SIGTERM and SIGHUP (pcntl) or Ctrl+C / Ctrl+Break (the Windows console) end the run through exit(), so the
+ * shutdown functions — the cleanup — still run. While the cleanup runs, further interrupts are ignored.
+ */
+function cleanupOnInterrupt(bool $ignore = false): void
+{
+    if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
+        pcntl_async_signals(true);
+        foreach ([SIGINT, SIGTERM, SIGHUP] as $sig) {
+            pcntl_signal($sig, $ignore ? SIG_IGN : static function (int $signo): void { exit(128 + $signo); });
+        }
+    } elseif (function_exists('sapi_windows_set_ctrl_handler')) {
+        sapi_windows_set_ctrl_handler($ignore ? static function (int $event): void {} : static function (int $event): void { exit(130); });
+    }
+}
+
 $suffix  = bin2hex(random_bytes(3));
 $db      = 'mp_http_' . $suffix;
 $uPanel  = 'mp_h_panel_' . $suffix;
 $pw      = bin2hex(random_bytes(12));
 $tmp     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mp_http_' . $suffix;
-mkdir($tmp . DIRECTORY_SEPARATOR . 'lang', 0777, true);
+mkdir($tmp . DIRECTORY_SEPARATOR . 'lang', 0700, true);
 $server  = null;
 
-$cleanup = static function () use ($admin, $db, $uPanel, $tmp, &$server): void {
+$cleanup = static function () use ($admin, $db, $uPanel, $tmp, $acctHost, &$server): void {
+    cleanupOnInterrupt(true);
     if (is_resource($server)) {
         $st = proc_get_status($server);
         if ($st['running']) {
@@ -155,7 +192,7 @@ $cleanup = static function () use ($admin, $db, $uPanel, $tmp, &$server): void {
     }
     try {
         $admin->exec("DROP DATABASE IF EXISTS `$db`");
-        $admin->exec("DROP USER IF EXISTS '$uPanel'@'localhost'");
+        $admin->exec("DROP USER IF EXISTS '$uPanel'@'$acctHost'");
     } catch (Throwable $e) {
         fwrite(STDERR, 'cleanup: ' . $e->getMessage() . "\n");
     }
@@ -165,15 +202,16 @@ $cleanup = static function () use ($admin, $db, $uPanel, $tmp, &$server): void {
     @rmdir($tmp);
 };
 register_shutdown_function($cleanup);
+cleanupOnInterrupt();
 
 try {
     /* ------------------------------------------------------------------ baza i dane testowe */
     $admin->exec("CREATE DATABASE `$db` CHARACTER SET utf8mb4");
     $admin->exec("USE `$db`");
     runSql($admin, (string) file_get_contents($root . '/sql/panel_schema.sql'));
-    $admin->exec("CREATE USER '$uPanel'@'localhost' IDENTIFIED BY '$pw'");
+    $admin->exec("CREATE USER '$uPanel'@'$acctHost' IDENTIFIED BY '$pw'");
     runSql($admin, strtr((string) file_get_contents($root . '/sql/panel_grants.sql'),
-        ["'mailpanel'@'localhost'" => "'$uPanel'@'localhost'", 'mailserver.' => "`$db`."]));
+        ["'mailpanel'@'localhost'" => "'$uPanel'@'$acctHost'", 'mailserver.' => "`$db`."]));
 
     $mailPw  = 'DevTest123!';
     $adminPw = 'Admin-Pass-12345!';
@@ -467,10 +505,11 @@ try {
     group('1.3.0: stopka — numer wersji tylko w panelu, nigdy na stronie publicznej');
     $pub = (new Client($base))->page('/portal.php');
     ok(str_contains($pub['body'], 'TryHackX RoundControl') && str_contains($pub['body'], 'https://github.com/TryHackX/TryHackX-RoundControl'), 'portal: stopka z nazwą i repozytorium');
-    $verRe = '/\b1\.[0-9]\.[0-9]\b/';
+    $verRe = '/(?<![\d.])\d+\.\d+\.\d+(?!\.?\d)/';      // any x.y.z (1.10.0, 2.0.0 too), but not a piece of an IPv4 address
     preg_match("/define\('APP_VERSION', '([0-9.]+)'\)/", (string) file_get_contents($root . '/app/bootstrap.php'), $vm);
     $appVer = $vm[1] ?? 'x.y.z';
-    ok(!str_contains($pub['body'], $appVer) && !preg_match('/\bv(?:ersion|ersja)?\s*1\.\d/i', $pub['body']) && !preg_match($verRe, $pub['headers']), 'portal: żadnego numeru wersji w HTML ani nagłówkach');
+    ok(!str_contains($pub['body'], $appVer) && !preg_match('/\bv(?:ersion|ersja)?\s*\d+\.\d/i', $pub['body'], $vb) && !preg_match($verRe, $pub['headers'], $vh), 'portal: żadnego numeru wersji w HTML ani nagłówkach'
+        . (($vb[0] ?? $vh[0] ?? '') !== '' ? ' — found: ' . ($vb[0] ?? $vh[0]) : ''));
     ok(!preg_match('/\?v=\d+\.\d+/', $pub['body']), 'adresy assetów bez numeru wersji (skrót pliku)');
     foreach (['assets/portal.js', 'assets/portal.css', 'assets/panel.js', 'assets/panel.css', 'assets/design-system.css'] as $asset) {
         ok(!preg_match($verRe, (string) file_get_contents($root . '/' . $asset)), "$asset (publiczny): bez numerów wydań w komentarzach");
