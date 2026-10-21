@@ -852,13 +852,13 @@ foreach (['scripts', 'sql_backup', '_legacy', 'tests', 'install\\.(php|sh)', '\\
     ok(str_contains($htaccess, $needle), ".htaccess blokuje $needle");
 }
 
-/* ====================================================================== install.sh: sections 1b, 3, 4, 6, 7, 9 */
+/* ====================================================================== install.sh: sections 1b, 3, 4, 6, 7, 9, 11b */
 // The functions run as install.sh runs them (the three marked blocks, sourced), with the system commands as shell
 // functions: fail2ban-client, doveconf, systemctl, apache2ctl, sudo, id, python3, timedatectl; install copies (owner and
 // mode need root). The behaviour of each fake is switched by a flag file in the scratch directory.
 group('install.sh section 9: custom_auth and password in $config[\'plugins\'] — added once, either quote style');
 
-$size = 44;
+$size = 52;
 if ($bash === null) {
     skip('no bash — the install.sh section tests not run', $size);
 } else {
@@ -1036,6 +1036,35 @@ SH;
     ok(!preg_match('/^enabled\s*=/m', (string) preg_replace('/\n\[(?!DEFAULT\]).*$/s', '', $tpl)) && str_contains($tpl, "[recidive]\nenabled = true\nbackend = polling\nlogpath = /var/log/fail2ban.log\n"),
         'no "enabled" under [DEFAULT] (the helper refuses it there); recidive reads fail2ban.log');
 
+    group('install.sh section 3 (1.4.0): [panel-tempban] bantime = 90d, written in place, then a restart of that jail');
+    $tbf = $sx . '/tempban.local';
+    $legacy = "[DEFAULT]\nbantime = 10m\n\n[panel-permaban]\nbantime = -1\n\n[panel-tempban]\nenabled = true\nbantime = 24h\nbantime.increment = false\n\n[recidive]\nbantime = 1w\n";
+    file_put_contents($tbf, $legacy);
+    [$rc, $out] = $sh('tempban_bantime "$T/tempban.local"');
+    ok($rc === 0 && $out === '24h', 'tempban_bantime reads [panel-tempban] only (' . $out . ')');
+    $hl = $tbf . '.hardlink';
+    $linked = @link($tbf, $hl);
+    [$rc, ] = $sh('tempban_set_90d "$T/tempban.local"');
+    $want = str_replace("enabled = true\nbantime = 24h\n", "enabled = true\nbantime = 90d\n", $legacy);
+    ok($rc === 0 && (string) file_get_contents($tbf) === $want, 'only that line changes (bantime.increment, [DEFAULT], permaban and recidive untouched)');
+    if ($linked) {
+        ok((string) file_get_contents($hl) === $want, 'written in place: a hard link to the file sees the new content (php-fpm holds jail.local as a bind mount)');
+    } else {
+        skip('link() not available here', 1);
+    }
+    ok(count(glob($tbf . '.bak-*') ?: []) === 1 && (string) file_get_contents((glob($tbf . '.bak-*') ?: [''])[0]) === $legacy, 'a copy .bak-<time> of the previous file first');
+    file_put_contents($tbf, "[panel-tempban]\nenabled = true\n\n[recidive]\nenabled = true\n");
+    [$rc, ] = $sh('tempban_set_90d "$T/tempban.local"');
+    eq((string) file_get_contents($tbf), "[panel-tempban]\nbantime = 90d\nenabled = true\n\n[recidive]\nenabled = true\n", 'no bantime line: added right under the section header');
+    file_put_contents($tbf, "[recidive]\nbantime = 1w\n");
+    [$rc, ] = $sh('tempban_set_90d "$T/tempban.local"');
+    ok($rc === 1 && (string) file_get_contents($tbf) === "[recidive]\nbantime = 1w\n", 'no [panel-tempban]: exit 1, file unchanged');
+    foreach (array_merge(glob($tbf . '*') ?: []) as $f) { @unlink($f); }
+    ok(str_contains($inst, 'tempban_set_90d "$TEMPBAN_FILE"') && str_contains($inst, 'fail2ban-client reload --restart panel-tempban'),
+        'section 3 sets 90d in a legacy jail.local and restarts panel-tempban when its bantime changed');
+    ok(str_contains($inst, 'systemctl enable --now mailpanel-tempban-expire.timer') && str_contains($inst, '"s#^User=mailweb\$#User=${RUN_USER}#"'),
+        'section 11b installs the timer with the pool user and the Roundcube path written in');
+
     group('install.sh section 4: the policy file gets the server\'s time zone');
     $tz = static function (array $files) use ($sh, $sx): string {
         foreach (['timezone', 'timedatectl_out'] as $f) { @unlink($sx . '/' . $f); }
@@ -1110,7 +1139,7 @@ SH;
     ok(str_contains($sec, 'config.inc.php.pre-password') && str_contains($sec, '.env.pre-1.4') && str_contains($sec, 'config.inc.php.bak-1') && str_contains($out, '4 file(s)'),
         '*.pre-* (config.inc.php.pre-password left by the old password-plugin installer), .env.*, *.bak*: root:root 600 (' . $out . ')');
     ok(!preg_match('#/config\.inc\.php$|\.env\.example|defaults\.inc\.php#m', $sec), 'the live config, .env.example and Roundcube\'s own files are not touched');
-    blockSize($start, $size, 'install.sh sections 1b, 3, 4, 6, 7, 9');
+    blockSize($start, $size, 'install.sh sections 1b, 3, 4, 6, 7, 9, 11b');
 }
 
 echo "\n";

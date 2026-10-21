@@ -287,7 +287,7 @@ apache_proxy_fcgi() {
 # Sekcja 1b: użytkownik systemowy, katalog sesji, plik puli (php-fpm -t), reload php-fpm, własność plików dla puli,
 # handler w vhostach. Przy błędzie po zmianie własności wraca ona do użytkownika Apache (Roundcube dalej działa w [www]).
 setup_pool() {
-  local svc="php$PHP_VER-fpm" conf sock sess tmp bdir i
+  local svc="php$PHP_VER-fpm" conf sock sess tmp bdir
   conf=$(pool_conf); sock=$(pool_sock); sess="/var/lib/php/sessions-$PANEL_USER"
   command -v "php-fpm$PHP_VER" >/dev/null || { warn "php-fpm$PHP_VER not found in PATH"; return 1; }
   if ! apache_proxy_fcgi; then
@@ -319,7 +319,7 @@ setup_pool() {
     ok "pool [$PANEL_USER]: $conf (socket $sock, sessions $sess)"
   fi
   rm -f "$tmp"
-  for i in $(seq 1 20); do [ -S "$sock" ] && break; sleep 0.5; done
+  for _ in $(seq 1 20); do [ -S "$sock" ] && break; sleep 0.5; done
   [ -S "$sock" ] || { warn "socket $sock did not appear after reloading $svc"; return 1; }
   runtime_ownership "$PANEL_USER"
   if ! switch_vhosts "$sock"; then
@@ -534,6 +534,30 @@ wire_dovecot_postlogin() {
   echo "   Check now: log in over IMAP from a mail client — it must work, and the login appears in the panel (last login, IPs)."
   echo "   If IMAP or POP3 logins fail: rm $POSTLOGIN_CONF && systemctl reload dovecot"
 }
+
+# Section 3 (1.4.0): the bantime of [panel-tempban] in FILE ('' = no such section or option).
+tempban_bantime() {
+  [ -f "$1" ] || return 0
+  awk '/^[ \t]*\[/ { s = $0 } s ~ /^[ \t]*\[panel-tempban\][ \t]*$/ && /^[ \t]*bantime[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t]+$/, ""); print; exit }' "$1"
+}
+# Section 3 (1.4.0): exactly `bantime = 90d` in [panel-tempban] of FILE (the bantime line replaced, or added right under
+# the section header; every other line untouched). Written IN PLACE (php-fpm holds jail.local as a bind mount of that
+# inode), after a copy FILE.bak-<time>. Returns 1 when FILE has no [panel-tempban].
+tempban_set_90d() {
+  local f=$1 tmp
+  grep -qE '^[[:space:]]*\[panel-tempban\][[:space:]]*$' "$f" 2>/dev/null || return 1
+  tmp=$(mktemp) || return 1
+  awk '
+    NR == FNR { if ($0 ~ /^[ \t]*\[/) s = ($0 ~ /^[ \t]*\[panel-tempban\][ \t]*$/); else if (s && $0 ~ /^[ \t]*bantime[ \t]*=/) has = 1; next }
+    /^[ \t]*\[/ { insec = ($0 ~ /^[ \t]*\[panel-tempban\][ \t]*$/); print; if (insec && !has) print "bantime = 90d"; next }
+    insec && /^[ \t]*bantime[ \t]*=/ { if (!done) { print "bantime = 90d"; done = 1 } next }
+    { print }
+  ' "$f" "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
+  cp -p "$f" "$f.bak-$(date +%s)" && cat "$tmp" > "$f"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
+}
 # --- section helpers end ---------------------------------------------------------------------------------------------
 
 # Instaluje plik reguł jako /etc/sudoers.d/mailpanel tak, żeby sudo NIGDY nie zostało zepsute: plik sprawdzany sam
@@ -742,12 +766,25 @@ if ask "3) Configure Fail2Ban (panel filters + jails)"; then
 
   # Jaile panelu żyją w OSOBNYM pliku jail.d/ — nadpisanie = idempotencja,
   # jail.local zostaje czysty dla jaili standardowych (edytowanych z panelu).
+  # 1.4.0: [panel-tempban] keeps bantime = 90d — Fail2Ban ends every manual ban by the jail's CURRENT bantime and the
+  # panel lifts its timed bans itself (section 11b), so a shorter value would cut every longer ban from the panel.
+  TEMPBAN_FILE=/etc/fail2ban/jail.d/mailpanel.local
   if [ -f /etc/fail2ban/jail.local ] && grep -q '\[panel-permaban\]' /etc/fail2ban/jail.local; then
     warn "the panel jails are (legacy) in jail.local — leaving them there; consider moving them to jail.d/mailpanel.local"
+    TEMPBAN_FILE=/etc/fail2ban/jail.local
+  fi
+  TEMPBAN_WAS=$(tempban_bantime "$TEMPBAN_FILE")
+  if [ "$TEMPBAN_FILE" = /etc/fail2ban/jail.local ]; then
+    if grep -qE '^[[:space:]]*\[panel-tempban\][[:space:]]*$' "$TEMPBAN_FILE" && [ "$TEMPBAN_WAS" != "90d" ]; then
+      tempban_set_90d "$TEMPBAN_FILE" && ok "jail.local: [panel-tempban] bantime = 90d (was ${TEMPBAN_WAS:-not set}; a copy jail.local.bak-*)" \
+        || warn "could not set bantime = 90d in [panel-tempban] of jail.local — set it by hand (README: Upgrading from 1.3.2)"
+      TEMPBAN_WAS=${TEMPBAN_WAS:-unset}
+    fi
   else
     install -o root -g root -m 644 "$SRC/system/fail2ban/jail.d/mailpanel.local" /etc/fail2ban/jail.d/mailpanel.local
     ok "panel jails: /etc/fail2ban/jail.d/mailpanel.local"
   fi
+  TEMPBAN_NOW=$(tempban_bantime "$TEMPBAN_FILE")
 
   # Debian 13 ships no jail.local, and the Fail2Ban tab edits only lines that exist: offer the panel's template.
   if [ ! -e /etc/fail2ban/jail.local ] && [ ! -L /etc/fail2ban/jail.local ]; then
@@ -770,6 +807,15 @@ if ask "3) Configure Fail2Ban (panel filters + jails)"; then
   if command -v fail2ban-client >/dev/null; then
     if fail2ban-client -t >/dev/null 2>&1; then
       fail2ban-client reload >/dev/null 2>&1 && ok "configuration valid, fail2ban reloaded"
+      # a changed bantime of panel-tempban: RESTART that jail only — a starting jail restores its bans from Fail2Ban's
+      # database, each with its own stored time (with 24 h, up to 1.3.2, the longer bans had been dropped on a restart)
+      if [ -n "$TEMPBAN_WAS" ] && [ "$TEMPBAN_WAS" != "$TEMPBAN_NOW" ] && fail2ban-client status panel-tempban >/dev/null 2>&1; then
+        if fail2ban-client reload --restart panel-tempban >/dev/null 2>&1; then
+          ok "panel-tempban restarted with bantime $TEMPBAN_NOW (the bans still within their own time came back)"
+        else
+          warn "fail2ban-client reload --restart panel-tempban failed — run it by hand"
+        fi
+      fi
     else
       warn "fail2ban-client -t reports a configuration error — NOT reloaded (check: fail2ban-client -t)"
     fi
@@ -844,7 +890,7 @@ FLUSH PRIVILEGES;"; then
     fi
     chown root:nogroup /etc/mailpanel-policy.cf && chmod 640 /etc/mailpanel-policy.cf
     PTZ=$(file_kv /etc/mailpanel-policy.cf timezone || true)
-    ok "/etc/mailpanel-policy.cf (640 root:nogroup; timezone ${PTZ:-Europe/Warsaw, the script's default}; the day of the counter = the database clock)"
+    ok "/etc/mailpanel-policy.cf (640 root:nogroup; timezone ${PTZ:-Europe/Warsaw, the default of the script}; the day of the counter = the database clock)"
     install -o root -g root -m 755 "$SRC/scripts/mailpanel-policy-daily.php" /usr/local/bin/
     echo "   Postfix: finish by hand following system/postfix/master.cf.snippet:"
     echo "     - in submission/submissions add  -o smtpd_data_restrictions=\$mua_data_restrictions  and  -o smtpd_recipient_limit=50"
@@ -1148,6 +1194,26 @@ if ask "11) Create /var/mail/deleted (quarantine, 700) and a systemd timer that 
   [ -e /etc/cron.daily/mailpanel-purge-deleted ] && rm -f /etc/cron.daily/mailpanel-purge-deleted && ok "removed /etc/cron.daily/mailpanel-purge-deleted"
 fi
 
+# --- 11b. The end of the panel's timed bans (1.4.0) ---
+hr
+# Fail2Ban ends a manually banned address only by the jail's CURRENT bantime, so panel-tempban keeps a fixed 90 days and
+# the panel stores the end of each of its bans (table f2b_tempbans). This timer lifts the due ones every minute — as the
+# pool user, through the same sudo rule (unbanip) the panel uses; the unit names the user and the Roundcube path.
+if ask "11b) Install the timer that lifts the panel's timed Fail2Ban bans when their time is up (every minute, as $RUN_USER)"; then
+  TB_UNIT=/etc/systemd/system/mailpanel-tempban-expire.service
+  if sed -e "s#/var/www/roundcube#${RC_DIR}#g" -e "s#^User=mailweb\$#User=${RUN_USER}#" -e "s#^Group=mailweb\$#Group=${RUN_USER}#" \
+         "$SRC/system/systemd/mailpanel-tempban-expire.service" > "$TB_UNIT.rc-new" \
+     && install -o root -g root -m 644 "$TB_UNIT.rc-new" "$TB_UNIT" \
+     && install -o root -g root -m 644 "$SRC/system/systemd/mailpanel-tempban-expire.timer" /etc/systemd/system/ \
+     && systemctl daemon-reload && systemctl enable --now mailpanel-tempban-expire.timer >/dev/null 2>&1 \
+     && systemctl start mailpanel-tempban-expire.service; then
+    ok "timer mailpanel-tempban-expire (every minute, as $RUN_USER): lifts the panel's timed bans when their time is up"
+  else
+    warn "timer mailpanel-tempban-expire is NOT working — timed bans then end only when the panel lists them (at the latest after the jail's 90 days): systemctl status mailpanel-tempban-expire.timer; journalctl -u mailpanel-tempban-expire.service"
+  fi
+  rm -f "$TB_UNIT.rc-new"
+fi
+
 # --- 12. Katalog języków dodanych w panelu (1.3.0) ---
 hr
 # Polski i angielski są w kodzie (root:root, pula nie może do niego pisać). Języki dodane w panelu (kopia, wgrany pakiet)
@@ -1176,6 +1242,7 @@ echo "   - sudo -l -U $RUN_USER  → only exact ^regex\$ / \"\" rules, no * char
 [ "$RUN_USER" != "$APACHE_USER" ] && echo "   - ps -o user= -C php-fpm${PHP_VER} | sort | uniq -c  → $RUN_USER pool processes appear once you open webmail"
 echo "   - find $RC_DIR -user $RUN_USER -o -user $APACHE_USER -o -perm -o+w  → only temp/ and logs/"
 echo "   - systemctl list-timers mailpanel-purge-deleted.timer  → daily quarantine purge"
+echo "   - systemctl list-timers mailpanel-tempban-expire.timer  → every minute (lifts the panel's timed bans when their time is up)"
 echo "   - stat -c '%A %U:%G' /var/lib/roundcontrol/lang  → drwxr-x--- $RUN_USER:$RUN_USER (languages added in the panel)"
 echo "   - fail2ban-client status  → also roundcube-auth, dovecot, postfix-sasl, recidive (from jail.local)"
 echo "   - doveconf -n | grep -c dovecot-postlogin.sh  → 2 (IMAP and POP3 logins are recorded)"

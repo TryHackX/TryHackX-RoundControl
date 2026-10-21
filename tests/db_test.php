@@ -971,7 +971,7 @@ try {
     $admin->exec('ALTER TABLE deleted_accounts DROP COLUMN files_left');
     $admin->exec('DROP INDEX idx_source ON virtual_aliases');
     // stan 1.3.2: bez tabeli i bez jej grantu (DROP TABLE grantu NIE odbiera — osobny REVOKE)
-    $admin->exec("REVOKE SELECT, INSERT, UPDATE, DELETE ON `$db`.f2b_tempbans FROM '$uPanel'@'localhost'");
+    $admin->exec("REVOKE SELECT, INSERT, UPDATE, DELETE ON `$db`.f2b_tempbans FROM '$uPanel'@'$acctHost'");
     $admin->exec('DROP TABLE f2b_tempbans');
     $admin->exec('ALTER TABLE throttle_events CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci');
     $mailColl = (string) $admin->query("SELECT REPLACE(COLLATION_NAME, 'utf8mb3_', 'utf8mb4_') FROM information_schema.COLUMNS
