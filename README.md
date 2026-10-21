@@ -4,13 +4,15 @@ A self-contained overlay for Roundcube (pure PHP 8.1+, **zero Composer dependenc
 that adds its own login/registration portal, an admin panel for mail accounts,
 and a security layer tying together Postfix + Dovecot + Fail2Ban.
 
-**Version 1.4.0** (2026-10-21, [CHANGELOG](CHANGELOG.md)) — the result of a second full review: **one database
-collation** (MariaDB 11.5+ created the panel's tables in a collation the older mail tables cannot be compared with),
-**Fail2Ban values a jail can live with** (no `ignoreip 0.0.0.0/0`, no `maxretry 999999`, no one-second bans — also
-refused by the root helper), **timed bans that survive a Fail2Ban restart**, **mailbox files left on disk are
-remembered** (such a name is never given out again until they are moved), the administrator's password before a
-mailbox password reset or a reserved name, trusted addresses that skip the sign-in CAPTCHA and can never be banned,
-safer numbers everywhere (an empty field no longer means "no limit"), and many fixes in the panel's pages.
+**Version 1.4.0** (2026-10-21, [CHANGELOG](CHANGELOG.md)) — the result of a second full review: **timed bans that keep
+their own end** (Fail2Ban ended every timed ban by the jail's current bantime, which the panel changed with each new
+ban) and survive a Fail2Ban restart, **one database collation** (MariaDB 11.5+ created the panel's tables in a
+collation the older mail tables cannot be compared with), **Fail2Ban values a jail can live with** (no
+`ignoreip 0.0.0.0/0`, no `maxretry 999999`, no one-second bans — also refused by the root helper), **mailbox files left
+on disk are remembered** (such a name is never given out again until they are moved), the administrator's password
+before a mailbox password reset or a reserved name, trusted addresses that skip the sign-in CAPTCHA and can never be
+banned, safer numbers everywhere (an empty field no longer means "no limit"), an installer that works with the
+least-privileged database account, and many fixes in the panel's pages.
 1.3.2 added **log retention**; 1.3.1 made new installations **English by default**; 1.3.0 brought **Polish and
 English**, **four CAPTCHA providers** (reCAPTCHA v2 / v3, Cloudflare Turnstile, hCaptcha) and the admin-only footer.
 If you run 1.3.2: [Upgrading from 1.3.2](#upgrading-from-132-to-140). If you run 1.3.1: [Upgrading from 1.3.1](#upgrading-from-131-to-132),
@@ -46,19 +48,24 @@ English when no language is stored).
 
 ## Quick install
 
-Assumes a working Roundcube 1.6+ and a `mailserver` database (Postfix/Dovecot virtual users).
-Copy the package contents into the Roundcube directory (preserving the tree), then:
+Assumes a working Roundcube 1.6+ (Apache with `mod_rewrite` and `mod_proxy_fcgi`, PHP-FPM) and a `mailserver` database
+(Postfix/Dovecot virtual users). Copy the package contents into the Roundcube directory (preserving the tree), then:
 
 ```bash
-php install.php        # .env, schema import, default interface language (en), first administrator (Argon2id)
-                       # English by default; --lang=pl for a Polish installer (an interactive terminal is asked first)
-sudo bash install.sh   # own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban helper, Fail2Ban, policy service,
-                       # password plugin, file ownership, quarantine timer
-# finally: include panel_config.php in config/config.inc.php (see step 5)
+cd /var/www/roundcube
+sudo bash install.sh   # section 0 FIRST: database, accounts (prints the new mailpanel password once), schema, grants;
+                       # then the own PHP-FPM pool (mailweb), scripts, sudoers + Fail2Ban helper, Fail2Ban (offers a
+                       # base jail.local), policy service, password plugin, Dovecot post-login, file ownership,
+                       # custom_auth + password in config.inc.php, the quarantine timer and the timed-ban timer
+sudo php install.php   # .env (enter the mailpanel password from section 0), default interface language (en),
+                       # first administrator (Argon2id), first domain; --lang=pl for a Polish installer
 ```
 
-Both installers are **interactive and idempotent** (a confirmation gate per step,
-backups before editing). Details and manual installation — see the sections below.
+`install.php` tests the database connection before it writes `.env` and never needs more than the panel account's own
+grants: when that account may not create tables or add a domain (as `sql/panel_grants.sql` intends), it prints the exact
+commands for the database administrator instead. Both installers are **interactive and idempotent** (a confirmation gate
+per step, backups before editing); running `install.sh` again after `install.php` is safe. Details and manual
+installation — see the sections below.
 
 ## Upgrading from 1.3.2 to 1.4.0
 
@@ -556,9 +563,10 @@ that is the hole this release closes (an error message from the helper says what
 ├── sql/panel_schema.sql          # database schema (IF NOT EXISTS) — also upgrades an existing one
 ├── sql/panel_grants.sql          # least-privilege grants for the panel DB account (+ postlogin_grants.sql)
 ├── sql/upgrade_1.1.0.sql         # data migration 1.0.x → 1.1.0 (lower-case addresses) + reports
-├── sql/upgrade_1.3.2.sql  sql/upgrade_1.4.0.sql   # log retention; collation, files_left, index, procedures
-├── tests/                        # run.php (dev DB), db_test.php + http_test.php (own scratch DB), security_test.php,
-│                                 #   scripts_test.php, sudoers_test.php — the last three need no database and no sudo
+├── sql/upgrade_1.3.2.sql  sql/upgrade_1.4.0.sql   # log retention; collation, files_left, index, f2b_tempbans, procedures
+├── tests/                        # db_test.php + http_test.php (own scratch DB), security_test.php, scripts_test.php,
+│                                 #   sudoers_test.php, i18n_test.php — the last four need no database and no sudo
+├── .github/workflows/ci.yml      # CI: ShellCheck + the six suites on PHP 8.1 / 8.4 / 8.5 with MariaDB 11.4 / 11.8
 ├── CHANGELOG.md
 ├── .env.example  .gitignore  LICENSE
 ```
@@ -575,9 +583,9 @@ that is the hole this release closes (an error message from the helper says what
 |---|---|
 | OS | **Debian 13 (trixie)** — the target of the installers and templates (Dovecot 2.4, Postfix 3.10, Fail2Ban 1.1); on Windows/dev the system integrations disable themselves |
 | Roundcube | 1.6+ (tested on 1.7.2), installed and running |
-| PHP | 8.1+ with extensions: pdo_mysql, mbstring, openssl, curl (CAPTCHA verification), sodium/argon2 (standard in distributions) |
+| PHP | 8.1+ with php-fpm and the extensions pdo_mysql, mbstring, openssl, curl (CAPTCHA verification), sodium/argon2 (standard in distributions) |
 | MariaDB / MySQL | a `mailserver` database (Postfix/Dovecot virtual users) |
-| Apache | `mod_rewrite` + `AllowOverride All` for the Roundcube directory |
+| Apache | `mod_rewrite` + `AllowOverride All` for the Roundcube directory; `mod_proxy_fcgi` (the panel's own PHP-FPM pool) |
 | HTTPS | required in production (session with the Secure flag, HSTS) |
 
 We assume Roundcube sits at the **domain root** (e.g. `/var/www/roundcube` →
@@ -634,7 +642,7 @@ the PHP user, a flaw in **any** site served by the same PHP-FPM pool can replace
 read admin and webmail passwords (and use every `sudo` rule the panel has). So: code `root:root` (directories 755,
 files 644), secrets (`.env`, `config/config.inc.php`, `plugins/password/config.inc.php`) `root:mailweb` 640, and
 **only** Roundcube's own `temp/` and `logs/` (plus its `log_dir`, e.g. `/var/log/roundcube`, if that lies outside the
-tree) writable by `mailweb`. Copies with secrets (`config.inc.php.bak*`, `config.old.php`, `.env.*`) become
+tree) writable by `mailweb`. Copies with secrets (`config.inc.php.bak*`, `config.old.php`, `*.pre-*`, `.env.*`) become
 `root:root 600`. `install.sh` sections 1b and 7 do this (they also fix stray 664 files and the logrotate `create` line);
 to check: `find /var/www/roundcube -user mailweb -o -user www-data -o -perm -o+w` should list only `temp/` and `logs/`.
 
@@ -719,7 +727,7 @@ section, so on an existing installation answer `y` only there):
 
 ```bash
 sudo bash install.sh    # section 5: the roundcubepw DB user + plugins/password/config.inc.php
-# section 9 adds 'password' to $config['plugins'] (or add it by hand, see above)
+# section 9 adds whichever of 'custom_auth' and 'password' is missing in $config['plugins'] (backup, php -l, restore)
 ```
 
 Section 5 creates the `roundcubepw` DB user (only `SELECT, UPDATE ON
@@ -912,6 +920,13 @@ list is refused with `refused: …` and nothing changes — so is a value outsid
 IPv6 /32, host names allowed). Edit everything else in `jail.local` as root, by hand.
 `F2B_JAIL_LOCAL` in `.env` must stay `/etc/fail2ban/jail.local` (the only file the helper handles).
 
+**A base `jail.local`.** Debian 13 ships none, and the tab only rewrites lines that already exist. `install.sh` section 3
+offers `/etc/fail2ban/jail.local` (root:root 644) from `system/fail2ban/jail.local.example`: `[DEFAULT]` and the jails
+`roundcube-auth` (Roundcube's `logs/errors.log`, or the journal with `log_driver = 'syslog'`), `dovecot` and
+`postfix-sasl` (the systemd journal, `python3-systemd`) and `recidive`, with values inside the helper's ranges. It never
+overwrites an existing file and removes the new one again if `fail2ban-client -t` rejects it. Put your own fixed address
+into `ignoreip` first.
+
 There is no reload timer any more: the helper reloads Fail2Ban itself. (1.0 shipped `mailpanel-f2b-reload`, a
 timer that blindly reloaded on every `jail.local` mtime change; `install.sh` section 8 removes it.)
 
@@ -943,6 +958,16 @@ stopped by the session lockout. If you want it banned anyway, add a second line 
 `/etc/fail2ban/filter.d/mailpanel-portal.conf` (and keep your own address in `ignoreip`):
 `^\s*(?:\S+\s+)?mailpanel(?:\[\d+\])?:\s+reauth-failure ip=<HOST> kind=admin user=\S*$`.
 
+### IMAP/POP3 logins in the panel (Dovecot post-login)
+
+After every IMAP/POP3 login Dovecot runs `/usr/local/bin/dovecot-postlogin.sh` (`install.sh` section 1), which calls
+`sp_register_login` as `mailpostlogin` (`/etc/dovecot/mysql-mailpanel.cnf`, section 6). Section 6 offers to install
+`system/dovecot/postlogin.conf.snippet` as `/etc/dovecot/conf.d/99-roundcontrol-postlogin.conf`: it checks the script,
+the `.cnf` and the `vmail` user, runs `doveconf -n`, reloads Dovecot and removes the file again on any error. By hand:
+install the snippet there, `doveconf -n | grep -c dovecot-postlogin.sh` → 2 (0 = `dovecot.conf` does not include
+`conf.d/`: paste it into `dovecot.conf`), `systemctl reload dovecot`. Every IMAP/POP3 session starts through that script:
+test a login at once; if logins fail, remove the file and reload.
+
 ### Daily send limit (Postfix policy service)
 
 The "Send limit (per day)" setting and individual limits (the "Change
@@ -973,6 +998,8 @@ user = mailpolicy
 password = "STRONG_POLICY_PASSWORD"
 timezone = Europe/Warsaw
 CFG
+# (install.sh section 4 writes the server's zone; since 1.4.0 the day of the counter comes from the database clock,
+#  the same one the panel reads, so the zone does not move the daily limit)
 chown root:nogroup /etc/mailpanel-policy.cf && chmod 640 /etc/mailpanel-policy.cf
 ```
 
@@ -1114,7 +1141,14 @@ error messages. Tests (never deploy `tests/`):
 | `php tests/scripts_test.php` | the helper (in-place write, refusals, restore, no false success), the delete / Postfix / sudoers-cleanup scripts and the `install.sh` secret handling, with fake `fail2ban-client` / `postconf` / `doveadm`; static checks (`php -l`, `bash -n`, no `sleep`) | PHP, bash |
 | `php tests/db_test.php` | registration, reserved names, aliases, tombstones, login limits (pair / client / IPv6 `/64`), account deletion, policy service (recipients, atomic counter), grants — in a **scratch database it creates and drops**, with an app account holding exactly the `sql/panel_grants.sql` privileges | MariaDB: `MP_TEST_DB_DSN` (default `mysql:host=127.0.0.1;port=3307`), `MP_TEST_DB_USER`, `MP_TEST_DB_PASS`; skips itself without |
 | `php tests/http_test.php` | the real entry points over HTTP (`php -S`): login without enumeration (identical answers for nonexistent / normal / admin addresses until the password is correct), the tiles, the panel's JSON endpoints (no session → 403 JSON, CSRF → 403, values after normalisation, refresh hints), `REAUTH_FAILED` + session end, alias deletion, reserved names, `?tab=` — in its own scratch database. `--serve[=seconds]` keeps the test server running with test accounts for a manual look in a browser | MariaDB as for `db_test.php`, PHP `curl` |
-| `php tests/run.php` | older integration tests against the dev database from `.env` (refuses to run unless `APP_ENV=dev`) | dev database |
+| `php tests/i18n_test.php` | every key in both built-in languages, placeholders, the HTML allowed in texts, the JavaScript strings | nothing |
+
+`MP_TEST_DB_ACCOUNT_HOST` sets the host part of the scratch accounts (default `localhost`; `%` for a database in a
+container) and `MP_TEST_REQUIRE_DB=1` turns a missing database into a failure. Skips are counted per check. Ctrl+C /
+SIGTERM still drop the scratch database, accounts and temp directory; after a hard kill see the headers of
+`db_test.php` / `http_test.php` (`mp_test_*`, `mp_t_*`, `mp_http_*`, `mp_h_panel_*`). On Linux run `scripts_test.php`
+as root (the Fail2Ban helper insists on a root-owned `jail.local`, the scratch one too). CI runs ShellCheck and all six
+suites on PHP 8.1 / 8.4 / 8.5 with MariaDB 11.4 / 11.8 for every pull request, push to `main` and `v*` tag.
 
 In `dev` mode the Fail2Ban tab cannot save (there is no root helper): editing `jail.local` is a server feature.
 

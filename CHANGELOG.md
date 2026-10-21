@@ -1,12 +1,118 @@
 # Changelog
 
-## Unreleased
+## 1.4.0 — 2026-10-21 — second review: timed bans, one collation, safer numbers
 
-Tests only — nothing deployed changes, 1.3.2 stays the release:
+**Code, `sql/upgrade_1.4.0.sql`, the two root helpers, the sudoers file, one Fail2Ban value and a new timer.** Steps:
+[README → Upgrading from 1.3.2 to 1.4.0](README.md#upgrading-from-132-to-140).
 
-- `tests/db_test.php` no longer calls `Reflection*::setAccessible()`, deprecated in PHP 8.5 (a no-op since 8.1): the
-  suite's error handler turned the deprecation into a failure, so the database tests stopped on PHP 8.5. All suites pass
-  on PHP 8.4 and 8.5 (MariaDB 11.4).
+Fixed — timed bans:
+
+- **Every timed ban ends at its own time.** Fail2Ban gives a manually banned address no ban time of its own: it ends
+  every such ban by the jail's *current* bantime. The panel set `panel-tempban`'s bantime right before each ban, so each
+  new timed ban re-timed all the others — a 30-day ban was lifted soon after a later 1-hour one. Now the jail keeps
+  `bantime = 90d` (the longest ban the panel hands out, never changed at runtime; the sudoers rule
+  `set panel-tempban bantime` is gone), the panel stores the end of each of its bans in the new table `f2b_tempbans`
+  (`App\Panel\TempBans`: the row is written before the ban and rolled back when the ban fails), and the new systemd
+  timer `mailpanel-tempban-expire` — every minute, as the pool user, through the panel's existing `unbanip` rule —
+  lifts the bans whose time is up, as does the panel whenever it lists the bans. The *Expires* column shows the stored
+  end. If both stop, Fail2Ban still lifts every ban after 90 days.
+- **Long bans survive a Fail2Ban restart.** A starting jail restores only the bans younger than its configured bantime:
+  with 24 h every longer ban vanished on a package upgrade or a reboot. With 90 days a restart restores every ban still
+  within its own stored time.
+- Unbanning and moving a ban out of `panel-tempban` forget its end; moving a ban into `panel-tempban` needs a duration.
+
+Fixed — database:
+
+- **One collation.** On MariaDB 11.5+ new panel tables got `utf8mb4_uca1400_ai_ci` next to older `general_ci` mail
+  tables, and every comparison across them failed (the account list, log retention, the login history). The schema and
+  `sql/upgrade_1.4.0.sql` give the panel's tables the collation of `virtual_users.email`; tables that already match are
+  not touched (`utf8mb3_x` and `utf8mb4_x` count as one).
+- **Mailbox files left on disk:** a deleted account whose maildir could not be moved to the quarantine keeps
+  `files_left` on its tombstone — the portal never gives the name out again, the panel moves the files first when it
+  creates the name again, and log retention keeps such tombstones.
+- A name created again no longer shows the previous owner's registration date and IP; the aliases removed with an
+  account are listed in the audit log (source → destination, for restoring by hand). An index on `virtual_aliases.source`.
+
+Fixed — numbers and limits:
+
+- An empty or negative field keeps the stored value (it used to become 0 = no limit); values are clamped to what
+  Roundcube and Postfix accept, and Postfix values are stored only when they were applied. A quota under 1 MiB becomes
+  1 MiB, 0 shows as ∞. The send limit is checked before an account or a quota is written, in one `INSERT` or one
+  transaction.
+- The day of the send counter comes from the database clock (the policy service and the panel could disagree around
+  midnight), as does the registration interval.
+
+Fixed — Fail2Ban tab and its root helper:
+
+- The helper and the panel refuse what makes a jail useless: `ignoreip` broader than IPv4 /8 or IPv6 /32 (`0.0.0.0/0`
+  exempted everyone, `sshd` included), `maxretry` outside 1..100, times under a minute or over a year. Host names in
+  `ignoreip` (dynamic DNS) are accepted. An empty field keeps the option (it wrote `maxretry 0` or `10m`), and values
+  such as `1h30m` or `bantime = -1` are kept instead of becoming `10m`.
+- Read and ban calls have a time limit (a wedged Fail2Ban or Dovecot held a PHP worker for good) and all use `sudo -n`.
+
+Security:
+
+- A mailbox password reset and taking a reserved or held name ask for the administrator's password.
+- Trusted addresses (127.0.0.1, ::1, `SCAN_TRUSTED_IPS`) cannot be banned by hand or by a ban move (127.0.0.1 in
+  `recidive` cut PHP off from MariaDB); they skip the sign-in CAPTCHA, the administrator's way in when the keys stop
+  working. A CAPTCHA secret the provider rejects is not switched on.
+- An IPv4 client reported as `::ffff:a.b.c.d` has one form everywhere (the registration limit counted 0 of its own
+  registrations).
+- Every panel response carries the security headers (logout, `user_ips`, the session guard's 403); both CSPs add
+  `frame-ancestors 'none'`. The CSRF token is renewed at sign-in.
+- Passwords longer than 256 characters are refused (SHA-512-crypt's work grows with the length); a longer sign-in
+  attempt is answered as a wrong password without hashing it. `LIKE` wildcards in searches are literal.
+- A ban move bans in the target jail before it unbans the source (the old order left the address banned nowhere when
+  the ban failed).
+
+Front end:
+
+- *Add user*: the quota with its unit (KiB / MiB / GiB) and the default saved in Settings, without a reload; the admin
+  password field appears with the reserved-name consent. *Reset password* asks for the admin password.
+- Confirmations: a partial success shows both messages, closes the dialog and refreshes the lists; destructive ones open
+  with *Cancel* focused; focus stays in the row after unban, language changes and scanner actions.
+- Accessibility: contrast of every text and badge at least 4.5:1 in both themes, 24 px targets (32 px on touch),
+  sortable headers are buttons (Enter, Space, Shift+Enter adds a column), list totals are announced only after the
+  admin changed the list.
+- No horizontal scroll of the account list down to 1280 px (icon-only row actions up to 1440 px, a sticky actions
+  column), long addresses wrap; the scanner's dates in local time; plural counts; "Sign in" / "Sign out" throughout;
+  remaining ban times with spaces ("1 h 30 min").
+- The unused Font Awesome copy and dead CSS / JS / attributes are gone.
+
+Installer:
+
+- **A clean install in the right order:** `install.sh` section 0 first (database, accounts, schema, grants), then
+  `install.php`. The installer tests the connection before it writes anything, says ".env written" only for a written
+  file, imports the schema only with an account that may create tables (otherwise it prints the administrator's
+  commands), prints the SQL for the first domain when the panel account may not insert it (no more "18 of 20 statements
+  failed" or an uncaught PDOException), checks the domain (lower case, a dot, at most 50 characters), defaults
+  `APP_TIMEZONE` to the server's zone, accepts `host:port` and stops when its input ends.
+- `install.sh`: section 3 offers a base `jail.local` (`system/fail2ban/jail.local.example`, exactly what the Fail2Ban
+  tab edits; never over an existing file) and keeps `[panel-tempban]` at 90 days — also in a `jail.local` of the 1.0
+  layout, written in place, then a restart of that jail; section 6 offers to wire the Dovecot post-login script
+  (`conf.d/99-roundcontrol-postlogin.conf`, `doveconf -n`, removed again on failure); section 9 adds `custom_auth` as
+  well as `password`; the new section 11b installs the timed-ban timer; section 1b refuses the pool handler without
+  `mod_proxy_fcgi`; section 4 writes the server's time zone into the policy file; `*.pre-*` copies are secrets
+  (root:root 600).
+
+Other:
+
+- English operator texts: `.env.example`, the `/etc` templates (policy service, Dovecot, Postfix, Fail2Ban filters and
+  jails) and the password-plugin config — the placeholders `install.sh` fills in are unchanged. Remix Icon ships with
+  its Apache-2.0 licence; the README has a third-party section.
+- The policy notice goes only to plain mailbox names; the standalone password-plugin installer is gone (`install.sh`
+  section 5 keeps the generated password).
+
+Tests: `tests/db_test.php` (`upgrade_1.4.0.sql` on a database in the 1.3.2 state — column, index, `f2b_tempbans` and
+its grant, collation, procedure, second run; mailbox files left on disk; timed bans — the stored end, a failed ban rolled
+back, expiry, Fail2Ban not answering, a ban while an expiry run holds the row, the timer's script; ranges and limits;
+`LIKE` wildcards; trusted addresses; `install.php` with the grants-only account), `tests/http_test.php` (the new
+dialog fields, list announcements), `tests/scripts_test.php` (the helper's ranges, `install.sh` sections 1b, 3, 4, 6, 7,
+9 and 11b with shell fakes), `tests/security_test.php`, `tests/sudoers_test.php` (no `bantime` rule for any jail).
+Interrupted runs clean up, skips are counted per check, `MP_TEST_DB_ACCOUNT_HOST` / `MP_TEST_REQUIRE_DB`;
+`tests/run.php` is gone (its `ORDER BY` whitelist checks moved to `db_test.php`); `db_test.php` no longer calls
+`Reflection*::setAccessible()` (deprecated in PHP 8.5). All suites pass on PHP 8.4 and 8.5 with MariaDB 11.4. CI (GitHub
+Actions): ShellCheck plus the six suites on PHP 8.1 / 8.4 / 8.5 with MariaDB 11.4 / 11.8.
 
 ## 1.3.2 — 2026-10-13 — log retention
 
