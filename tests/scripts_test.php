@@ -177,6 +177,7 @@ $refusals = [
     'ignoreip ::/0'                           => replaceLine($base, '203.0.113.9', '::/0'),
     'ignoreip 10.0.0.0/4 (szersza niż /8)'    => replaceLine($base, '203.0.113.9', '10.0.0.0/4'),
     'ignoreip 2001::/16 (szersza niż /32)'    => replaceLine($base, '203.0.113.9', '2001::/16'),
+    'ignoreip zła nazwa hosta'                => replaceLine($base, '203.0.113.9', 'bad_name..example'),
     'maxretry 0'                              => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 0\nbantime = 1h"),
     'maxretry 101'                            => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 101\nbantime = 1h"),
     'maxretry 999999'                         => replaceLine($base, "bantime = 10m\nfindtime = 10m\nmaxretry = 5", "bantime = 10m\nfindtime = 10m\nmaxretry = 999999"),
@@ -196,6 +197,7 @@ foreach ($refusals as $label => $prop) {
 // 1.4.0: granice zakresów, które panel sam wpisuje — przyjęte
 $accepted = [
     'ignoreip 10.0.0.0/8 i 2001:db8::/32'     => replaceLine($base, '203.0.113.9', '10.0.0.0/8 2001:db8::/32'),
+    'ignoreip z nazwą hosta (dynamiczny DNS)' => replaceLine($base, '203.0.113.9', '203.0.113.9 home.example.net'),
     'maxretry 1'                              => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 1\nbantime = 1h"),
     'maxretry 100'                            => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 100\nbantime = 1h"),
     'bantime -1 (na stałe)'                   => replaceLine($base, "maxretry = 5\nbantime = 1h", "maxretry = 5\nbantime = -1"),

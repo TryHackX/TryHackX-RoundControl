@@ -698,7 +698,7 @@ try {
     $inv('saveSettings');
     eq([App\Settings\Settings::int('daily_send_limit', -1), App\Settings\Settings::int('deleted_name_hold_days', -1), App\Settings\Settings::int('mailbox_default_quota_mb', -1),
         App\Settings\Settings::int('ip_window_hours', -1), App\Settings\Settings::int('ip_total_limit', -1)],
-       [50, 365, 1024, 8760, 15], 'ustawienia: puste i ujemne pola bez zmian (nie 0 = bez limitu), za duże przycięte');
+       [50, 365, 1024, 8760, 1], 'ustawienia: puste pola bez zmian (nie 0 = bez limitu), za duże przycięte, ujemne do minimum (1)');
     $zeroBefore = $count('SELECT COUNT(*) FROM virtual_users WHERE quota_mb = 0');
     $_POST = ['mailbox_quota_value' => '-3', 'mailbox_quota_unit' => 'GiB', 'apply_quota_to_all' => '1'];
     $o = $inv('saveSettings');
@@ -815,6 +815,22 @@ try {
     ok($callProc($panelPdo, 365) !== [], 'upgrade_1.3.2.sql: drugie uruchomienie bez błędów (idempotentny)');
     $denied($panelPdo, 'DELETE FROM admin_audit_logs', 'mailpanel nadal bez DELETE na admin_audit_logs (tylko procedura)');
     $denied($panelPdo, 'DELETE FROM deleted_accounts', 'mailpanel bez DELETE na deleted_accounts');
+    // 1.4.0: upgrade_1.4.0.sql na bazie w stanie 1.3.2 — bez files_left i indeksu, tabela panelu w innej kolacji (MariaDB 11.5+)
+    $admin->exec('ALTER TABLE deleted_accounts DROP COLUMN files_left');
+    $admin->exec('DROP INDEX idx_source ON virtual_aliases');
+    $admin->exec('ALTER TABLE throttle_events CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci');
+    $mailColl = (string) $admin->query("SELECT REPLACE(COLLATION_NAME, 'utf8mb3_', 'utf8mb4_') FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_users' AND COLUMN_NAME = 'email'")->fetchColumn();
+    runSql($admin, $mk('upgrade_1.4.0.sql', $names));
+    eq($count("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deleted_accounts' AND COLUMN_NAME = 'files_left'"), 1,
+        'upgrade_1.4.0.sql: kolumna deleted_accounts.files_left');
+    eq($count("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_aliases' AND INDEX_NAME = 'idx_source'"), 1,
+        'upgrade_1.4.0.sql: indeks virtual_aliases.source');
+    eq((string) $admin->query("SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'throttle_events'")->fetchColumn(), $mailColl,
+        'upgrade_1.4.0.sql: tabela panelu dostaje kolację virtual_users.email');
+    ok($callProc($panelPdo, 365) !== [], 'upgrade_1.4.0.sql: procedura odtworzona, konto panelu ma EXECUTE');
+    runSql($admin, $mk('upgrade_1.4.0.sql', $names));
+    ok($callProc($panelPdo, 365) !== [], 'upgrade_1.4.0.sql: drugie uruchomienie bez błędów (idempotentny)');
     // raz na dobę
     $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('log_retention_days', '365'), ('log_retention_last_run', '0')");
     App\Settings\Settings::flush();

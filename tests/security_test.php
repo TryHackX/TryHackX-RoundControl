@@ -314,6 +314,15 @@ eq([$san('53w', 'time'), $san('400d', 'time'), $san('365d', 'time')], ['365d', '
 eq([$san('-1', 'bantime'), $san('-1', 'time'), $san('abc', 'time')], ['-1', '', ''], 'bantime -1 (na stałe) zostaje; -1 jako findtime i śmieci = bez zmian');
 eq($san('127.0.0.1/8 ::1 203.0.113.9, 10.0.0.0/8 2001:db8::/32', 'ip_list'), '127.0.0.1/8 ::1 203.0.113.9 10.0.0.0/8 2001:db8::/32', 'ignoreip: adresy i sieci do /8 i /32 zostają');
 eq($san('0.0.0.0/0 ::/0 10.0.0.0/4 2001::/16 1.2.3.4/abc 203.0.113.9', 'ip_list'), '203.0.113.9', 'ignoreip: /0, zbyt szerokie sieci i maska nie-liczba odpadają');
+eq($san('home.example.net 203.0.113.9 x..y bad_name.example.org -a.example.com', 'ip_list'), 'home.example.net 203.0.113.9', 'ignoreip: nazwa hosta (np. dynamiczny DNS) zostaje, śmieci odpadają');
+
+group('Quota::parse / display, Password::MAX_LENGTH, Ip::toBin (1.4.0)');
+eq([Quota::parse('', 'MiB'), Quota::parse('abc', 'MiB'), Quota::parse('-5', 'MiB'), Quota::parse('0', 'GiB')], [null, false, false, 0], 'quota: puste = nic, śmieci i ujemne odrzucone, 0 = bez limitu');
+eq([Quota::parse('500', 'KiB'), Quota::parse('0.4', 'MiB'), Quota::parse('1,5', 'GiB'), Quota::parse('2', 'GiB')], [1, 1, 1536, 2048], 'quota: poniżej 1 MiB -> 1 (nie 0 = bez limitu), przecinek dziesiętny');
+eq([Quota::display(0), Quota::display(50), Quota::display(1536)], ['∞', '50 MiB', '1.5 GiB'], 'quota 0 pokazywana jako ∞');
+ok(!App\Security\Password::meetsPolicy('Aa1!' . str_repeat('x', 253)) && App\Security\Password::meetsPolicy('Aa1!' . str_repeat('x', 252)), 'hasło: najwyżej 256 znaków');
+eq([Ip::toBin('::ffff:198.51.100.9'), Ip::toBin('198.51.100.9'), strlen((string) Ip::toBin('2001:db8::1'))], [inet_pton('198.51.100.9'), inet_pton('198.51.100.9'), 16], 'toBin: ::ffff:a.b.c.d = IPv4 (4 bajty)');
+ok(Ip::inCidr('::ffff:198.51.100.77', '198.51.100.0/24'), 'inCidr: ::ffff:… pasuje do sieci IPv4');
 
 echo "\n";
 echo ($T['fail'] === 0 ? 'OK' : 'BŁĘDY') . ": {$T['pass']} przeszło, {$T['fail']} nie\n";

@@ -198,16 +198,20 @@ final class PanelController
     }
 
     /**
-     * 1.4.0: one numeric settings field. A missing, empty, non-numeric or below-minimum value keeps the stored one (such
-     * values used to be saved as 0 or below, and 0 means "no limit" for the send limit, the name hold, the quota and the
-     * Roundcube limits); a value above the maximum is cut to it.
+     * 1.4.0: one numeric settings field. A missing, empty or non-numeric value keeps the stored one (it used to be saved
+     * as 0, and 0 means "no limit" for the send limit, the name hold and the Roundcube / Postfix limits); a value under
+     * the minimum becomes the minimum, except where the minimum 0 means "no limit" — there it keeps the stored value too;
+     * a value above the maximum is cut to it.
      */
     private static function intField(string $name, int $min, int $max, int $current): int
     {
         $raw  = trim((string) ($_POST[$name] ?? ''));
         $keep = max($min, min($max, $current));
-        if ($raw === '' || !is_numeric($raw) || (float) $raw < $min) {
+        if ($raw === '' || !is_numeric($raw)) {
             return $keep;
+        }
+        if ((float) $raw < $min) {
+            return $min > 0 ? $min : $keep;
         }
         return (float) $raw > $max ? $max : (int) round((float) $raw);   // compared as float: 1e30 must not wrap around
     }
