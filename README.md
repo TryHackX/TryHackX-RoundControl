@@ -658,7 +658,7 @@ sudo bash install.sh    # section 5: the roundcubepw DB user + plugins/password/
 Section 5 creates the `roundcubepw` DB user (only `SELECT, UPDATE ON
 mailserver.virtual_users`) and `plugins/password/config.inc.php` (template:
 `plugins/password/config.inc.php.example` in the package); on a second run it keeps the existing
-password. (1.3.3: the older standalone `scripts/install-password-plugin.sh` is gone — it set a new
+password. (1.4.0: the older standalone `scripts/install-password-plugin.sh` is gone — it set a new
 password on every run.) Key options: the
 `sql` driver, `password_algorithm = sha512-crypt`, an empty prefix (Dovecot stores `$6$`
 without `{SHA512-CRYPT}`), `password_confirm_current = true` (requires the old

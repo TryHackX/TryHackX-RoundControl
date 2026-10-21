@@ -17,7 +17,7 @@ use function App\I18n\t;
 final class Commands
 {
     /**
-     * 1.3.3: time limits for the calls that only read or (un)ban. A wedged fail2ban or Dovecot socket used to hold the
+     * 1.4.0: time limits for the calls that only read or (un)ban. A wedged fail2ban or Dovecot socket used to hold the
      * PHP-FPM worker for good, and the pool has six. Not for the helpers that change files (the Fail2Ban helper, the
      * Postfix limits, the mailbox move): stopping those half-way would be worse than waiting.
      */
@@ -373,7 +373,7 @@ final class Commands
 
     /**
      * One value of the Fail2Ban form, in the ranges the root helper accepts (scripts/mailpanel-f2b-apply.php).
-     * '' = leave the option as it is (1.3.3: an empty field used to write maxretry 0, findtime/bantime 10m, factor 1).
+     * '' = leave the option as it is (1.4.0: an empty field used to write maxretry 0, findtime/bantime 10m, factor 1).
      */
     private static function sanitize(string $value, string $type): string
     {
@@ -394,7 +394,7 @@ final class Commands
 
     /**
      * "600", "10m", "1h30m" -> the same value, within one minute .. one year ('' = not a time: the option stays as it
-     * is — 1.3.3: such values, e.g. "1h30m" read from jail.local, used to become "10m" on the next save).
+     * is — 1.4.0: such values, e.g. "1h30m" read from jail.local, used to become "10m" on the next save).
      */
     private static function sanitizeTime(string $value): string
     {
@@ -417,13 +417,17 @@ final class Commands
         return $secs > 31536000 ? '365d' : $value;
     }
 
-    /** ignoreip: addresses and networks no broader than IPv4 /8 or IPv6 /32 (what the helper accepts). */
+    /**
+     * ignoreip: addresses, networks no broader than IPv4 /8 or IPv6 /32, and host names — what the helper accepts
+     * (1.4.0: host names used to be dropped from the list on every save).
+     */
     private static function sanitizeIpList(string $value): string
     {
         $valid = [];
         foreach (preg_split('/[\s,]+/', $value, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $ip) {
             $ip = trim($ip);
-            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+            if (filter_var($ip, FILTER_VALIDATE_IP)
+                || preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/iD', $ip) === 1) {
                 $valid[] = $ip;
             } elseif (str_contains($ip, '/')) {
                 [$addr, $mask] = explode('/', $ip, 2);

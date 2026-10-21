@@ -36,7 +36,7 @@ final class RoundcubeImapAuthenticator implements ImapAuthenticator
                 $rcmail->kill_session();
             }
         } catch (Throwable $e) {
-            error_log('portal: kill_session() przed logowaniem nie powiodło się: ' . $e->getMessage());
+            error_log('portal: kill_session() before the sign-in failed: ' . $e->getMessage());
         }
 
         // Język webmaila jak w portalu (pl -> pl_PL, en -> en_US; Roundcube sam dobiera wariant). Dotyczy sesji i kont
@@ -44,7 +44,7 @@ final class RoundcubeImapAuthenticator implements ImapAuthenticator
         try {
             $rcmail->load_language(\App\I18n\Lang::current());
         } catch (Throwable $e) {
-            error_log('portal: ustawienie języka Roundcube nie powiodło się: ' . $e->getMessage());
+            error_log('portal: setting the Roundcube language failed: ' . $e->getMessage());
         }
 
         // Hook "authenticate" (jak w index.php) — wtyczki uwierzytelniania / 2FA mogą przerwać lub zmienić dane.

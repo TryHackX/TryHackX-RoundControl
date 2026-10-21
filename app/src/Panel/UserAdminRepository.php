@@ -24,6 +24,20 @@ final class UserAdminRepository
         'reg_ip'     => 'reg_ip',
     ];
 
+    /**
+     * 1.4.0: the registration of THIS owner of the address — events after its latest tombstone. A name deleted and
+     * created again showed the previous owner's registration date and IP (in the list, the ban dialog and the search).
+     */
+    private const REG_SINCE = "re.created_at > COALESCE((SELECT d.deleted_at FROM deleted_accounts d WHERE d.email = re.email), '1000-01-01')";
+    private const REG_JOIN = "LEFT JOIN (
+                SELECT re.email, MIN(re.created_at) AS created_at
+                FROM registration_events re WHERE re.status = 'success' AND " . self::REG_SINCE . "
+                GROUP BY re.email
+            ) r ON r.email = v.email";
+    private const REG_IP = "(SELECT INET6_NTOA(re.ip) FROM registration_events re
+                  WHERE re.email = v.email AND re.status = 'success' AND " . self::REG_SINCE . "
+                  ORDER BY re.created_at ASC LIMIT 1)";
+
     public function __construct(private PDO $pdo) {}
 
     /** @return array<string,string> pole => ASC|DESC */
@@ -52,10 +66,7 @@ final class UserAdminRepository
         $countSql = "SELECT COUNT(*) FROM (
             SELECT v.id
             FROM virtual_users v
-            LEFT JOIN (
-                SELECT email, MIN(created_at) AS created_at
-                FROM registration_events WHERE status = 'success' GROUP BY email
-            ) r ON r.email = v.email
+            " . self::REG_JOIN . "
             LEFT JOIN (
                 SELECT email, MAX(created_at) AS last_login,
                        GROUP_CONCAT(DISTINCT INET6_NTOA(ip) SEPARATOR ',') AS ips
@@ -82,15 +93,12 @@ final class UserAdminRepository
               COALESCE(r.created_at, '-') AS created,
               COALESCE(ul.last_login, '-') AS last_login,
               ul.ips AS last_ips,
-              (SELECT INET6_NTOA(re.ip) FROM registration_events re WHERE re.email = v.email AND re.status = 'success' ORDER BY re.created_at ASC LIMIT 1) AS reg_ip,
+              " . self::REG_IP . " AS reg_ip,
               (SELECT INET6_NTOA(e.ip) FROM user_login_events e WHERE e.email = v.email ORDER BY e.created_at ASC LIMIT 1) AS first_login_ip,
               (SELECT INET6_NTOA(e.ip) FROM user_login_events e WHERE e.email = v.email ORDER BY e.created_at DESC LIMIT 1) AS last_login_ip,
               (SELECT INET6_NTOA(e.ip) FROM user_login_events e WHERE e.email = v.email ORDER BY e.created_at DESC LIMIT 1 OFFSET 1) AS prev_login_ip
             FROM virtual_users v
-            LEFT JOIN (
-                SELECT email, MIN(created_at) AS created_at
-                FROM registration_events WHERE status = 'success' GROUP BY email
-            ) r ON r.email = v.email
+            " . self::REG_JOIN . "
             LEFT JOIN (
                 SELECT email, MAX(created_at) AS last_login,
                        GROUP_CONCAT(DISTINCT INET6_NTOA(ip) SEPARATOR ',') AS ips
@@ -128,9 +136,7 @@ final class UserAdminRepository
     private const HAY = "CONCAT_WS(' ',
         v.email,
         COALESCE(ul.ips, ''),
-        COALESCE((SELECT INET6_NTOA(re.ip) FROM registration_events re
-                  WHERE re.email = v.email AND re.status = 'success'
-                  ORDER BY re.created_at ASC LIMIT 1), ''),
+        COALESCE(" . self::REG_IP . ", ''),
         COALESCE(r.created_at, ''),
         COALESCE(ul.last_login, ''),
         CAST(v.quota_mb AS CHAR))";
@@ -160,7 +166,7 @@ final class UserAdminRepository
             $ors = [];
             foreach ($terms as $term) {
                 $ors[]    = self::HAY . ' LIKE ?';
-                $params[] = '%' . $term . '%';
+                $params[] = '%' . addcslashes($term, '\\%_') . '%';   // "_" and "%" are literal characters here
             }
             $conds[] = '(' . implode(' OR ', $ors) . ')';
         }
@@ -226,12 +232,14 @@ final class UserAdminRepository
      *  - sam wiersz konta; zostaje "nagrobek" w deleted_accounts (rejestracja publiczna nie odda tej nazwy
      *    przez deleted_name_hold_days dni).
      *
-     * @return array{aliases:int,lists:array<int,array{id:int,source:string,destination:string,exact:bool}>}
+     * 1.4.0: `removed` lists the aliases that went (the panel cannot re-create an alias, so the audit log keeps them).
+     *
+     * @return array{aliases:int,removed:array<int,array{id:int,source:string,destination:string,exact:bool}>,lists:array<int,array{id:int,source:string,destination:string,exact:bool}>}
      */
     public function deleteAccount(int $id, string $email): array
     {
         $email   = Accounts::normalize($email);
-        $removed = 0;
+        $removed = [];
         $lists   = [];
 
         $this->pdo->beginTransaction();
@@ -239,7 +247,7 @@ final class UserAdminRepository
             foreach ((new UserRepository($this->pdo))->aliasesPointingTo($email) as $alias) {
                 if ($alias['exact']) {
                     $this->pdo->prepare('DELETE FROM virtual_aliases WHERE id = ?')->execute([$alias['id']]);
-                    $removed++;
+                    $removed[] = $alias;
                 } else {
                     $lists[] = $alias;
                 }
@@ -247,9 +255,10 @@ final class UserAdminRepository
             $this->pdo->prepare('DELETE FROM user_login_events WHERE email = ?')->execute([$email]);
             $this->pdo->prepare('DELETE FROM send_counters WHERE email = ?')->execute([$email]);
             $this->pdo->prepare('DELETE FROM virtual_users WHERE id = ?')->execute([$id]);
+            // files_left = 1 until the mailbox files are known to be in the quarantine (markFilesLeft() after the helper)
             $this->pdo->prepare(
-                'INSERT INTO deleted_accounts (email, deleted_at) VALUES (?, NOW())
-                 ON DUPLICATE KEY UPDATE deleted_at = NOW()'
+                'INSERT INTO deleted_accounts (email, deleted_at, files_left) VALUES (?, NOW(), 1)
+                 ON DUPLICATE KEY UPDATE deleted_at = NOW(), files_left = 1'
             )->execute([$email]);
             $this->pdo->commit();
         } catch (\Throwable $e) {
@@ -259,7 +268,14 @@ final class UserAdminRepository
             throw $e;
         }
 
-        return ['aliases' => $removed, 'lists' => $lists];
+        return ['aliases' => count($removed), 'removed' => $removed, 'lists' => $lists];
+    }
+
+    /** 1.4.0: record whether the deleted account's mailbox files are still on disk (see UserRepository::filesLeft()). */
+    public function markFilesLeft(string $email, bool $left): void
+    {
+        $this->pdo->prepare('UPDATE deleted_accounts SET files_left = ? WHERE email = ?')
+            ->execute([$left ? 1 : 0, Accounts::normalize($email)]);
     }
 
     /** Zestaw IP powiązanych z kontem: flagi (rej/pierwsze/poprz/ostatnie) + ostatnie 30. */
@@ -267,7 +283,7 @@ final class UserAdminRepository
     {
         $flagsStmt = $this->pdo->prepare("
             SELECT
-              (SELECT INET6_NTOA(re.ip) FROM registration_events re WHERE re.email = v.email AND re.status = 'success' ORDER BY re.created_at ASC LIMIT 1) AS reg_ip,
+              " . self::REG_IP . " AS reg_ip,
               (SELECT INET6_NTOA(e.ip) FROM user_login_events e WHERE e.email = v.email ORDER BY e.created_at ASC LIMIT 1) AS first_login_ip,
               (SELECT INET6_NTOA(e.ip) FROM user_login_events e WHERE e.email = v.email ORDER BY e.created_at DESC LIMIT 1) AS last_login_ip,
               (SELECT INET6_NTOA(e.ip) FROM user_login_events e WHERE e.email = v.email ORDER BY e.created_at DESC LIMIT 1 OFFSET 1) AS prev_login_ip

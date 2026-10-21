@@ -98,7 +98,7 @@ final class PortalController
         } catch (Throwable $e) {
             // Diagnostyka do logu serwera — użytkownik widzi tylko ogólny komunikat.
             error_log(sprintf(
-                'portal: nieoczekiwany wyjątek przy akcji "%s": [%s] %s w %s:%d',
+                'portal: unexpected exception in action "%s": [%s] %s in %s:%d',
                 $action, $e::class, $e->getMessage(), $e->getFile(), $e->getLine()
             ));
             $resp['ok']  = false;
@@ -123,7 +123,7 @@ final class PortalController
         if ($blocked !== null) {
             throw new PortalException($blocked);
         }
-        // 1.3.3: addresses in SCAN_TRUSTED_IPS skip the CAPTCHA at sign-in, as they skip the limits — the administrator's
+        // 1.4.0: addresses in SCAN_TRUSTED_IPS skip the CAPTCHA at sign-in, as they skip the limits — the administrator's
         // way in when the CAPTCHA keys stop working (otherwise only an edit of app_settings helps; README "CAPTCHA").
         if (!Ip::isTrusted(Ip::raw()) && !Captcha::check('login')) {
             throw new PortalException(t('portal.err.captcha'));
@@ -167,6 +167,14 @@ final class PortalController
         if ($blocked !== null) {
             $this->flow->clear();
             throw PortalException::withReset($blocked);
+        }
+        // 1.4.0: longer than any password we accept = wrong, answered like one without hashing it (SHA-512-crypt's
+        // work grows with the length: a 100 KB password cost Dovecot 24 s; the client is counted as for a wrong one)
+        if (strlen($password) > 4 * Password::MAX_LENGTH) {
+            $this->flow->clear();
+            $this->limiter->recordLoginFailure('webmail', $email, $ipBin);
+            AuthLog::failure('webmail', $email);
+            throw PortalException::withReset(t('portal.err.bad_credentials'));
         }
 
         $isAdmin = false;
@@ -263,6 +271,7 @@ final class PortalController
         $this->admins->markLogin($admin['id']);
 
         Session::regenerate();
+        Csrf::rotate();             // 1.4.0: no token from before the sign-in stays valid in the admin session
         $_SESSION['admin_id']       = $admin['id'];
         $_SESSION['admin_username'] = $email;
         $_SESSION['admin_login_at'] = time();
@@ -304,7 +313,8 @@ final class PortalController
             return 'taken';
         }
         if ($this->users->aliasReferences($email)
-            || $this->users->recentlyDeleted($email, Settings::int('deleted_name_hold_days', 365))) {
+            || $this->users->recentlyDeleted($email, Settings::int('deleted_name_hold_days', 365))
+            || $this->users->filesLeft($email)) {   // 1.4.0: the old mailbox is still on disk
             return 'held';
         }
         return null;

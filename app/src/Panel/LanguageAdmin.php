@@ -235,13 +235,14 @@ final class LanguageAdmin
         if ($code === Lang::defaultLanguage()) {
             return self::fail(t('msg.lang.default_no_delete'));
         }
+        $name = Lang::name($code);   // 1.4.0: read before the files go, like the other language messages
         $on = array_values(array_diff(Lang::enabled(), [$code]));
         if (!Lang::deleteCustom($code)) {
             return self::fail(t('msg.lang.write_failed', ['dir' => Lang::dataDir()]));
         }
         self::saveEnabled($on);
         $this->audit->log('LANGUAGE', Lang::site('audit.lang_deleted', ['code' => $code]));
-        return ['ok' => true, 'msg' => t('msg.lang.deleted', ['code' => $code])];
+        return ['ok' => true, 'msg' => t('msg.lang.deleted', ['name' => $name])];
     }
 
     /* ------------------------------------------------------------------ pomocnicze (publiczne: testy) */

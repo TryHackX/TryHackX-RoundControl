@@ -9,6 +9,26 @@
 SET NAMES utf8mb4;
 
 -- ---------------------------------------------------------------
+-- 1.4.0: ONE collation for the whole database — the one of virtual_users.email (Postfix/Dovecot's table, often older
+-- than the panel). MariaDB 11.5+ creates new tables as utf8mb4_uca1400_ai_ci, so panel tables added to a database whose
+-- mail tables are utf8mb4/utf8mb3_general_ci compared across collations and failed (1267 "Illegal mix of
+-- collations": the user list, log retention, the login history). First the database default (new tables and the
+-- procedure parameters take it), at the end of this file the panel tables that already exist. Nothing happens when
+-- virtual_users does not exist yet (a new database: everything gets the server default).
+-- ---------------------------------------------------------------
+SET @rc_coll := (SELECT REPLACE(COLLATION_NAME, 'utf8mb3_', 'utf8mb4_') FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_users' AND COLUMN_NAME = 'email');
+SET @rc_db := (SELECT DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = DATABASE());
+-- (a new database created without a character set may default to latin1: then utf8mb4 with the server's collation)
+SET @rc_sql := CASE
+    WHEN @rc_coll IS NOT NULL AND @rc_coll <> @rc_db THEN CONCAT('ALTER DATABASE `', DATABASE(), '` CHARACTER SET utf8mb4 COLLATE ', @rc_coll)
+    WHEN @rc_coll IS NULL AND @rc_db NOT LIKE 'utf8mb4\_%' THEN CONCAT('ALTER DATABASE `', DATABASE(), '` CHARACTER SET utf8mb4')
+    ELSE 'DO 0' END;
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+
+-- ---------------------------------------------------------------
 -- Tabele serwera pocztowego (Postfix/Dovecot virtual users).
 -- Jeśli masz już działający mailserver — te CREATE zostaną pominięte.
 -- ---------------------------------------------------------------
@@ -66,6 +86,9 @@ CREATE TABLE IF NOT EXISTS virtual_aliases (
   CONSTRAINT virtual_aliases_ibfk_1 FOREIGN KEY (domain_id)
     REFERENCES virtual_domains (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 1.4.0: Postfix looks aliases up by source on every delivery, the panel on every name check.
+CREATE INDEX IF NOT EXISTS idx_source ON virtual_aliases (source);
 
 -- ---------------------------------------------------------------
 -- Tabele panelu
@@ -169,9 +192,15 @@ CREATE TABLE IF NOT EXISTS throttle_events (
 CREATE TABLE IF NOT EXISTS deleted_accounts (
   email VARCHAR(100) NOT NULL,
   deleted_at DATETIME NOT NULL,
+  files_left TINYINT(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (email),
   KEY idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 1.4.0: files_left = 1 — the mailbox files could not be moved to the quarantine when the account was deleted (no
+-- helper, or it refused). Such a name is not given out again — by the portal never, by the panel only after it moved
+-- the files — and the tombstone is never pruned while the flag is set.
+ALTER TABLE deleted_accounts ADD COLUMN IF NOT EXISTS files_left TINYINT(1) NOT NULL DEFAULT 0;
 
 -- ---------------------------------------------------------------
 -- Procedura: rejestracja logowania użytkownika (deduplikacja IP,
@@ -222,7 +251,8 @@ DELIMITER ;
 --                         i IP rejestracji w liście kont)
 --   user_login_events     starsze niż okno, ale ostatnie logowanie każdego konta zostaje (kolumna "ostatnie logowanie")
 --   send_counters         dni starsze niż okno (limit dzienny potrzebuje tylko dnia dzisiejszego)
---   deleted_accounts      starsze niż MAX(okno, deleted_name_hold_days, 30 dni kwarantanny) — blokada nazw działa dalej
+--   deleted_accounts      starsze niż MAX(okno, deleted_name_hold_days, 30 dni kwarantanny) — blokada nazw działa dalej;
+--                         1.4.0: never while files_left = 1 (the old mailbox is still on disk)
 -- p_days <= 0 ("bez limitu") nic nie usuwa. Wynik: jeden wiersz z liczbą usuniętych wierszy per tabela.
 -- ---------------------------------------------------------------
 
@@ -288,7 +318,7 @@ BEGIN
 
         SET v_i = 0;
         REPEAT
-            DELETE FROM deleted_accounts WHERE deleted_at < NOW() - INTERVAL v_keep_del DAY LIMIT 1000;
+            DELETE FROM deleted_accounts WHERE deleted_at < NOW() - INTERVAL v_keep_del DAY AND files_left = 0 LIMIT 1000;
             SET v_n = ROW_COUNT(); SET c_del = c_del + v_n; SET v_i = v_i + 1;
         UNTIL v_n < 1000 OR v_i >= v_rounds END REPEAT;
     END IF;
@@ -297,6 +327,63 @@ BEGIN
            c_send AS send_counters, c_del AS deleted_accounts;
 END$$
 DELIMITER ;
+
+-- ---------------------------------------------------------------
+-- 1.4.0: tables created earlier with another collation get the one of virtual_users.email (see the top of the file):
+-- the panel's tables, and virtual_domains / virtual_aliases when this file created them under a newer default.
+-- utf8mb3_x and utf8mb4_x count as the same collation (they compare without errors), so an older mail database is not
+-- converted needlessly. CONVERT rewrites a table; it runs only for one that differs, so a second import changes nothing.
+-- ---------------------------------------------------------------
+SET @rc_coll := (SELECT REPLACE(COLLATION_NAME, 'utf8mb3_', 'utf8mb4_') FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_users' AND COLUMN_NAME = 'email');
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE virtual_domains CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_domains');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE virtual_aliases CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_aliases');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE app_settings CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_settings');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE panel_admins CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_admins');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE ip_blocks CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ip_blocks');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE registration_events CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'registration_events');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE admin_login_attempts CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admin_login_attempts');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE admin_audit_logs CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admin_audit_logs');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE user_login_events CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_login_events');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE throttle_events CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'throttle_events');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE deleted_accounts CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deleted_accounts');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE send_counters CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'send_counters');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
 
 -- ---------------------------------------------------------------
 -- Domyślne ustawienia (INSERT IGNORE — istniejące wartości zostają).

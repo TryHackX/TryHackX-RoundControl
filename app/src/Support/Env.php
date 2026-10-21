@@ -73,15 +73,6 @@ final class Env
         return self::$vars[$key] ?? $default;
     }
 
-    public static function bool(string $key, bool $default = false): bool
-    {
-        $value = self::$vars[$key] ?? null;
-        if ($value === null) {
-            return $default;
-        }
-        return in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true);
-    }
-
     public static function isDev(): bool
     {
         return strtolower(self::$vars['APP_ENV'] ?? 'prod') === 'dev';

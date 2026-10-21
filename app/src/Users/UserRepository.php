@@ -86,6 +86,17 @@ final class UserRepository
         return $v === false ? null : (string) $v;
     }
 
+    /**
+     * 1.4.0: were this address's mailbox files left on disk when it was deleted (the move to the quarantine did not
+     * happen)? Then the name is not given out again, whatever the hold period says: the new owner would get the old mail.
+     */
+    public function filesLeft(string $email): bool
+    {
+        $s = $this->pdo->prepare('SELECT files_left FROM deleted_accounts WHERE email = ?');
+        $s->execute([Accounts::normalize($email)]);
+        return (int) $s->fetchColumn() === 1;
+    }
+
     /** @return string[] nazwy domen (lower case) */
     public function domains(): array
     {
@@ -125,14 +136,6 @@ final class UserRepository
             return true;
         }
         return $this->aliasesPointingTo($email) !== [];
-    }
-
-    /** Is this address the SOURCE of some alias? (mail to it never reaches a mailbox of that name) */
-    public function aliasSourceExists(string $email): bool
-    {
-        $s = $this->pdo->prepare('SELECT 1 FROM virtual_aliases WHERE source = ? LIMIT 1');
-        $s->execute([Accounts::normalize($email)]);
-        return (bool) $s->fetchColumn();
     }
 
     /**
@@ -175,10 +178,11 @@ final class UserRepository
         return (bool) $s->fetchColumn();
     }
 
-    public function create(int $domainId, string $passwordHash, string $email, int $quotaMb): void
+    /** $sendLimit: the account's own daily send limit (null = the global one, 0 = none) — 1.4.0: in the same INSERT. */
+    public function create(int $domainId, string $passwordHash, string $email, int $quotaMb, ?int $sendLimit = null): void
     {
         $this->pdo->prepare(
-            'INSERT INTO virtual_users (domain_id, password, email, quota_mb) VALUES (?, ?, ?, ?)'
-        )->execute([$domainId, $passwordHash, Accounts::normalize($email), $quotaMb]);
+            'INSERT INTO virtual_users (domain_id, password, email, quota_mb, daily_send_limit) VALUES (?, ?, ?, ?, ?)'
+        )->execute([$domainId, $passwordHash, Accounts::normalize($email), $quotaMb, $sendLimit]);
     }
 }

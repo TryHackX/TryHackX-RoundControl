@@ -56,7 +56,7 @@ $rules = [
     'bantime.increment' => '/^(true|false)$/D', 'enabled' => '/^(true|false)$/D',
     'ignoreip' => 'ip_list',
 ];
-// 1.3.3: well-formed is not enough. A jail with `maxretry = 999999`, `findtime = 1` or `bantime = 1` never bans anyone,
+// 1.4.0: well-formed is not enough. A jail with `maxretry = 999999`, `findtime = 1` or `bantime = 1` never bans anyone,
 // and [DEFAULT] is inherited by sshd and recidive. The panel clamps to the same ranges (Commands::sanitize), so a value
 // outside them means the proposal did not come from the panel's form.
 const MIN_SECONDS = 60;
@@ -83,11 +83,15 @@ function fail(string $m): never
 }
 
 /**
- * One ignoreip entry: an address, or a network no broader than IPv4 /8 or IPv6 /32 (1.3.3). `0.0.0.0/0 ::/0` used to
- * pass and exempted every source from every jail, sshd included.
+ * One ignoreip entry: an address, a network no broader than IPv4 /8 or IPv6 /32 (1.4.0: `0.0.0.0/0 ::/0` used to pass
+ * and exempted every source from every jail, sshd included), or a host name (Fail2Ban resolves it; a dynamic-DNS name
+ * of the administrator's home is the usual case — the panel used to drop such names on every save).
  */
 function ipOk(string $t): bool
 {
+    if (preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/iD', $t) === 1) {
+        return true;
+    }
     $p = explode('/', $t, 2);
     if (!filter_var($p[0], FILTER_VALIDATE_IP)) {
         return false;

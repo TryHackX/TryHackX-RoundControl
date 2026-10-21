@@ -215,8 +215,10 @@ try {
     $r = $call('perform_login', ['password' => 'Admin-Pass-12345!'], $ipB);
     ok(!empty($r['ok']) && $r['redirect'] === 'panel/index.php', 'poprawne hasło admina z innego IP: wejście');
     ok(!empty($_SESSION['admin_id']) && !empty($_SESSION['admin_login_at']) && !empty($_SESSION['admin_fp']), 'sesja admina: id, czas logowania, odcisk hasła');
+    ok(!isset($_SESSION['csrf']), '1.4.0: token CSRF sprzed logowania unieważniony (panel wyda nowy)');
     eq($count("SELECT COUNT(*) FROM admin_login_attempts WHERE username='boss@example.test' AND success=0"), 5, 'udane logowanie nie skasowało wierszy porażek');
     unset($_SESSION['admin_id'], $_SESSION['admin_login_at'], $_SESSION['admin_fp'], $_SESSION['admin_username']);
+    $_SESSION['csrf'] = 'TESTTOKEN';      // "przeglądarka" dostaje nowy token z następnej strony
 
     // udane logowanie IMAP ofiary (sp_register_login) nie zeruje licznika atakującego
     $before = $count("SELECT COUNT(*) FROM throttle_events WHERE kind='webmail' AND email='jan@example.test'");
@@ -361,6 +363,11 @@ try {
     $r = $reg('jan', '203.0.113.110');
     ok(empty($r['ok']) && str_contains((string) $r['msg'], 'niedostępna'), 'blokada 0 dni, ale alias z LISTĄ celów nadal wymienia jan@: nazwa wciąż niedostępna');
     $admin->exec("DELETE FROM virtual_aliases WHERE source = 'list@example.test'");
+    // 1.4.0: pliki skrzynki zostały na dysku (nagrobek z files_left = 1, póki helper ich nie przeniesie) — nazwa zablokowana
+    eq($count("SELECT files_left FROM deleted_accounts WHERE email = 'jan@example.test'"), 1, '1.4.0: świeży nagrobek ma files_left = 1 (do potwierdzenia przeniesienia plików)');
+    $r = $reg('jan', '203.0.113.110');
+    ok(empty($r['ok']) && str_contains((string) $r['msg'], 'niedostępna'), '1.4.0: blokada 0 dni, ale stare pliki skrzynki na dysku: nazwa niedostępna');
+    $admin->exec("UPDATE deleted_accounts SET files_left = 0 WHERE email = 'jan@example.test'");   // jak po udanym przeniesieniu
     $r = $reg('jan', '203.0.113.110');
     ok(!empty($r['ok']), 'z blokadą wyłączoną (0 dni) i bez aliasów nazwa wraca do puli');
     App\Settings\Settings::set('deleted_name_hold_days', '365');
@@ -381,6 +388,9 @@ try {
     $o = $inv('createUser');
     ok($o['error'] !== '' && $o['success'] === '', 'admin: zarezerwowana nazwa bez zgody odrzucona (' . $o['error'] . ')');
     $_POST['nu_allow_reserved'] = '1';
+    $o = $inv('createUser');
+    ok($o['error'] !== '' && $count("SELECT COUNT(*) FROM virtual_users WHERE email = 'admin@example.test'") === 0, '1.4.0: zgoda bez hasła administratora odrzucona (' . $o['error'] . ')');
+    $_POST['admin_confirm_password'] = 'Admin-Pass-12345!';
     $o = $inv('createUser');
     ok($o['error'] === '' && $count("SELECT COUNT(*) FROM virtual_users WHERE BINARY email = 'admin@example.test'") === 1, 'admin: ze zgodą konto admin@ powstaje (małymi literami)');
     $_POST = ['nu_local' => 'sales2', 'nu_domain' => 'example.test', 'nu_password' => 'Silne-Haslo-99!', 'nu_password2' => 'Silne-Haslo-99!', 'nu_allow_reserved' => '1'];
@@ -463,6 +473,9 @@ try {
     ok($o['error'] !== '', 'reset hasła skrzynki: niezgodny adres odrzucony');
     $_POST['user_email'] = 'TEST.user@example.test';
     $o = $inv('resetUserPassword');
+    ok($o['error'] !== '' && str_contains($o['error'], 'dzienniku'), '1.4.0: reset hasła skrzynki bez hasła administratora odrzucony');
+    $_POST['admin_confirm_password'] = 'Admin-Pass-12345!';
+    $o = $inv('resetUserPassword');
     ok($o['error'] === '' && str_contains($o['success'], 'test.user@example.test'), 'reset hasła skrzynki: adres wielkimi literami przyjęty, komunikat małymi');
     $_POST = ['user_id' => (string) $mbx, 'user_quota_value' => '1e30', 'user_quota_unit' => 'GB', 'user_send_limit' => ''];
     $inv('updateUserQuota');
@@ -537,7 +550,7 @@ try {
     ok(str_starts_with($act[2] ?? '', 'DUNNO'), 'limit 5: 2 odbiorców (razem 5) przechodzi — adres bez względu na wielkość liter');
     ok(str_starts_with($act[3] ?? '', 'REJECT'), 'limit 5: szósty odbiorca odrzucony');
     ok(str_starts_with($act[4] ?? '', 'REJECT') && str_contains($act[4], 'Za wiele'), 'wiadomość z 10 odbiorcami przy limicie 5: odrzucona od razu');
-    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = UTC_DATE()"), 5, 'licznik w bazie = 5 (odrzucone nie zwiększają)');   // UTC_DATE: polityka ma w konfiguracji testu timezone = UTC
+    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = CURDATE()"), 5, 'licznik w bazie = 5 (odrzucone nie zwiększają)');   // 1.4.0: dzień wg zegara bazy, jak polityka
     [$act, ] = $policy([$rq('free@example.test', 500), $rq('nobody@elsewhere.test', 3), ['request' => 'smtpd_access_policy', 'sasl_username' => ''], $rq('global@example.test', 4), $rq('global@example.test', 1)]);
     ok(str_starts_with($act[0] ?? '', 'DUNNO'), 'limit 0 = bez limitu');
     ok(str_starts_with($act[1] ?? '', 'DUNNO'), 'nieznane konto: DUNNO');
@@ -570,7 +583,7 @@ try {
         $dunno += substr_count($out, 'action=DUNNO');
     }
     eq($dunno, 5, 'cztery równoległe procesy po 5 zapytań: dokładnie 5 przechodzi (limit 5), reszta odrzucona');
-    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = UTC_DATE()"), 5, 'licznik po wyścigu = limit');
+    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = CURDATE()"), 5, 'licznik po wyścigu = limit');
 
     /* -------------------------------------------------------------- migracja: małe litery */
     group('upgrade_1.1.0.sql: adresy małymi literami');
@@ -600,6 +613,111 @@ try {
     $admin->exec("DELETE FROM virtual_users WHERE BINARY email IN ('Dup@example.test', 'dup@example.test', 'Other@example.test')");
     $admin->exec("ALTER TABLE virtual_users MODIFY email VARCHAR(100) NOT NULL");
 
+    /* -------------------------------------------------------------- 1.4.0 */
+    group('1.4.0: pliki skrzynki na dysku, rejestracja nowego właściciela, aliasy w dzienniku, zakresy, LIKE, bany zaufanych');
+    $adminPass = 'Admin-Pass-12345!';
+    $_SESSION['admin_id']       = (int) $admin->query("SELECT id FROM panel_admins WHERE email = 'boss@example.test'")->fetchColumn();
+    $_SESSION['admin_username'] = 'boss@example.test';
+    $_SESSION['reauth_fail']    = 0;
+    App\Settings\Settings::set('deleted_name_hold_days', '0');
+    $admin->exec("INSERT INTO virtual_users (domain_id, password, email, quota_mb) VALUES ($domId, 'x', 'anna@example.test', 10)");
+    $annaId = (int) $admin->query("SELECT id FROM virtual_users WHERE email = 'anna@example.test'")->fetchColumn();
+    $admin->prepare('INSERT INTO registration_events (ip, email, status, created_at) VALUES (?, ?, ?, NOW() - INTERVAL 20 DAY)')
+          ->execute([inet_pton('192.0.2.10'), 'anna@example.test', 'success']);
+    $al->execute([$domId, 'role@example.test', 'anna@example.test']);
+    $_POST = ['delete_user_id' => (string) $annaId, 'delete_user_email' => 'anna@example.test', 'admin_confirm_password' => $adminPass];
+    $o = $inv('deleteUser');
+    ok($count("SELECT COUNT(*) FROM virtual_users WHERE email = 'anna@example.test'") === 0 && $o['error'] !== '', 'usunięcie bez helpera (dev): konto znika, błąd o plikach widoczny');
+    eq($count("SELECT files_left FROM deleted_accounts WHERE email = 'anna@example.test'"), 1, 'nagrobek: files_left = 1 (pliki na dysku)');
+    ok(str_contains($o['error'], 'anna@example.test'), 'komunikat: nazwa zablokowana do przeniesienia plików');
+    eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'DELETE_USER' AND details LIKE '%role@example.test → anna@example.test%'"), 1,
+        'dziennik: usunięty alias wymieniony (#id źródło → cel), nie tylko liczba');
+    $r = $reg('anna', '203.0.113.120');
+    ok(empty($r['ok']) && str_contains((string) $r['msg'], 'niedostępna'), 'portal: nazwa z plikami na dysku niedostępna (mimo blokady 0 dni)');
+    $a = (new ReflectionMethod($panel, 'classifyName'))->invoke($panel, new App\Users\UserRepository(App\Support\Database::pdo()), 'anna', 'anna@example.test');
+    ok($a['status'] === 'held' && $a['override'] === true && str_contains($a['detail'], 'kwarantann'), 'panel: ocena nazwy "stara skrzynka na dysku", zgoda możliwa');
+    $_POST = ['nu_local' => 'anna', 'nu_domain' => 'example.test', 'nu_password' => 'Silne-Haslo-99!', 'nu_password2' => 'Silne-Haslo-99!',
+              'nu_allow_reserved' => '1', 'admin_confirm_password' => $adminPass];
+    $o = $inv('createUser');
+    ok($o['error'] !== '' && $count("SELECT COUNT(*) FROM virtual_users WHERE email = 'anna@example.test'") === 0,
+        'panel ze zgodą: plików nie da się przenieść (dev, brak helpera) -> konto NIE powstaje');
+    eq($count("SELECT COUNT(*) FROM deleted_accounts WHERE email = 'anna@example.test' AND files_left = 1"), 1, '... a nagrobek nadal pamięta pliki');
+    $admin->exec("UPDATE deleted_accounts SET deleted_at = NOW() - INTERVAL 5000 DAY WHERE email = 'anna@example.test'");
+    $prune = $admin->query('CALL sp_prune_logs(90, 5)');
+    $prune->fetchAll();
+    $prune->closeCursor();
+    eq($count("SELECT COUNT(*) FROM deleted_accounts WHERE email = 'anna@example.test'"), 1, 'sp_prune_logs nie usuwa nagrobka z files_left = 1 (nawet bardzo starego)');
+    $admin->exec("UPDATE deleted_accounts SET files_left = 0, deleted_at = NOW() - INTERVAL 1 DAY WHERE email = 'anna@example.test'");   // jak po przeniesieniu
+    $o = $inv('createUser');
+    ok($o['error'] === '' && $count("SELECT COUNT(*) FROM virtual_users WHERE email = 'anna@example.test'") === 1, 'po przeniesieniu plików: konto utworzone ponownie');
+    $repo2 = new App\Panel\UserAdminRepository($pdo);
+    $rows2 = $repo2->rows('anna@example.test', [], 20, 0);
+    ok(isset($rows2[0]) && $rows2[0]['reg_ip'] === null && $rows2[0]['created'] === '-', 'lista kont: bez daty i IP rejestracji poprzedniej właścicielki');
+    $flags2 = $repo2->ipsForEmail('anna@example.test')['flags'];
+    ok(array_key_exists('reg_ip', $flags2) && $flags2['reg_ip'] === null, 'okno banowania: bez IP rejestracji poprzedniej właścicielki');
+    eq($repo2->count('192.0.2.10'), 0, 'wyszukiwanie po IP rejestracji poprzedniej właścicielki nie wiąże nowego konta');
+    App\Settings\Settings::set('deleted_name_hold_days', '365');
+
+    // "_" i "%" w wyszukiwaniu to zwykłe znaki
+    $admin->exec("INSERT INTO virtual_users (domain_id, password, email, quota_mb) VALUES ($domId, 'x', 'under_score@example.test', 10)");
+    eq($repo2->count('_'), $count("SELECT COUNT(*) FROM virtual_users WHERE LOCATE('_', email) > 0"), 'konta: "_" znajduje tylko adresy z podkreśleniem');
+    $logs2 = new App\Panel\LogRepository($pdo);
+    eq($logs2->countAudit('%'), $count("SELECT COUNT(*) FROM admin_audit_logs WHERE LOCATE('%', CONCAT_WS(' ', admin_email, action_type, details)) > 0"),
+        'dziennik: "%" znajduje tylko wpisy z procentem');
+
+    // limit wysyłki i quota sprawdzone PRZED zapisem; puste pole quoty = domyślna; 0 = świadomie bez limitu (∞)
+    $_POST = ['nu_local' => 'limit.test', 'nu_domain' => 'example.test', 'nu_password' => 'Silne-Haslo-99!', 'nu_password2' => 'Silne-Haslo-99!', 'nu_send_limit' => '3000000000'];
+    $o = $inv('createUser');
+    ok($o['error'] !== '' && $count("SELECT COUNT(*) FROM virtual_users WHERE email = 'limit.test@example.test'") === 0, 'zbyt duży limit wysyłki: odmowa, konto NIE powstaje');
+    $_POST['nu_send_limit'] = '25';
+    $o = $inv('createUser');
+    eq([$count("SELECT daily_send_limit FROM virtual_users WHERE email = 'limit.test@example.test'"), $count("SELECT quota_mb FROM virtual_users WHERE email = 'limit.test@example.test'")],
+       [25, App\Settings\Settings::int('mailbox_default_quota_mb', 1024)], 'limit w tym samym INSERT; puste pole quoty = domyślna');
+    $lt = (int) $admin->query("SELECT id FROM virtual_users WHERE email = 'limit.test@example.test'")->fetchColumn();
+    $before = $count("SELECT quota_mb FROM virtual_users WHERE id = $lt");
+    $_POST = ['user_id' => (string) $lt, 'user_quota_value' => '-5', 'user_quota_unit' => 'MiB', 'user_send_limit' => ''];
+    $o = $inv('updateUserQuota');
+    ok($o['error'] !== '' && $count("SELECT quota_mb FROM virtual_users WHERE id = $lt") === $before, 'quota -5: odmowa, nic nie zmienione (wcześniej 0 = bez limitu)');
+    $_POST['user_quota_value'] = '500';
+    $_POST['user_quota_unit']  = 'KiB';
+    $inv('updateUserQuota');
+    eq($count("SELECT quota_mb FROM virtual_users WHERE id = $lt"), 1, '500 KiB -> 1 MiB (wcześniej 0 = bez limitu)');
+    $_POST['user_quota_value'] = '0';
+    $o = $inv('updateUserQuota');
+    ok($count("SELECT quota_mb FROM virtual_users WHERE id = $lt") === 0 && str_contains($o['success'], '∞'), 'quota 0 = świadomie bez limitu, pokazane jako ∞');
+    $_POST = ['user_id' => (string) $lt, 'user_quota_value' => '10', 'user_quota_unit' => 'MiB', 'user_send_limit' => '3000000000'];
+    $o = $inv('updateUserQuota');
+    ok($o['error'] !== '' && $count("SELECT quota_mb FROM virtual_users WHERE id = $lt") === 0, 'okno quoty: zbyt duży limit -> odmowa, quota też NIE zmieniona');
+
+    // ustawienia: puste / ujemne pola zostawiają zapisane wartości, za duże są przycinane
+    App\Settings\Settings::set('daily_send_limit', '50');
+    App\Settings\Settings::set('mailbox_default_quota_mb', '1024');
+    App\Settings\Settings::set('ip_total_limit', '15');
+    $_POST = ['registration_enabled' => '1', 'mailbox_quota_value' => '', 'mailbox_quota_unit' => 'MiB', 'daily_send_limit' => '', 'deleted_name_hold_days' => '',
+              'accounts_per_ip' => '0', 'ip_window_hours' => '99999999', 'ip_total_limit' => '-4'];
+    $inv('saveSettings');
+    eq([App\Settings\Settings::int('daily_send_limit', -1), App\Settings\Settings::int('deleted_name_hold_days', -1), App\Settings\Settings::int('mailbox_default_quota_mb', -1),
+        App\Settings\Settings::int('ip_window_hours', -1), App\Settings\Settings::int('ip_total_limit', -1)],
+       [50, 365, 1024, 8760, 15], 'ustawienia: puste i ujemne pola bez zmian (nie 0 = bez limitu), za duże przycięte');
+    $zeroBefore = $count('SELECT COUNT(*) FROM virtual_users WHERE quota_mb = 0');
+    $_POST = ['mailbox_quota_value' => '-3', 'mailbox_quota_unit' => 'GiB', 'apply_quota_to_all' => '1'];
+    $o = $inv('saveSettings');
+    ok($o['error'] !== '' && App\Settings\Settings::int('mailbox_default_quota_mb', -1) === 1024 && $count('SELECT COUNT(*) FROM virtual_users WHERE quota_mb = 0') === $zeroBefore,
+        'domyślna quota ujemna: odmowa, "zastosuj do wszystkich" NIE uruchomione');
+    $_POST = ['rc_max_recipients' => '-5', 'rc_login_rate_limit' => '', 'pf_message_rate_limit' => '1e30'];
+    $inv('saveAntispam');
+    eq([App\Settings\Settings::int('rc_max_recipients', -1), App\Settings\Settings::int('pf_message_rate_limit', -1)], [10, 999999],
+       'antyspam: ujemna wartość bez zmian (nie 0 = bez limitu w Roundcube), 1e30 przycięte');
+
+    // ręczny ban i przeniesienie bana nie przyjmują adresów zaufanych (127.0.0.1, ::1, SCAN_TRUSTED_IPS i ich postaci ::ffff:)
+    foreach (['127.0.0.1', '::1', '198.51.100.99', '::ffff:198.51.100.99'] as $tip) {
+        $_POST = ['f2b_ip' => $tip, 'f2b_jail' => 'recidive'];
+        $o1 = $inv('fail2banBanIp');
+        $_POST = ['ip' => $tip, 'from_jail' => '', 'to_jail' => 'recidive'];
+        $o2 = $inv('moveBan');
+        ok(str_contains($o1['error'], 'SCAN_TRUSTED_IPS') && str_contains($o2['error'], 'SCAN_TRUSTED_IPS'), "ręczny ban i przeniesienie: $tip odrzucony jako zaufany");
+    }
+
     /* -------------------------------------------------------------- panel_config.php */
     group('config/panel_config.php: tylko dozwolone klucze rc_*');
     $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('rc_imap_host', 'evil.example'), ('rc_smtp_host', 'evil.example'), ('rc_max_recipients', '12'), ('rc_sendmail_delay', 'abc'), ('rc_login_rate_limit', '999999'), ('rc_des_key', 'x'), ('rcx', 'y')");
@@ -619,7 +737,7 @@ try {
         preg_match('/CREATE OR REPLACE PROCEDURE sp_prune_logs.*?END\$\$/s', (string) file_get_contents($root . '/sql/' . $file), $m);
         return (string) preg_replace('/\s+/', ' ', $m[0] ?? '');
     };
-    ok($schemaProc('panel_schema.sql') !== '' && $schemaProc('panel_schema.sql') === $schemaProc('upgrade_1.3.2.sql'), 'procedura w panel_schema.sql = ta z upgrade_1.3.2.sql');
+    ok($schemaProc('panel_schema.sql') !== '' && $schemaProc('panel_schema.sql') === $schemaProc('upgrade_1.4.0.sql'), 'procedura w panel_schema.sql = ta z upgrade_1.4.0.sql (najnowszy plik, który ją zmienia)');
     $ago = static fn(int $d): string => date('Y-m-d H:i:s', time() - $d * 86400);
     $admin->exec('DELETE FROM admin_audit_logs'); $admin->exec('DELETE FROM admin_login_attempts'); $admin->exec('DELETE FROM registration_events');
     $admin->exec('DELETE FROM user_login_events'); $admin->exec('DELETE FROM send_counters'); $admin->exec('DELETE FROM deleted_accounts');

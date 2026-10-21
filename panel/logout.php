@@ -13,7 +13,7 @@ use App\Support\Http;
 use App\Support\SecurityHeaders;
 use App\Support\Session;
 
-SecurityHeaders::sendPanel();   // 1.3.3: the same headers as every panel response
+SecurityHeaders::sendPanel();   // 1.4.0: the same headers as every panel response
 
 if (Http::isPost() && Csrf::check(Http::post('_csrf'))) {
     Session::destroy();

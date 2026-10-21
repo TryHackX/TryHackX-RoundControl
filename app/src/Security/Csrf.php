@@ -25,15 +25,9 @@ final class Csrf
             && hash_equals($_SESSION['csrf'], $token);
     }
 
-    /** Przerwij żądanie POST, jeśli token jest nieprawidłowy. */
-    public static function requirePost(): void
+    /** 1.4.0: a new token at a privilege change (sign-in), so nothing handed out before it stays valid after it. */
+    public static function rotate(): void
     {
-        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
-            return;
-        }
-        if (!self::check($_POST['_csrf'] ?? null)) {
-            http_response_code(400);
-            exit('CSRF');
-        }
+        unset($_SESSION['csrf']);
     }
 }

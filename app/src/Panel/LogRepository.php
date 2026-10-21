@@ -46,7 +46,7 @@ final class LogRepository
         $params = [];
         foreach (array_filter(array_map('trim', explode(';', $search))) as $phrase) {
             $conds[]  = "$hay LIKE ?";
-            $params[] = '%' . $phrase . '%';
+            $params[] = '%' . addcslashes($phrase, '\\%_') . '%';   // 1.4.0: "_" and "%" are literal characters here
         }
         if ($conds === []) {
             return ['', []];

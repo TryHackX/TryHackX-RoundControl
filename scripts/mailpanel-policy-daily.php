@@ -43,7 +43,7 @@ defined('CONFIG_FILE') || define('CONFIG_FILE', '/etc/mailpanel-policy.cf');   /
 $cfg = @parse_ini_file(CONFIG_FILE);
 if (!is_array($cfg)) {
     $cfg = [];
-    error_log('mailpanel-policy: brak lub nieczytelny ' . CONFIG_FILE . ' — działam w trybie fail-open');
+    error_log('mailpanel-policy: ' . CONFIG_FILE . ' is missing or unreadable — running fail-open');
 }
 date_default_timezone_set((string) ($cfg['timezone'] ?? 'Europe/Warsaw'));
 
@@ -62,7 +62,7 @@ function db(array $cfg, ?PDO &$db): ?PDO
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 3]
         );
     } catch (Throwable $e) {
-        error_log('mailpanel-policy: połączenie z bazą nieudane: ' . $e->getMessage());
+        error_log('mailpanel-policy: database connection failed: ' . $e->getMessage());
         $db = null;
     }
     return $db;
@@ -129,7 +129,7 @@ function respond(string $action): void
  */
 function sendLimitNotice(string $user, int $limit, int $sent, string $lang = 'pl'): void
 {
-    // 1.3.3: the address goes into the To: and From: headers — only a plain mailbox name, never a CR/LF or a space
+    // 1.4.0: the address goes into the To: and From: headers — only a plain mailbox name, never a CR/LF or a space
     // (unreachable today: the caller found it in virtual_users, whose names the panel and the portal validate)
     if (preg_match('/^[a-z0-9._+-]+@[a-z0-9.-]+$/D', $user) !== 1) {
         return;
@@ -201,10 +201,12 @@ while (($line = fgets(STDIN)) !== false) {
             continue;
         }
 
-        $day = date('Y-m-d');
+        // 1.4.0: the day by the database clock — the panel reads "sent today" with CURDATE() too (the timezone
+        // setting of this file and the panel's APP_TIMEZONE could disagree for an hour or two every night)
+        $day = (string) $dbh->query('SELECT CURDATE()')->fetchColumn();
 
         if ($rcpt > $limit) {   // jedna wiadomość większa niż cały dzienny limit — nigdy nie przejdzie
-            error_log("mailpanel-policy: REJECT $user ($rcpt odbiorcow w jednej wiadomosci, limit $limit)");
+            error_log("mailpanel-policy: REJECT $user ($rcpt recipients in one message, limit $limit)");
             respond('REJECT ' . strtr(texts(siteLanguage($dbh))['reject_big'], [':limit' => (string) $limit]));
             continue;
         }
@@ -230,7 +232,7 @@ while (($line = fgets(STDIN)) !== false) {
                         sendLimitNotice($user, $limit, $cnt, siteLanguage($dbh));
                     }
                 } catch (Throwable $e) {
-                    error_log('mailpanel-policy: powiadomienie nieudane: ' . $e->getMessage());
+                    error_log('mailpanel-policy: the notice failed: ' . $e->getMessage());
                 }
             }
             respond('REJECT ' . strtr(texts(siteLanguage($dbh))['reject_daily'], [':limit' => (string) $limit]));

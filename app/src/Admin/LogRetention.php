@@ -132,7 +132,7 @@ final class LogRetention
             }
             self::run($pdo, false, $now);
         } catch (Throwable $e) {
-            error_log('mailpanel: przechowywanie logów — sprzątanie nie powiodło się: ' . $e->getMessage());
+            error_log('mailpanel: log retention: the cleanup failed: ' . $e->getMessage());
         }
     }
 
@@ -150,7 +150,7 @@ final class LogRetention
             $pdo->prepare('INSERT INTO admin_audit_logs (admin_email, ip, action_type, details, created_at) VALUES (?, ?, ?, ?, NOW())')
                 ->execute([$admin, $ip, 'LOG_RETENTION', $details]);
         } catch (Throwable $e) {
-            error_log('mailpanel: wpis audytu przechowywania logów nie powiódł się: ' . $e->getMessage());
+            error_log('mailpanel: log retention: the audit entry failed: ' . $e->getMessage());
         }
     }
 

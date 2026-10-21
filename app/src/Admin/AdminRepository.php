@@ -10,13 +10,6 @@ final class AdminRepository
 {
     public function __construct(private PDO $pdo) {}
 
-    public function isAdminEmail(string $email): bool
-    {
-        $s = $this->pdo->prepare('SELECT 1 FROM panel_admins WHERE email = ?');
-        $s->execute([$email]);
-        return (bool) $s->fetchColumn();
-    }
-
     /** @return array{id:int,pwd_hash:string}|null */
     public function findByEmail(string $email): ?array
     {

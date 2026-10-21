@@ -172,7 +172,7 @@ $refusals = [
     'zmieniony nagłówek sekcji'               => replaceLine($base, '[sshd]', '[dovecot]'),
     'inna liczba linii'                       => $base . "extra = 1\n",
     'inna opcja w tej samej linii'            => replaceLine($base, 'findtime = 10m' . "\n" . 'maxretry = 5' . "\n" . 'ignoreip', 'findtime = 10m' . "\n" . 'bantime = 5' . "\n" . 'ignoreip'),
-    // 1.3.3: poprawny zapis, ale jail, który nigdy nie banuje ([DEFAULT] dziedziczy sshd i recidive)
+    // 1.4.0: poprawny zapis, ale jail, który nigdy nie banuje ([DEFAULT] dziedziczy sshd i recidive)
     'ignoreip 0.0.0.0/0 (cały internet)'      => replaceLine($base, '203.0.113.9', '0.0.0.0/0'),
     'ignoreip ::/0'                           => replaceLine($base, '203.0.113.9', '::/0'),
     'ignoreip 10.0.0.0/4 (szersza niż /8)'    => replaceLine($base, '203.0.113.9', '10.0.0.0/4'),
@@ -193,7 +193,7 @@ foreach ($refusals as $label => $prop) {
     ok(!is_file($h . '/calls.log'), "odrzucone ($label): fail2ban-client nie wywołany");
 }
 
-// 1.3.3: granice zakresów, które panel sam wpisuje — przyjęte
+// 1.4.0: granice zakresów, które panel sam wpisuje — przyjęte
 $accepted = [
     'ignoreip 10.0.0.0/8 i 2001:db8::/32'     => replaceLine($base, '203.0.113.9', '10.0.0.0/8 2001:db8::/32'),
     'maxretry 1'                              => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 1\nbantime = 1h"),

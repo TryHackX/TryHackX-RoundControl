@@ -6,7 +6,7 @@ namespace App\Support;
 final class Ip
 {
     /**
-     * The client's address. 1.3.3: an IPv4 client that a dual-stack socket reports as ::ffff:a.b.c.d is returned as
+     * The client's address. 1.4.0: an IPv4 client that a dual-stack socket reports as ::ffff:a.b.c.d is returned as
      * a.b.c.d, so one client has one form everywhere — in the stored rows (the registration limit counted 0 of such a
      * client's own registrations), in the trusted-address list and in the Fail2Ban log line (nftables bans the IPv4).
      */
@@ -27,10 +27,14 @@ final class Ip
         return $bin !== false ? $bin : inet_pton('::');
     }
 
+    /** An address typed by the admin or read from a list; 1.4.0: ::ffff:a.b.c.d becomes the 4-byte IPv4 (see raw()). */
     public static function toBin(string $ip): ?string
     {
         $bin = @inet_pton($ip);
-        return $bin === false ? null : $bin;
+        if ($bin === false) {
+            return null;
+        }
+        return strlen($bin) === 16 && substr($bin, 0, 12) === "\0\0\0\0\0\0\0\0\0\0\xff\xff" ? substr($bin, 12) : $bin;
     }
 
     public static function toStr(string $bin): ?string

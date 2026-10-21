@@ -87,7 +87,7 @@ final class RateLimiter
                 return $msg;
             }
         } catch (Throwable $e) {
-            error_log('mailpanel: limiter logowania niedostępny (fail-open): ' . $e->getMessage());
+            error_log('mailpanel: sign-in limiter unavailable (fail-open): ' . $e->getMessage());
         }
 
         return null;
@@ -117,7 +117,7 @@ final class RateLimiter
                 return false;
             }
         } catch (Throwable $e) {
-            error_log('mailpanel: limiter zapytań o nazwę niedostępny (fail-open): ' . $e->getMessage());
+            error_log('mailpanel: name-check limiter unavailable (fail-open): ' . $e->getMessage());
             return true;
         }
         $this->event('probe', '', $ipBin);
@@ -158,7 +158,7 @@ final class RateLimiter
             return ['ok' => true, 'msg' => '', 'code' => 'ok'];
         }
         if ($this->ipBlockedUntil($ip) !== null) {
-            return ['ok' => false, 'msg' => 'Twoje IP jest zablokowane.', 'code' => 'blocked'];
+            return ['ok' => false, 'msg' => t('rate.ip_blocked'), 'code' => 'blocked'];
         }
 
         $window     = Settings::int('ip_window_hours', 24) ?: 24;
@@ -167,19 +167,21 @@ final class RateLimiter
         $totalLimit = Settings::int('ip_total_limit', 0);
         [$lo, $hi]  = Ip::keyRange($ip);
 
+        // 1.4.0: the age of the last registration comes from the database clock (NOW() wrote created_at); PHP's
+        // strtotime() read it in APP_TIMEZONE, so with UTC on a Warsaw server the interval was 2 h longer than set.
         $s = $this->pdo->prepare(
-            'SELECT COUNT(*), MAX(created_at) FROM registration_events
+            'SELECT COUNT(*), TIMESTAMPDIFF(SECOND, MAX(created_at), NOW()) FROM registration_events
              WHERE ip BETWEEN ? AND ? AND LENGTH(ip) = ? AND status = "success" AND created_at > NOW() - INTERVAL ? HOUR'
         );
         $s->execute([$lo, $hi, strlen($lo), $window]);
-        $row  = $s->fetch(PDO::FETCH_NUM) ?: [0, null];
+        $row   = $s->fetch(PDO::FETCH_NUM) ?: [0, null];
         $count = (int) $row[0];
-        $last  = $row[1] ? strtotime((string) $row[1]) : false;
+        $age   = $row[1] === null ? null : (int) $row[1];
 
         if ($maxPerWin > 0 && $count >= $maxPerWin) {
             return ['ok' => false, 'msg' => t('rate.reg_window', ['hours' => $window]), 'code' => 'rate'];
         }
-        if ($minSeconds > 0 && $last !== false && (time() - $last) < $minSeconds) {
+        if ($minSeconds > 0 && $age !== null && $age < $minSeconds) {
             return ['ok' => false, 'msg' => t('rate.reg_interval'), 'code' => 'interval'];
         }
         if ($totalLimit > 0) {

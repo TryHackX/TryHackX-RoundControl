@@ -46,6 +46,23 @@ final class Quota
         return (int) min(round($mb), (float) self::MAX_MB);
     }
 
+    /**
+     * 1.4.0: a quota typed in a form, in MiB. '' = null (nothing typed); a negative or non-numeric value = false
+     * (refused); 0 = no limit (Dovecot's meaning, typed on purpose); any other value at least 1 MiB — 500 KiB used to
+     * round to 0 and -5 to 0, i.e. both silently became "no limit".
+     */
+    public static function parse(string $raw, string $unit): int|false|null
+    {
+        $raw = trim(str_replace(',', '.', $raw));
+        if ($raw === '') {
+            return null;
+        }
+        if (!is_numeric($raw) || (float) $raw < 0) {
+            return false;
+        }
+        return (float) $raw === 0.0 ? 0 : max(1, self::toMb((float) $raw, $unit));
+    }
+
     /** MiB -> [wartość, jednostka] do formularza (preferuje GiB, gdy podzielne). */
     public static function toBest(int $mb): array
     {
@@ -55,8 +72,12 @@ final class Quota
         return [$mb, 'MiB'];
     }
 
+    /** "1.5 GiB", "50 MiB"; 1.4.0: 0 = no limit is shown as "∞" (it read "0 MiB"). */
     public static function display(int $mb): string
     {
+        if ($mb <= 0) {
+            return '∞';
+        }
         return $mb >= 1024 ? round($mb / 1024, 2) . ' GiB' : $mb . ' MiB';
     }
 }

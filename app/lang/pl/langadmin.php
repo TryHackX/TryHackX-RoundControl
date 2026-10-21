@@ -31,7 +31,7 @@ return [
     'msg.lang.nothing_valid'     => 'Pakiet nie zawiera żadnego poprawnego tekstu (odrzucono :n kluczy: nieznane klucze, wartości inne niż tekst albo niedozwolona treść).',
     'msg.lang.uploaded'          => 'Wgrano język :code (:n tekstów).',
     'msg.lang.dropped'           => 'Odrzucono :n kluczy (nieznane albo z niedozwoloną treścią): :keys',
-    'msg.lang.deleted'           => 'Język :code usunięty.',
+    'msg.lang.deleted'           => 'Język :name usunięty.',
     'msg.lang.default_no_delete' => 'Nie można usunąć języka domyślnego.',
 
     'audit.lang_enabled'    => 'Włączono język :code',

@@ -63,6 +63,9 @@ final class PanelController
     /** Ile błędnych haseł administratora w oknach potwierdzenia (usuwanie konta, zmiana hasła) kończy sesję. */
     public const REAUTH_LIMIT = 5;
 
+    /** 1.4.0: the largest daily send limit (recipients per day) the panel stores; the column is a signed INT. */
+    private const MAX_SEND_LIMIT = 1000000;
+
     private const TPL = APP_ROOT . '/templates/panel';
 
     public function __construct()
@@ -184,7 +187,7 @@ final class PanelController
             };
         } catch (Throwable $e) {
             // Szczegóły (SQL, ścieżki) idą do logu serwera, nie do przeglądarki — poza trybem dev.
-            error_log(sprintf('panel: wyjątek w akcji POST: [%s] %s w %s:%d', $e::class, $e->getMessage(), $e->getFile(), $e->getLine()));
+            error_log(sprintf('panel: exception in a POST action: [%s] %s in %s:%d', $e::class, $e->getMessage(), $e->getFile(), $e->getLine()));
             $detail = $e instanceof \RuntimeException && !$e instanceof \PDOException ? $e->getMessage() : '';
             $this->error = $this->error ?: (Env::isDev()
                 ? t('msg.common.op_failed_dev', ['detail' => $e->getMessage()])
@@ -194,15 +197,32 @@ final class PanelController
         }
     }
 
+    /**
+     * 1.4.0: one numeric settings field. A missing, empty, non-numeric or below-minimum value keeps the stored one (such
+     * values used to be saved as 0 or below, and 0 means "no limit" for the send limit, the name hold, the quota and the
+     * Roundcube limits); a value above the maximum is cut to it.
+     */
+    private static function intField(string $name, int $min, int $max, int $current): int
+    {
+        $raw  = trim((string) ($_POST[$name] ?? ''));
+        $keep = max($min, min($max, $current));
+        if ($raw === '' || !is_numeric($raw) || (float) $raw < $min) {
+            return $keep;
+        }
+        return (float) $raw > $max ? $max : (int) round((float) $raw);   // compared as float: 1e30 must not wrap around
+    }
+
     private function saveSettings(): void
     {
         $allow = isset($_POST['registration_enabled']) ? '1' : '0';
         $recap = isset($_POST['recaptcha_enabled']) ? '1' : '0';
 
-        $quotaMb = Quota::toMb(
-            (float) ($_POST['mailbox_quota_value'] ?? 0),
-            Quota::normalizeUnit($_POST['mailbox_quota_unit'] ?? 'MB')
-        );
+        // 1.4.0: '' keeps the default, a negative or non-numeric quota is refused (both used to become 0 = no limit)
+        $quotaMb = Quota::parse((string) ($_POST['mailbox_quota_value'] ?? ''), Quota::normalizeUnit($_POST['mailbox_quota_unit'] ?? 'MB'));
+        $quotaError = $quotaMb === false ? t('msg.common.bad_quota') : '';
+        if (!is_int($quotaMb)) {
+            $quotaMb = Settings::int('mailbox_default_quota_mb', 1024);
+        }
 
         Settings::set('allow_registration', $allow);
         Settings::set('registration_enabled', $allow);
@@ -212,17 +232,17 @@ final class PanelController
         if (isset($_POST['reserved_local_parts'])) {
             Settings::set('reserved_local_parts', implode(',', Accounts::parseList((string) $_POST['reserved_local_parts'])));
         }
-        Settings::set('deleted_name_hold_days', (string) max(0, min(3650, (int) ($_POST['deleted_name_hold_days'] ?? 365))));
+        Settings::set('deleted_name_hold_days', (string) self::intField('deleted_name_hold_days', 0, 3650, Settings::int('deleted_name_hold_days', 365)));
         Settings::set('mailbox_default_quota_mb', (string) $quotaMb);
-        Settings::set('daily_send_limit', (string) max(0, (int) ($_POST['daily_send_limit'] ?? 0)));
-        $accPerIp = (string) max(1, (int) ($_POST['accounts_per_ip'] ?? 1));
+        Settings::set('daily_send_limit', (string) self::intField('daily_send_limit', 0, self::MAX_SEND_LIMIT, Settings::int('daily_send_limit', 50)));
+        $accPerIp = (string) self::intField('accounts_per_ip', 1, 1000, Settings::int('accounts_per_ip', 3));
         Settings::set('ip_max_accounts', $accPerIp);
         Settings::set('accounts_per_ip', $accPerIp);
-        Settings::set('ip_window_hours', (string) max(1, (int) ($_POST['ip_window_hours'] ?? 24)));
-        Settings::set('ip_total_limit', (string) max(1, (int) ($_POST['ip_total_limit'] ?? 999)));
+        Settings::set('ip_window_hours', (string) self::intField('ip_window_hours', 1, 8760, Settings::int('ip_window_hours', 24)));
+        Settings::set('ip_total_limit', (string) self::intField('ip_total_limit', 1, 100000, Settings::int('ip_total_limit', 15)));
 
         $extra = '';
-        if (isset($_POST['apply_quota_to_all'])) {
+        if (isset($_POST['apply_quota_to_all']) && $quotaError === '') {
             $count = $this->users->applyQuotaToAll($quotaMb);
             $extra = ' ' . t('msg.settings.quota_applied', ['count' => $count]);
             $this->refresh[] = 'users';
@@ -256,8 +276,8 @@ final class PanelController
             $this->values[$pid . '_secret_key'] = '';
         }
         $this->data['captcha_secret_set'] = array_map(static fn(array $k): bool => $k['secret_set'], $cap['keys']);
-        if ($captchaError !== '') {
-            $this->error = $captchaError;
+        if ($captchaError !== '' || $quotaError !== '') {
+            $this->error = trim($quotaError . ' ' . $captchaError);
         }
     }
 
@@ -308,7 +328,7 @@ final class PanelController
             $enable   = false;
             $errors[] = t('msg.captcha.enable_without_keys', ['provider' => t(Captcha::PROVIDERS[$provider])]);
         }
-        // 1.3.3: a secret the provider rejects outright is not switched on (only Turnstile says so; see secretRejectedIn).
+        // 1.4.0: a secret the provider rejects outright is not switched on (only Turnstile says so; see secretRejectedIn).
         // Not in dev mode: there the panel makes no outbound calls.
         if ($enable && !Env::isDev() && Captcha::secretRejectedIn($cfg) === true) {
             $enable   = false;
@@ -365,13 +385,16 @@ final class PanelController
             'total' => array_sum($n), 'audit' => $n['audit'], 'admin' => $n['admin_logins'], 'reg' => $n['registrations'],
             'user' => $n['user_logins'], 'send' => $n['send_counters'], 'del' => $n['deleted_accounts'],
         ]);
-        $this->refresh[] = 'audit';
+        // 1.4.0: the three log tables of the Logs tab (the cleanup prunes all of them)
+        $this->refresh = array_merge($this->refresh, ['audit', 'reg', 'admin']);
         $this->data['retention_last'] = LogRetention::lastText();
     }
 
     private function saveSecurity(): void
-    {        $maxLog = (string) max(1, (int) ($_POST['max_login_attempts'] ?? 5));
-        $banMin = (string) max(1, (int) ($_POST['ban_duration_minutes'] ?? 15));
+    {
+        // 1.4.0: ranges — beyond about 1e9 minutes NOW() - INTERVAL n MINUTE is NULL and the limiter silently counted 0
+        $maxLog = (string) self::intField('max_login_attempts', 1, 100, Settings::int('max_login_attempts', 5));
+        $banMin = (string) self::intField('ban_duration_minutes', 1, 43200, Settings::int('ban_duration_minutes', 15));
 
         Settings::set('admin_lock_threshold', $maxLog);
         Settings::set('max_login_attempts', $maxLog);
@@ -385,18 +408,18 @@ final class PanelController
 
     private function saveAntispam(): void
     {
-        $rcMax  = (int) ($_POST['rc_max_recipients'] ?? 0);
-        $rcMsg  = (int) ($_POST['pf_message_rate_limit'] ?? 0);
-        $pfConn = (int) ($_POST['pf_connection_rate_limit'] ?? 0);
-        $pfCnt  = (int) ($_POST['pf_connection_count_limit'] ?? 0);
+        // 1.4.0: the ranges config/panel_config.php and update-postfix-limits.sh accept (an empty field keeps the value;
+        // -5 used to be stored and reached Roundcube as 0 = no limit)
+        $rcMax  = self::intField('rc_max_recipients', 0, 100000, Settings::int('rc_max_recipients', 10));
+        $rcMsg  = self::intField('pf_message_rate_limit', 0, 999999, Settings::int('pf_message_rate_limit', 15));
+        $pfConn = self::intField('pf_connection_rate_limit', 0, 999999, Settings::int('pf_connection_rate_limit', 10));
+        $pfCnt  = self::intField('pf_connection_count_limit', 0, 999999, Settings::int('pf_connection_count_limit', 10));
 
         Settings::set('rc_max_recipients', (string) $rcMax);
-        Settings::set('rc_sendmail_delay', (string) (int) ($_POST['rc_sendmail_delay'] ?? 0));
-        Settings::set('rc_login_rate_limit', (string) (int) ($_POST['rc_login_rate_limit'] ?? 0));
-        Settings::set('pf_message_rate_limit', (string) $rcMsg);
-        Settings::set('pf_connection_rate_limit', (string) $pfConn);
-        Settings::set('pf_connection_count_limit', (string) $pfCnt);
+        Settings::set('rc_sendmail_delay', (string) self::intField('rc_sendmail_delay', 0, 86400, Settings::int('rc_sendmail_delay', 15)));
+        Settings::set('rc_login_rate_limit', (string) self::intField('rc_login_rate_limit', 0, 1000, Settings::int('rc_login_rate_limit', 3)));
 
+        // The Postfix values are stored only when they are in force: applied, or (no helper) saved for a manual apply.
         $failed = false;
         if (Commands::postfixAvailable()) {
             $r = Commands::postfixApply($rcMsg, $pfConn, $pfCnt);
@@ -410,6 +433,11 @@ final class PanelController
             }
         } else {
             $done = t('msg.antispam.saved_no_sudo');
+        }
+        if (!$failed) {
+            Settings::set('pf_message_rate_limit', (string) $rcMsg);
+            Settings::set('pf_connection_rate_limit', (string) $pfConn);
+            Settings::set('pf_connection_count_limit', (string) $pfCnt);
         }
 
         $this->audit->log('ANTISPAM_UPDATE', $failed
@@ -553,16 +581,27 @@ final class PanelController
             $this->refresh[] = 'users';
             return;
         }
-        $mb  = Quota::toMb(
-            (float) ($_POST['user_quota_value'] ?? 0),
-            Quota::normalizeUnit($_POST['user_quota_unit'] ?? 'MB')
-        );
-        $this->users->updateQuota($id, $mb);
-
+        // 1.4.0: both values checked before anything is written (a too large send limit failed AFTER the quota was saved)
+        $mb = Quota::parse((string) ($_POST['user_quota_value'] ?? ''), Quota::normalizeUnit($_POST['user_quota_unit'] ?? 'MB'));
+        if (!is_int($mb)) {
+            $this->error = t('msg.common.bad_quota');
+            return;
+        }
         // Indywidualny dzienny limit wysyłki: puste pole = globalny (NULL), 0 = bez limitu.
-        $limitRaw = trim((string) ($_POST['user_send_limit'] ?? ''));
-        $limit    = $limitRaw === '' ? null : max(0, (int) $limitRaw);
-        $this->users->updateSendLimit($id, $limit);
+        $limit = self::sendLimitFrom((string) ($_POST['user_send_limit'] ?? ''));
+        if ($limit === false) {
+            $this->error = t('msg.common.bad_send_limit', ['max' => self::MAX_SEND_LIMIT]);
+            return;
+        }
+        $this->pdo->beginTransaction();
+        try {
+            $this->users->updateQuota($id, $mb);
+            $this->users->updateSendLimit($id, $limit);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
 
         $this->audit->log('USER_QUOTA', Lang::site('audit.user_quota', [
             'email' => $email, 'id' => $id, 'quota' => Quota::display($mb), 'limit' => self::limitText($limit, true),
@@ -572,6 +611,16 @@ final class PanelController
         ]);
         $this->refresh[] = 'users';
         $this->data['id'] = $id;
+    }
+
+    /** 1.4.0: an account's daily send limit from a form: '' = null (the global one), 0..MAX_SEND_LIMIT, else false. */
+    private static function sendLimitFrom(string $raw): int|false|null
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+        return ctype_digit($raw) && strlen($raw) <= 7 && (int) $raw <= self::MAX_SEND_LIMIT ? (int) $raw : false;
     }
 
     /**
@@ -619,11 +668,30 @@ final class PanelController
             $this->error = t('msg.common.pass_policy');
             return;
         }
+        // 1.4.0: a new password for somebody else's mailbox = reading their mail — confirmed with the administrator's
+        // password, like deleting an account (a session left open is not enough)
+        $this->values = ['admin_confirm_password' => ''];
+        if ($this->reauth((string) ($_POST['admin_confirm_password'] ?? ''), Lang::site('audit.reauth_what_reset', ['email' => $email, 'id' => $id])) === null) {
+            if (!$this->ended) {
+                $this->error = $this->reauthFailedText();
+            }
+            return;
+        }
 
         $this->users->updatePassword($id, Password::dovecotHash($pass));
         $this->audit->log('USER_PASS_RESET', Lang::site('audit.user_pass_reset', ['email' => $email, 'id' => $id]));
         $this->success = t('msg.users.pass_reset', ['email' => $email]);
-        $this->values  = ['new_password' => '', 'new_password2' => ''];
+        $this->values  = ['new_password' => '', 'new_password2' => '', 'admin_confirm_password' => ''];
+    }
+
+    /** The message after a wrong administrator password in a confirmation (with the attempts left, if any). */
+    private function reauthFailedText(bool $deleting = false): string
+    {
+        $left = self::REAUTH_LIMIT - (int) ($_SESSION['reauth_fail'] ?? 0);
+        if ($deleting) {
+            return $left > 0 ? t('msg.users.delete_bad_pass_left', ['left' => $left]) : t('msg.users.delete_bad_pass');
+        }
+        return $left > 0 ? t('msg.reauth.bad_pass_left', ['left' => $left]) : t('msg.reauth.bad_pass');
     }
 
     private function banUserIp(): void
@@ -638,7 +706,10 @@ final class PanelController
             $this->error = t('msg.bans.trusted');
             return;
         }
-        $reason   = trim((string) ($_POST['ban_reason'] ?? Lang::site('audit.ban_reason_default')));
+        $reason   = trim((string) ($_POST['ban_reason'] ?? ''));
+        if ($reason === '') {                       // 1.4.0: an empty custom reason = the default, in the site language
+            $reason = Lang::site('audit.ban_reason_default');
+        }
         $note     = trim((string) ($_POST['ban_note'] ?? ''));
         $duration = (int) ($_POST['ban_duration'] ?? 60);
         if ($duration < 1 || $duration > 129600) {      // 1 minuta .. 90 dni
@@ -679,10 +750,7 @@ final class PanelController
         $what = Lang::site('audit.reauth_what_delete', ['email' => Accounts::normalize($email), 'id' => $id]);
         if ($this->reauth($pass, $what) === null) {
             if (!$this->ended) {
-                $left = self::REAUTH_LIMIT - (int) ($_SESSION['reauth_fail'] ?? 0);
-                $this->error = $left > 0
-                    ? t('msg.users.delete_bad_pass_left', ['left' => $left])
-                    : t('msg.users.delete_bad_pass');
+                $this->error = $this->reauthFailedText(true);
             }
             return;
         }
@@ -704,8 +772,10 @@ final class PanelController
         $extra    = [];   // zdania dopisywane do komunikatu (język administratora)
         $extraLog = [];   // te same zdania do dziennika audytowego (język serwisu)
         if ($r['aliases'] > 0) {
-            $extra[]    = t('msg.users.deleted_aliases', ['count' => $r['aliases']]);
-            $extraLog[] = Lang::site('msg.users.deleted_aliases', ['count' => $r['aliases']]);
+            // 1.4.0: which aliases went, not only how many — the panel cannot re-create them (no INSERT on virtual_aliases)
+            $rows = implode(', ', array_map(static fn(array $a): string => '#' . $a['id'] . ' ' . $a['source'] . ' → ' . $a['destination'], $r['removed']));
+            $extra[]    = t('msg.users.deleted_aliases', ['count' => $r['aliases']]) . ' (' . $rows . ')';
+            $extraLog[] = Lang::site('msg.users.deleted_aliases', ['count' => $r['aliases']]) . ' (' . $rows . ')';
         }
         if ($r['lists'] !== []) {
             $ids = implode(', ', array_map(static fn(array $a): string => '#' . $a['id'] . ' (' . $a['source'] . ')', $r['lists']));
@@ -723,6 +793,12 @@ final class PanelController
         } else {
             $filesOk = false;
             $files = ' ' . t('msg.users.delete_files_no_sudo');
+        }
+        // 1.4.0: the tombstone remembers files left on disk; the name is not given out again until they are moved
+        if ($filesOk) {
+            $this->users->markFilesLeft($email, false);
+        } else {
+            $files .= ' ' . t('msg.users.files_left_held', ['email' => $email]);
         }
 
         $delArgs = ['email' => $email, 'id' => $id];
@@ -786,14 +862,21 @@ final class PanelController
         $days    = Settings::int('deleted_name_hold_days', 365);
         $deleted = $users->deletedAt($email, $days);
         $to      = $users->aliasesPointingTo($email);
+        // 1.4.0: the old mailbox is still on disk (its move to the quarantine failed) — whatever the hold period says
+        $filesLeft = $users->filesLeft($email);
+        if ($filesLeft) {
+            $out['status'] = $out['status'] === 'free' ? 'held' : $out['status'];
+            $out['msg']    = $out['status'] === 'held' ? Lang::t('msg.name.held_files', [], $code) : $out['msg'];
+            $reasons[] = Lang::t('msg.name.why_files_left', ['email' => $email], $code);
+        }
         if ($deleted !== null) {
             $out['status'] = $out['status'] === 'free' ? 'held' : $out['status'];
-            $out['msg']    = $out['status'] === 'held' ? Lang::t('msg.name.held_deleted', [], $code) : $out['msg'];
+            $out['msg']    = $out['status'] === 'held' && !$filesLeft ? Lang::t('msg.name.held_deleted', [], $code) : $out['msg'];
             $reasons[] = Lang::t('msg.name.why_deleted', ['email' => $email, 'when' => substr($deleted, 0, 16), 'days' => $days], $code);
         }
         if ($to !== []) {
             $out['status'] = $out['status'] === 'free' ? 'held' : $out['status'];
-            $out['msg']    = $out['status'] === 'held' && $deleted === null ? Lang::t('msg.name.held_alias', [], $code) : $out['msg'];
+            $out['msg']    = $out['status'] === 'held' && $deleted === null && !$filesLeft ? Lang::t('msg.name.held_alias', [], $code) : $out['msg'];
             $list = implode(', ', array_map(
                 static fn(array $a): string => $a['exact'] ? $a['source'] : Lang::t('msg.name.list_item', ['source' => $a['source']], $code),
                 $to
@@ -814,10 +897,19 @@ final class PanelController
         $local  = Accounts::normalize((string) ($_POST['nu_local'] ?? ''));
         $domain = Accounts::normalize((string) ($_POST['nu_domain'] ?? ''));
         $pass   = (string) ($_POST['nu_password'] ?? '');
-        $quota  = Quota::toMb(
-            (float) ($_POST['nu_quota_value'] ?? 0),
-            Quota::normalizeUnit($_POST['nu_quota_unit'] ?? 'MB')
-        );
+        // 1.4.0: an empty quota = the default; a negative or non-numeric one is refused (it used to become 0 = no limit).
+        // The send limit is checked here too, before anything is written (a too large one failed after the INSERT).
+        $quota  = Quota::parse((string) ($_POST['nu_quota_value'] ?? ''), Quota::normalizeUnit($_POST['nu_quota_unit'] ?? 'MB'))
+            ?? Settings::int('mailbox_default_quota_mb', 1024);
+        $limit  = self::sendLimitFrom((string) ($_POST['nu_send_limit'] ?? ''));
+        if ($quota === false) {
+            $this->error = t('msg.common.bad_quota');
+            return;
+        }
+        if ($limit === false) {
+            $this->error = t('msg.common.bad_send_limit', ['max' => self::MAX_SEND_LIMIT]);
+            return;
+        }
 
         $users = new UserRepository($this->pdo);
 
@@ -862,6 +954,15 @@ final class PanelController
                 $this->error = t('msg.users.need_consent', ['email' => $email, 'why' => mb_strtolower($name['msg'])]);
                 return;
             }
+            // 1.4.0: taking a reserved or held name (admin@ and postmaster@ let a CA issue certificates for the domain)
+            // is confirmed with the administrator's password
+            $this->values = ['admin_confirm_password' => ''];
+            if ($this->reauth((string) ($_POST['admin_confirm_password'] ?? ''), Lang::site('audit.reauth_what_consent', ['email' => $email])) === null) {
+                if (!$this->ended) {
+                    $this->error = $this->reauthFailedText();
+                }
+                return;
+            }
             $override = true;
             // powód do dziennika audytowego w języku serwisu — oceniany TERAZ, przed utworzeniem konta (potem nazwa byłaby "zajęta")
             $overrideWhy = mb_strtolower($this->classifyName($users, $local, $email, Lang::defaultLanguage())['msg']);
@@ -871,9 +972,21 @@ final class PanelController
             $this->error = t('msg.users.domain_config');
             return;
         }
+        // 1.4.0: the old mailbox of this name is still on disk — move it to the quarantine first, or the new account
+        // would open the old mail
+        if ($users->filesLeft($email)) {
+            $f = Commands::mailboxDeleteAvailable() ? Commands::mailboxDelete($email) : ['ok' => false, 'code' => -1, 'out' => ''];
+            if (!$f['ok'] && $f['code'] !== 4) {
+                $this->error = t('msg.users.files_left_move_failed', ['email' => $email, 'detail' => $f['code'] === -1
+                    ? t('msg.users.delete_files_no_sudo') : Commands::mailboxDeleteMessage($f['code'])]);
+                return;
+            }
+            $this->users->markFilesLeft($email, false);
+            $this->audit->log('MAILBOX_FILES', Lang::site('audit.files_moved_on_create', ['email' => $email]));
+        }
 
         try {
-            $users->create($domainId, Password::dovecotHash($pass), $email, $quota);
+            $users->create($domainId, Password::dovecotHash($pass), $email, $quota, $limit);
         } catch (\PDOException $e) {
             if (($e->errorInfo[1] ?? 0) === 1062) {
                 $this->error = t('msg.users.exists_race', ['email' => $email]);
@@ -884,15 +997,7 @@ final class PanelController
         }
         $newId = (int) $this->pdo->lastInsertId();
 
-        // Indywidualny dzienny limit wysyłki (puste = globalny, 0 = bez limitu)
-        $limitRaw = trim((string) ($_POST['nu_send_limit'] ?? ''));
-        $limit = null;
-        if ($limitRaw !== '' && $newId > 0) {
-            $limit = max(0, (int) $limitRaw);
-            $this->users->updateSendLimit($newId, $limit);
-        }
-
-        $createArgs = ['email' => $email, 'quota' => $quota . 'MB', 'limit' => self::limitText($limit, true)];
+        $createArgs = ['email' => $email, 'quota' => Quota::display($quota), 'limit' => self::limitText($limit, true)];
         $this->audit->log('CREATE_USER', $override
             ? Lang::site('audit.create_user_override', $createArgs + ['why' => $overrideWhy])
             : Lang::site('audit.create_user', $createArgs));
@@ -935,6 +1040,12 @@ final class PanelController
             $this->error = t('msg.common.bad_ip');
             return;
         }
+        // 1.4.0: the same refusal as every other ban path — a manual banip skips Fail2Ban's ignoreip, and 127.0.0.1 in an
+        // all-ports jail (recidive) cuts PHP off from MariaDB and Roundcube off from IMAP
+        if ($this->isScanTrusted($ip)) {
+            $this->error = t('msg.bans.trusted');
+            return;
+        }
         if (!in_array($jail, Commands::fail2banJails(), true)) {
             $this->error = t('msg.f2b.bad_jail');
             return;
@@ -960,6 +1071,10 @@ final class PanelController
             $this->error = t('msg.common.bad_ip');
             return;
         }
+        if ($this->isScanTrusted($ip)) {          // 1.4.0: as in fail2banBanIp() (an empty "from" is a plain new ban)
+            $this->error = t('msg.bans.trusted');
+            return;
+        }
         $jails = Commands::fail2banJails();
         if (!in_array($to, $jails, true)) {
             $this->error = t('msg.f2b.bad_jail_to');
@@ -969,9 +1084,8 @@ final class PanelController
             $this->error = t('msg.f2b.bad_jail_from');
             return;
         }
-        if ($from !== '') {
-            Commands::fail2banUnban($from, $ip);
-        }
+        // 1.4.0: ban in the target jail FIRST, unban from the source only after that worked — the other order left the
+        // address banned nowhere when setting the ban time or the ban itself failed
 
         // Ban czasowy: przy przenoszeniu do panel-tempban można podać czas
         // (1h..3 miesiące) — ustawiany tak samo jak przy banie ze skanera.
@@ -987,17 +1101,20 @@ final class PanelController
             $durLog = Lang::site('msg.bans.for_dur', ['dur' => self::durationText($dur, true)]);
         }
 
-        if (Commands::fail2banBan($to, $ip)) {
-            $move = ['ip' => $ip, 'from' => $from, 'to' => $to];
-            $this->audit->log('MOVE_BAN', $durLog === ''
-                ? Lang::site('audit.move_ban', $move)
-                : Lang::site('audit.move_ban_for', $move + ['dur' => $durLog]));
-            $this->success = $durTxt === ''
-                ? t('msg.bans.moved', $move)
-                : t('msg.bans.moved_for', $move + ['dur' => $durTxt]);
-            $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
-        } else {
-            $this->error = t('msg.f2b.move_failed');
+        if (!Commands::fail2banBan($to, $ip)) {
+            $this->error = t('msg.f2b.move_failed');     // the address stays banned where it was
+            return;
+        }
+        $move = ['ip' => $ip, 'from' => $from, 'to' => $to];
+        $this->audit->log('MOVE_BAN', $durLog === ''
+            ? Lang::site('audit.move_ban', $move)
+            : Lang::site('audit.move_ban_for', $move + ['dur' => $durLog]));
+        $this->success = $durTxt === ''
+            ? t('msg.bans.moved', $move)
+            : t('msg.bans.moved_for', $move + ['dur' => $durTxt]);
+        $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
+        if ($from !== '' && $from !== $to && !Commands::fail2banUnban($from, $ip)) {
+            $this->error = t('msg.bans.moved_unban_failed', $move);   // now in both jails: harmless, but say so
         }
     }
 
@@ -1148,8 +1265,9 @@ final class PanelController
 
         $sent = 0;
         try {
-            $cst = $this->pdo->prepare('SELECT cnt FROM send_counters WHERE email = ? AND day = ?');
-            $cst->execute([$row['email'], date('Y-m-d')]);
+            // 1.4.0: "today" by the database clock, as the policy service writes it (PHP's APP_TIMEZONE may differ)
+            $cst = $this->pdo->prepare('SELECT cnt FROM send_counters WHERE email = ? AND day = CURDATE()');
+            $cst->execute([$row['email']]);
             $sent = (int) ($cst->fetchColumn() ?: 0);
         } catch (Throwable) {
             // brak tabeli/grantu (np. środowisko dev) — pokazujemy 0

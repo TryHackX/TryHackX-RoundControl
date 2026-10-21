@@ -103,7 +103,7 @@ ok(!Ip::inCidr('not-an-ip', '203.0.113.0/24') && !Ip::inCidr('1.2.3.4', 'garbage
 ok(Ip::isTrusted('203.0.113.7') && Ip::isTrusted('198.51.100.77') && Ip::isTrusted('2001:db8:1:9::1'), 'zaufane z pliku konfiguracji (adres, CIDR v4, CIDR v6)');
 ok(!Ip::isTrusted('203.0.113.8') && !Ip::isTrusted('127.0.0.1') && !Ip::isTrusted('::1'), 'inne i loopback NIE są zaufane dla limitów logowania');
 
-group('Ip::raw (1.3.3): klient IPv4 z gniazda dwustosowego (::ffff:a.b.c.d) ma jedną postać');
+group('Ip::raw (1.4.0): klient IPv4 z gniazda dwustosowego (::ffff:a.b.c.d) ma jedną postać');
 $remote = $_SERVER['REMOTE_ADDR'] ?? null;
 $_SERVER['REMOTE_ADDR'] = '::ffff:198.51.100.9';
 eq([Ip::raw(), Ip::bin()], ['198.51.100.9', inet_pton('198.51.100.9')], 'zapis kropkowy: IPv4 i 4 bajty (jak zwykły klient IPv4)');
@@ -286,7 +286,7 @@ $st = Captcha::panelState($cfgFor('turnstile'));
 ok($st['keys']['turnstile']['secret_set'] === true && !str_contains(json_encode($st), 'SECRET-'), 'stan panelu: "sekret zapisany", ale nie sam sekret');
 Captcha::$transport = null;
 
-group('Captcha::secretRejectedIn (1.3.3): sekret odrzucony przez dostawcę nie jest włączany');
+group('Captcha::secretRejectedIn (1.4.0): sekret odrzucony przez dostawcę nie jest włączany');
 $seen = [];
 Captcha::$transport = static function (string $url, array $f) use (&$seen): ?array {
     $seen = $f + ['url' => $url];
@@ -305,7 +305,7 @@ ok(isset($seen['sitekey']), 'hCaptcha: klucz witryny wysłany razem z sekretem')
 eq(Captcha::secretRejectedIn($cfgFor('recaptcha', ['recaptcha_secret' => 'NET'])), null, 'brak odpowiedzi -> nie wiadomo (null)');
 Captcha::$transport = null;
 
-group('Commands::sanitize (1.3.3): wartości formularza Fail2Ban w zakresach, które przyjmuje helper roota');
+group('Commands::sanitize (1.4.0): wartości formularza Fail2Ban w zakresach, które przyjmuje helper roota');
 $san = static fn(string $v, string $type): string => (new ReflectionMethod(App\System\Commands::class, 'sanitize'))->invoke(null, $v, $type);
 eq([$san('', 'retry'), $san('', 'time'), $san('', 'bantime'), $san('', 'float'), $san('', 'ip_list')], ['', '', '', '', ''], 'puste pole = opcja bez zmian (wcześniej maxretry 0, czasy 10m, factor 1)');
 eq([$san('0', 'retry'), $san('5', 'retry'), $san('999999', 'retry')], ['1', '5', '100'], 'maxretry przycięte do 1..100');

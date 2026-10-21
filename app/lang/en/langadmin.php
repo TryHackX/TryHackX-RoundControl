@@ -31,7 +31,7 @@ return [
     'msg.lang.nothing_valid'     => 'The pack contains no valid text (:n keys rejected: unknown keys, non-text values or content that is not allowed).',
     'msg.lang.uploaded'          => 'Uploaded language :code (:n texts).',
     'msg.lang.dropped'           => 'Rejected :n keys (unknown or with content that is not allowed): :keys',
-    'msg.lang.deleted'           => 'Language :code deleted.',
+    'msg.lang.deleted'           => 'Language :name deleted.',
     'msg.lang.default_no_delete' => 'The default language cannot be deleted.',
 
     'audit.lang_enabled'    => 'Enabled language :code',

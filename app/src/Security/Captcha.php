@@ -106,7 +106,7 @@ final class Captcha
         $json = self::post(self::VERIFY[$provider], $fields);
         if ($json === null || ($json['success'] ?? false) !== true) {
             if ($json !== null && isset($json['error-codes']) && is_array($json['error-codes'])) {
-                error_log('[captcha] ' . $provider . ' odrzucił token: ' . implode(',', array_map('strval', $json['error-codes'])));
+                error_log('[captcha] ' . $provider . ' rejected the token: ' . implode(',', array_map('strval', $json['error-codes'])));
             }
             return false;
         }
@@ -123,7 +123,7 @@ final class Captcha
     }
 
     /**
-     * 1.3.3: does the active provider reject the saved secret? Asked with a token that cannot be valid. Cloudflare
+     * 1.4.0: does the active provider reject the saved secret? Asked with a token that cannot be valid. Cloudflare
      * Turnstile answers "invalid-input-secret" for a wrong secret; Google and hCaptcha check the token first and answer
      * "invalid-input-response" either way (checked 2026-10-21), so for them a wrong secret goes unnoticed here.
      * true = rejected, false = not rejected, null = no answer (network). Enabling CAPTCHA with a rejected secret locks
@@ -225,11 +225,6 @@ final class Captcha
         return $cfg;
     }
 
-    public static function active(): bool
-    {
-        return self::activeIn(self::config());
-    }
-
     /**
      * Stan dla formularza panelu — BEZ sekretów (tylko informacja, czy są zapisane).
      *
@@ -289,7 +284,7 @@ final class Captcha
             if ($json !== null) {
                 return $json;
             }
-            error_log('[captcha] weryfikacja, próba ' . $attempt . ': ' . ($err ?: 'błąd') . ' (' . parse_url($url, PHP_URL_HOST) . ')');
+            error_log('[captcha] verification, attempt ' . $attempt . ': ' . ($err ?: 'error') . ' (' . parse_url($url, PHP_URL_HOST) . ')');
         }
         return null;
     }

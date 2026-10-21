@@ -10,6 +10,12 @@ final class Password
     /** Minimalna długość hasła administratora panelu — niezależnie od (słabszej) polityki skrzynek. */
     public const ADMIN_MIN_LENGTH = 12;
 
+    /**
+     * 1.4.0: the longest password accepted anywhere. SHA-512-crypt's work grows with the length (100 KB took 24 s), and
+     * the public sign-up hashes what it is given. A sign-in with a longer password is answered as a wrong one, unchecked.
+     */
+    public const MAX_LENGTH = 256;
+
     /** Hasło administratora panelu: ta sama polityka co skrzynki, ale min. 12 znaków (i nie mniej niż polityka). */
     public static function meetsAdminPolicy(string $password): bool
     {
@@ -22,7 +28,8 @@ final class Password
      */
     public static function meetsPolicy(string $password, ?int $minLength = null): bool
     {
-        if (mb_strlen($password) < max($minLength ?? 0, Settings::int('pwd_min_length', 10))) {
+        $len = mb_strlen($password);
+        if ($len < max($minLength ?? 0, Settings::int('pwd_min_length', 10)) || $len > self::MAX_LENGTH) {
             return false;
         }
         if (Settings::bool('pwd_require_upper', true) && !preg_match('/[A-Z]/', $password)) {

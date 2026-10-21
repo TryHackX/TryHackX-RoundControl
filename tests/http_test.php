@@ -367,7 +367,7 @@ try {
     ok(($chk('-zla')['ok'] ?? true) === false, 'zły kształt nazwy: ok=false');
     $new = static fn(string $local, bool $consent) => $p->panel(['create_user' => '1', 'nu_local' => $local, 'nu_domain' => 'example.test',
         'nu_password' => 'Silne-Haslo-99!', 'nu_password2' => 'Silne-Haslo-99!', 'nu_quota_value' => '10', 'nu_quota_unit' => 'MiB']
-        + ($consent ? ['nu_allow_reserved' => '1'] : []))['json'] ?? [];
+        + ($consent ? ['nu_allow_reserved' => '1', 'admin_confirm_password' => $adminPw] : []))['json'] ?? [];   // 1.4.0: consent = re-auth
     $r = $new('postmaster', true);
     ok(($r['ok'] ?? true) === false && str_contains((string) ($r['error'] ?? ''), 'aliasu') && ($r['data']['name']['status'] ?? '') === 'alias',
         'załóż postmaster@ ZE zgodą: odmowa (alias), odpowiedź niesie ocenę nazwy dla okna');

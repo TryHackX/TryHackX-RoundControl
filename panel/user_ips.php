@@ -11,7 +11,7 @@ use App\Support\Database;
 use App\Support\Http;
 use App\Support\SecurityHeaders;
 
-SecurityHeaders::sendPanel();   // 1.3.3: the same headers as every panel response
+SecurityHeaders::sendPanel();   // 1.4.0: the same headers as every panel response
 // Te same reguły sesji co panel (bezczynność, czas życia, istnienie konta) — odpowiedź JSON 403 zamiast przekierowania.
 AdminGuard::ensure(true);
 session_write_close();   // endpoint tylko do odczytu: nie trzymamy blokady sesji
