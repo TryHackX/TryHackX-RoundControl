@@ -16,7 +16,7 @@ $hidden = '<input type="hidden" name="_csrf" value="' . Html::e($csrf) . '"><inp
 foreach ($lang['rows'] as $r):
     $c = Html::e($r['code']);
 ?>
-<tr>
+<tr data-code="<?= $c ?>">
     <td><span class="badge-type-local"><?= Html::e(strtoupper($r['code'])) ?></span></td>
     <td lang="<?= $c ?>"><?= Html::e($r['name']) ?>
         <?php if ($r['builtIn']): ?><span class="lang-builtin" title="<?= h('panel.lang.builtin_title') ?>"><?= h('panel.lang.builtin') ?></span><?php endif; ?>

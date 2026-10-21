@@ -247,7 +247,7 @@ try {
     // zaufane IP
     for ($i = 0; $i < 30; $i++) { $limiter->recordLoginFailure('admin', 'boss@example.test', inet_pton('198.51.100.99')); }
     ok($limiter->loginBlocked('boss@example.test', inet_pton('198.51.100.99')) === null, 'adres z SCAN_TRUSTED_IPS nie podlega limitom');
-    // 1.3.3: ani CAPTCHA przy logowaniu — droga administratora, gdy klucze CAPTCHA przestały działać
+    // 1.4.0: ani CAPTCHA przy logowaniu — droga administratora, gdy klucze CAPTCHA przestały działać
     App\Settings\Settings::set('captcha_provider', 'recaptcha');
     App\Settings\Settings::set('recaptcha_site_key', 'SITE-KEY');
     App\Settings\Settings::set('recaptcha_secret', 'SECRET-KEY');
@@ -329,7 +329,7 @@ try {
     eq($made, 3, 'IPv6: trzy konta z jednego /64, czwarte (inny adres w tym samym /64) odrzucone');
     $r = $reg('u5', '2001:db8:bbbb:8::1');
     ok(!empty($r['ok']), 'IPv6: inny /64 ma własny limit');
-    // 1.3.3: klient IPv4 z gniazda dwustosowego (::ffff:a.b.c.d) — wcześniej limit widział 0 jego rejestracji
+    // 1.4.0: klient IPv4 z gniazda dwustosowego (::ffff:a.b.c.d) — wcześniej limit widział 0 jego rejestracji
     $made = 0;
     foreach (['m1', 'm2', 'm3', 'm4'] as $n) {
         $r = $reg($n, '::ffff:198.51.100.77');

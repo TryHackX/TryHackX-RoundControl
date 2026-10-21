@@ -10,7 +10,7 @@
     --text-main: #e6e9ef;
     --text-label: #cbd5e1;
     --text-muted: #a3aac2;
-    --text-muted-dark: #64748b;
+    --text-muted-dark: #94a3b8;     /* 6.8:1 on the card (#64748b was 3.7:1) */
     --border-color: #2a3650;
     --border-focus: #2f6fed;
     --status-error: #ffb4b4;
@@ -52,15 +52,6 @@ body {
     perspective: 1200px;
     margin: clamp(24px, 10vh, 64px) auto 32px;
 	justify-content: center;
-}
-main:not(.scene) {
-    width: 100%;
-    max-width: 480px;
-    padding: 30px;
-    background: var(--bg-card);
-    border-radius: 16px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-    margin: clamp(24px, 10vh, 64px) auto 32px;
 }
 .card {
     grid-area: stack;
@@ -122,9 +113,6 @@ label {
     font-weight: 500;
     font-size: 14px;
     color: var(--text-label);
-}
-label#firstpass {
-    margin-top: 3px;
 }
 input,
 select {
@@ -300,7 +288,6 @@ button.btn-action[aria-busy="true"]:disabled {
     color: var(--status-success);
     border: 1px solid var(--status-success-border);
 }
-#login-status,
 #pass-match-status,
 #availability-status {
     font-size: 13px;
@@ -317,7 +304,6 @@ button.btn-action[aria-busy="true"]:disabled {
         transform 0.2s ease,
         color 0.2s ease;
 }
-#login-status.show,
 #pass-match-status.show,
 #availability-status.show {
     max-height: 40px;
@@ -361,12 +347,6 @@ button.btn-action[aria-busy="true"]:disabled {
     transform-origin: 0 0;
 }
 .captcha-box iframe { display: block; }
-.hidden {
-    display: none !important;
-}
-.fade-in {
-    animation: fadeIn 0.3s ease-out;
-}
 .user-profile {
     display: flex;
     align-items: center;
@@ -397,17 +377,10 @@ button.btn-action[aria-busy="true"]:disabled {
     cursor: pointer;
     font-size: 14px;
     padding: 2px 0;
+    min-height: 24px;
     text-align: left;
 }
 .change-user:hover { color: #fff; }
-.service-badge {
-    background: var(--primary-light);
-    color: var(--primary);
-    padding: 4px 8px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 600;
-}
 /* Kafelki wyboru usługi (dopiero po poprawnym haśle administratora) — prawdziwe <button>. */
 .choice-lead { margin-bottom: 4px; }
 .service-choices {
@@ -582,10 +555,6 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     outline-offset: 2px;
 }
 .service-card:focus-visible { border-color: var(--primary); }
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
 @media (max-width: 768px) {
     /* Telefon: cienki pasek z przełącznikiem języka nad kartą, karta z zaokrąglonymi rogami i odstępem od krawędzi
        (dawniej przylegała do górnej krawędzi z kwadratowymi rogami, a przycisk języka siedział na jej rogu). */
@@ -607,9 +576,6 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     /* ukryta karta (rejestracja / logowanie) nie zajmuje miejsca: inaczej wyższa karta rejestracji wydłużała stronę i
        spychała stopkę pod ekran (obie karty i tak zaczynają się u góry — przełączenie niczego nie przesuwa) */
     .card:not(.active):not(.leaving) { height: 0; min-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; }
-    main:not(.scene) {
-        margin-top: 0;
-    }
 }
 @media (max-width: 380px) {
     .email-group {
@@ -637,17 +603,6 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     opacity: 1;
     transform: scale(1);
     filter: blur(0);
-}
-/* klon starej treści nakładany na czas przejścia (selectTarget) */
-.step-ghost {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    z-index: 2;
-    pointer-events: none;
-    transition:
-        opacity 0.4s cubic-bezier(0.4, 0.0, 0.2, 1),
-        transform 0.4s cubic-bezier(0.4, 0.0, 0.2, 1),
-        filter 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 /* stary krok: odpływa powiększając się i blurując, nie zajmuje miejsca */
 .step-leaving {
@@ -736,7 +691,7 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
     font-size: 14px;
 }
 .lang-switch-list a:hover, .lang-switch-list a:focus-visible { background: var(--bg-hover); outline: none; }
-.lang-switch-list a[aria-current="true"] { color: var(--primary); font-weight: 600; }
+.lang-switch-list a[aria-current="true"] { color: #9bbcff; font-weight: 600; }   /* the accent is 3.8:1 on the card */
 .lang-switch-list .lang-switch-code { width: 24px; font-size: 11.5px; font-weight: 700; color: var(--text-muted); }
 
 /* Stopka: na samym dole strony (body to kolumna flex), bez numeru wersji na stronie publicznej. */
@@ -777,6 +732,11 @@ button:focus-visible, .service-card:focus-visible, .link-btn:focus-visible {
 @media (max-width: 380px) {
     body { padding-left: 8px; padding-right: 8px; }
     .card { padding: 22px 14px; }
+}
+
+/* Touch screens: the text-like buttons get a 32 px target */
+@media (pointer: coarse) {
+    .link-btn { min-height: 32px; }
 }
 
 /* Ograniczony ruch: bez rozmyć, skalowania i drgania — tylko natychmiastowa zmiana */

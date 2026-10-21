@@ -78,7 +78,7 @@ return [
     'panel.users.add'                => 'Dodaj użytkownika',
     'panel.users.search.label'       => 'Szukaj kont',
     'panel.users.search.placeholder' => 'Szukaj: e-mail, IP, data, użycie (np. >50%) — warunki łącz średnikiem ;',
-    'panel.users.search.hint'        => 'Np. <code>jan; 192.168.; 2026-07; &gt;50%; użycie &gt; 20 KiB; quota &gt;= 1 GiB</code> — wiersz musi spełnić każdy warunek (rozdzielaj średnikiem). Warunki użycia/procentu filtrują bieżącą stronę (dane z Dovecot).',
+    'panel.users.search.hint'        => 'Np. <code>jan; 192.168.; 2026-07; &gt;50%; użycie &gt; 20 KiB; quota &gt;= 1 GiB</code> — wiersz musi spełnić każdy warunek (rozdzielaj średnikiem). Warunki quota, użycia i procentu filtrują tylko bieżącą stronę (dane o użyciu z Dovecot).',
     'panel.users.total'              => 'Łącznie kont: <b>:n</b>',
     'panel.users.sort_hint_title'    => 'Kliknij nagłówek: sortuj. Przytrzymaj Shift i klikaj: sortowanie wielokolumnowe.',
     'panel.users.sort_hint'          => 'Shift+klik = sortuj po wielu kolumnach',
@@ -202,6 +202,7 @@ return [
     'panel.modal.reset.repeat'          => 'Powtórz nowe hasło',
     'panel.modal.reset.help'            => 'Zmiana natychmiastowa — przekaż nowe hasło użytkownikowi bezpiecznym kanałem. Aktywne sesje webmaila mogą wymagać ponownego logowania.',
     'panel.modal.reset.submit'          => 'Zmień hasło',
+    'panel.modal.reset.admin_password'  => 'Podaj hasło administratora, aby potwierdzić zmianę:',
 
     // --- okno: ban z listy kont (powody zapisywane w języku domyślnym serwisu — trafiają do bazy)
     'panel.modal.ban.title'              => 'Zbanuj adres IP',
@@ -244,6 +245,7 @@ return [
     'panel.modal.add.local_placeholder'    => 'nazwa',
     'panel.modal.add.domain'               => 'Domena',
     'panel.modal.add.allow_reserved'       => 'Rozumiem — załóż tę skrzynkę świadomie (zgoda trafi do dziennika audytowego)',
+    'panel.modal.add.admin_password'       => 'Podaj hasło administratora, aby potwierdzić zgodę:',
     'panel.modal.add.rules.title'          => 'Których nazw nie można użyć?',
     'panel.modal.add.rules.reserved'       => '<b>Zarezerwowane</b> — adresy ról (admin, postmaster, hostmaster, webmaster, abuse, noreply…) i lista z <i>Ustawienia → Rejestracja</i>. Rejestracja publiczna ich nie odda; Ty możesz je założyć <b>ze zgodą</b>.',
     'panel.modal.add.rules.recent'         => '<b>Niedawno usunięte</b> i <b>cele aliasów</b> — też ze zgodą (poczta adresowana do poprzedniego właściciela albo z aliasu trafi do nowej skrzynki).',

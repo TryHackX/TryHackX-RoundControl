@@ -46,15 +46,17 @@ $perSel = static fn(string $id, string $nav): string => '<label for="' . $id . '
  * Nagłówek sortowalnej kolumny: etykieta w jednej linii + wskaźnik o stałej szerokości (ikona; numer priorytetu
  * tylko przy sortowaniu po kilku kolumnach). $full = pełna nazwa, gdy etykieta jest skrótem (podpowiedź <abbr>).
  * Etykiety podawać jako teksty SUROWE (t()) — funkcja sama je escapuje.
+ * The sort control is a <button> in the cell (WAI-ARIA sortable table; aria-sort stays on the <th>), so $extra (the
+ * message-count sort) sits next to it instead of inside a focusable cell.
  */
 $th = static function (string $nav, string $col, string $label, string $sorted = '', string $extra = '', string $title = '', string $full = ''): string {
     $ind  = $sorted === '' ? '<i class="ri-arrow-up-down-line sort-placeholder"></i>'
         : '<i class="' . ($sorted === 'ASC' ? 'ri-arrow-up-line' : 'ri-arrow-down-line') . ' contrast-color"></i>';
     $aria = $sorted === '' ? '' : ' aria-sort="' . ($sorted === 'ASC' ? 'ascending' : 'descending') . '"';
     $text = $full !== '' ? '<abbr title="' . Html::e($full) . '">' . Html::e($label) . '</abbr>' : Html::e($label);
-    return '<th class="sortable" scope="col" data-nav="' . $nav . '" data-col="' . $col . '" data-label="' . Html::e($full ?: $label) . '" tabindex="0"' . $aria
-        . ($title !== '' ? ' title="' . Html::e($title) . '"' : '') . '><span class="th-inner"><span class="th-label">' . $text
-        . '</span><span class="sort-ind" aria-hidden="true">' . $ind . '</span>' . $extra . '</span></th>';
+    return '<th class="sortable" scope="col" data-nav="' . $nav . '" data-col="' . $col . '" data-label="' . Html::e($full ?: $label) . '"' . $aria
+        . '><span class="th-inner"><button type="button" class="th-sort"' . ($title !== '' ? ' title="' . Html::e($title) . '"' : '') . '><span class="th-label">' . $text
+        . '</span><span class="sort-ind" aria-hidden="true">' . $ind . '</span></button>' . $extra . '</span></th>';
 };
 /* Użycie: klik w nagłówek = sortuj po zajętym miejscu; ikonka koperty = po liczbie wiadomości (obie w obrębie strony —
    dane z Dovecot). */
@@ -71,7 +73,6 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
 <meta name="color-scheme" content="dark light">
 <title><?= h('panel.title') ?></title>
 <link href="<?= $av('vendor/remixicon/remixicon.css') ?>" rel="stylesheet">
-<link href="<?= $av('vendor/fontawesome/css/all.min.css') ?>" rel="stylesheet">
 <link rel="stylesheet" href="<?= $av('design-system.css') ?>">
 <link rel="stylesheet" href="<?= $av('panel.css') ?>">
 </head>
@@ -79,8 +80,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
       data-pwd-min="<?= (int) $pwd['min'] ?>"
       data-pwd-upper="<?= (int) $pwd['upper'] ?>"
       data-pwd-digit="<?= (int) $pwd['digit'] ?>"
-      data-pwd-spec="<?= (int) $pwd['spec'] ?>"
-      data-reauth-limit="<?= (int) $reauthLimit ?>">
+      data-pwd-spec="<?= (int) $pwd['spec'] ?>">
 
 <a class="skip-link" href="#main"><?= h('panel.skip_link') ?></a>
 
@@ -129,6 +129,8 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
     <!-- Komunikaty po akcjach z okien i list: wygląd alertu, nakładka przyklejona pod zakładkami
          (wysokość 0 — nie przesuwa treści), znika sama. Zapisy formularzy w kartach pokazują komunikat w swojej karcie. -->
     <div id="flash-dock" class="flash-dock" aria-live="polite"></div>
+    <?php /* list totals for screen readers, only after a search, page, sort or refresh the admin asked for (panel.js announceList) */ ?>
+    <div id="list-status" class="sr-only" role="status"></div>
 
     <!-- USTAWIENIA -->
     <section <?= $panel('settings') ?>>
@@ -272,7 +274,8 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
         <div class="help-text search-hint" id="user-search-hint"><?= html('panel.users.search.hint') ?></div>
         <div class="users-topbar">
             <div>
-                <span id="total-results-text" aria-live="polite"><?= html('panel.users.total', ['n' => (int) $lists['users']['total']]) ?></span>
+                <span id="total-results-text"><?= html('panel.users.total', ['n' => (int) $lists['users']['total']]) ?></span>
+                <span id="users-page-filter" class="page-filter-note" aria-live="polite" hidden></span>
                 <span class="sort-hint" title="<?= h('panel.users.sort_hint_title') ?>"><i class="ri-information-line" aria-hidden="true"></i> <?= h('panel.users.sort_hint') ?></span>
             </div>
             <div class="users-topbar-right"><?= $perSel('perPage', 'users') ?></div>
@@ -288,7 +291,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                     <th scope="col"><span class="th-inner"><?= h('panel.users.th.last_ip') ?></span></th>
                     <?= $th('users', 'quota', t('panel.users.th.quota')) ?>
                     <?= $th('users', 'usage', t('panel.users.th.usage'), '', $qsort, t('panel.users.th.usage_title')) ?>
-                    <th scope="col"><span class="th-inner"><?= h('panel.users.th.actions') ?></span></th>
+                    <th scope="col" class="col-actions"><span class="th-inner"><?= h('panel.users.th.actions') ?></span></th>
                 </tr></thead>
                 <tbody id="users-tbody"><?= $lists['users']['rows'] ?></tbody>
             </table>
@@ -371,7 +374,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
 
         <h2><i class="ri-history-line" aria-hidden="true"></i> <?= h('panel.logs.reg.title') ?></h2>
         <div class="users-topbar">
-            <div id="reg-total-text" aria-live="polite"><?= html('panel.logs.reg.total', ['n' => (int) $lists['reg']['total']]) ?></div>
+            <div id="reg-total-text"><?= html('panel.logs.reg.total', ['n' => (int) $lists['reg']['total']]) ?></div>
             <div class="users-topbar-right"><?= $perSel('regPerPage', 'reg') ?></div>
         </div>
         <div class="table-responsive" data-list="reg">
@@ -390,7 +393,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
         <hr class="safe-hr">
         <h2><i class="ri-shield-user-line" aria-hidden="true"></i> <?= h('panel.logs.admin.title') ?></h2>
         <div class="users-topbar">
-            <div id="admin-total-text" aria-live="polite"><?= html('panel.logs.admin.total', ['n' => (int) $lists['admin']['total']]) ?></div>
+            <div id="admin-total-text"><?= html('panel.logs.admin.total', ['n' => (int) $lists['admin']['total']]) ?></div>
             <div class="users-topbar-right"><?= $perSel('adminPerPage', 'admin') ?></div>
         </div>
         <div class="table-responsive" data-list="admin">
@@ -409,7 +412,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
         <hr class="safe-hr">
         <h2><i class="ri-file-shield-2-line" aria-hidden="true"></i> <?= h('panel.logs.audit.title') ?></h2>
         <div class="users-topbar">
-            <div id="audit-total-text" aria-live="polite"><?= html('panel.logs.audit.total', ['n' => (int) $lists['audit']['total']]) ?></div>
+            <div id="audit-total-text"><?= html('panel.logs.audit.total', ['n' => (int) $lists['audit']['total']]) ?></div>
             <div class="users-topbar-right">
                 <?= $perSel('auditPerPage', 'audit') ?>
                 <button type="button" class="btn btn-small btn-secondary" data-action="refresh-audit"><i class="ri-refresh-line" aria-hidden="true"></i> <?= h('panel.logs.audit.refresh') ?></button>
@@ -541,7 +544,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
 <div id="quotaModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="quotaModalTitle" hidden>
     <div class="modal-content">
         <div class="modal-header"><h2 id="quotaModalTitle"><i class="ri-hard-drive-2-line" aria-hidden="true"></i> <?= h('panel.modal.quota.title') ?></h2><?= $close('quotaModal') ?></div>
-        <form method="POST" data-ajax data-modal-form="quotaModal">
+        <form method="POST" data-ajax>
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="update_user_quota" value="1">
             <input type="hidden" name="_tab" value="users">
@@ -573,7 +576,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
 <div id="resetPassModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="resetPassTitle" hidden>
     <div class="modal-content">
         <div class="modal-header"><h2 id="resetPassTitle"><i class="ri-key-2-line" aria-hidden="true"></i> <?= h('panel.modal.reset.title') ?></h2><?= $close('resetPassModal') ?></div>
-        <form method="POST" data-ajax data-modal-form="resetPassModal">
+        <form method="POST" data-ajax>
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="reset_user_password" value="1">
             <input type="hidden" name="_tab" value="users">
@@ -597,6 +600,8 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                 <div id="rp_pass_match" class="avail-status" aria-live="polite"></div>
                 <div class="help-text"><?= h('panel.modal.reset.help') ?></div>
             </div>
+            <div class="password-confirm-group"><label for="rp_admin_pass"><?= h('panel.modal.reset.admin_password') ?></label><input type="password" id="rp_admin_pass" name="admin_confirm_password" required placeholder="<?= h('panel.modal.delete.password_placeholder') ?>" autocomplete="current-password" aria-describedby="rp_admin_help">
+                <div class="help-text" id="rp_admin_help"><?= h('panel.modal.delete.password_help', ['limit' => (int) $reauthLimit]) ?></div></div>
             <div id="rp_form_msg" class="form-msg" aria-live="assertive"></div>
             <div class="modal-footer"><button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="resetPassModal"><?= h('panel.common.cancel') ?></button><button type="submit" class="btn"><i class="ri-save-line" aria-hidden="true"></i> <?= h('panel.modal.reset.submit') ?></button></div>
         </form>
@@ -607,7 +612,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
 <div id="banModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="banModalTitle" hidden>
     <div class="modal-content">
         <div class="modal-header"><h2 id="banModalTitle"><i class="ri-forbid-line" aria-hidden="true"></i> <?= h('panel.modal.ban.title') ?></h2><?= $close('banModal') ?></div>
-        <form method="POST" data-ajax data-modal-form="banModal">
+        <form method="POST" data-ajax>
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="ban_user_ip" value="1">
             <input type="hidden" name="_tab" value="users">
@@ -644,7 +649,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
     <div class="modal-content">
         <div class="modal-header"><h2 id="deleteUserTitle" class="danger-title"><i class="ri-alarm-warning-line" aria-hidden="true"></i> <?= h('panel.modal.delete.title') ?></h2><?= $close('deleteUserModal') ?></div>
         <div class="delete-warning-box" id="deleteUserWhat">
-            <?= html('panel.modal.delete.warning', ['days' => (int) $s['deleted_name_hold_days']]) ?>
+            <?= strtr(html('panel.modal.delete.warning'), [':days' => '<b data-bind="deleted_name_hold_days">' . (int) $s['deleted_name_hold_days'] . '</b>']) ?>
         </div>
         <ul class="delete-details-list">
             <li><span><?= h('panel.modal.delete.id') ?></span> <strong id="del_user_id_display"></strong></li>
@@ -655,7 +660,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                 <?php else: ?><span class="badge badge-danger"><?= h('panel.modal.delete.stays') ?></span><?php endif; ?>
             </li>
         </ul>
-        <form method="POST" data-ajax data-modal-form="deleteUserModal" data-busy-label="<?= h('panel.modal.delete.busy') ?>">
+        <form method="POST" data-ajax data-busy-label="<?= h('panel.modal.delete.busy') ?>">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="delete_user_confirm" value="1">
             <input type="hidden" name="_tab" value="users">
@@ -674,7 +679,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
 <div id="addUserModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="addUserTitle" hidden>
     <div class="modal-content">
         <div class="modal-header"><h2 id="addUserTitle"><i class="ri-user-add-line" aria-hidden="true"></i> <?= h('panel.modal.add.title') ?></h2><?= $close('addUserModal') ?></div>
-        <form method="POST" data-ajax data-modal-form="addUserModal" autocomplete="off">
+        <form method="POST" data-ajax autocomplete="off">
             <input type="hidden" name="_csrf" value="<?= Html::e($csrf) ?>">
             <input type="hidden" name="create_user" value="1">
             <input type="hidden" name="_tab" value="users">
@@ -699,6 +704,9 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                     <input type="checkbox" name="nu_allow_reserved" id="nu_allow_reserved" value="1">
                     <label for="nu_allow_reserved"><?= h('panel.modal.add.allow_reserved') ?></label>
                 </div>
+                <?php /* shown, enabled and required only while the consent above is ticked (panel.js nuSyncAdmin) */ ?>
+                <div class="password-confirm-group" id="nu_admin_wrap" hidden><label for="nu_admin_pass"><?= h('panel.modal.add.admin_password') ?></label><input type="password" id="nu_admin_pass" name="admin_confirm_password" disabled placeholder="<?= h('panel.modal.delete.password_placeholder') ?>" autocomplete="current-password" aria-describedby="nu_admin_help">
+                    <div class="help-text" id="nu_admin_help"><?= h('panel.modal.delete.password_help', ['limit' => (int) $reauthLimit]) ?></div></div>
                 <details class="name-rules">
                     <summary><?= h('panel.modal.add.rules.title') ?></summary>
                     <ul>
@@ -730,7 +738,12 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
                 <label for="nu_quota_value"><?= h('panel.modal.add.quota') ?></label>
                 <div class="quota-input-group">
                     <input type="number" name="nu_quota_value" id="nu_quota_value" step="1" min="0" value="<?= (int) $s['mailbox_quota_value'] ?>">
-                    <select name="nu_quota_unit" aria-label="<?= h('panel.modal.unit') ?>"><option value="MiB" selected>MiB</option><option value="GiB">GiB</option></select>
+                    <?php /* the default's own unit (1 GiB is "1" + GiB, not "1" + MiB); panel.js keeps both in step with Settings */ ?>
+                    <select name="nu_quota_unit" id="nu_quota_unit" aria-label="<?= h('panel.modal.unit') ?>">
+                        <?php foreach (['KiB', 'MiB', 'GiB'] as $nuUnit): ?>
+                            <option value="<?= $nuUnit ?>" <?= $s['mailbox_quota_unit'] === $nuUnit ? 'selected' : '' ?>><?= $nuUnit ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
             </div>
             <div class="form-group">
@@ -812,7 +825,7 @@ $sendHelp = strtr(html('panel.modal.send_limit.help'), [':limit' => '<b data-bin
         <p id="confirm_msg" class="confirm-msg"></p>
         <div class="form-msg" id="confirm_form_msg" aria-live="assertive"></div>
         <div class="modal-footer modal-footer--center">
-            <button type="button" class="btn btn-secondary" data-action="modal-close" data-modal="confirmModal"><?= h('panel.common.cancel') ?></button>
+            <button type="button" class="btn btn-secondary" id="confirm_cancel" data-action="modal-close" data-modal="confirmModal"><?= h('panel.common.cancel') ?></button>
             <button type="button" class="btn" id="confirm_ok"><i class="ri-check-line" aria-hidden="true"></i> <?= h('panel.modal.confirm.ok') ?></button>
         </div>
     </div>

@@ -48,7 +48,9 @@ final class Pagination
             . ($active ? ' aria-current="page"' : '') . ($off ? ' disabled' : '') . ($aria !== '' ? ' aria-label="' . $aria . '"' : '') . '>' . $text . '</button>';
 
         // Teksty z plików językowych idą do HTML-a przez h() (całość escapowana — także z pakietów językowych z zewnątrz).
-        $html  = '<div class="pagination-info" aria-live="polite">'
+        // 1.4.0: no aria-live here — panel.js replaces this element on every load; #list-status announces the list
+        // only after the admin changed it (search, page, sort, Refresh)
+        $html  = '<div class="pagination-info">'
             . h('pager.range', ['label' => $label, 'from' => $from, 'to' => $to, 'total' => $total]) . '</div>';
         $html .= '<nav class="pagination-controls" aria-label="' . h('pager.nav_label') . '">';
 

@@ -626,6 +626,76 @@ try {
     ok(str_contains($r['body'], '<html lang="pl">') && str_contains($r['body'], 'Logowanie'), 'default_language = pl (aktualizacja produkcji): portal po polsku');
     $log = (string) @file_get_contents($tmp . '/server.log');
     ok(!preg_match('/PHP (Warning|Notice|Deprecated|Fatal)/', $log), 'serwer: brak ostrzeżeń PHP' . (preg_match('/PHP (Warning|Notice|Deprecated|Fatal)[^\n]*/', $log, $mm) ? ' — ' . $mm[0] : ''));
+
+    group('1.4.0: panel — okno nowego konta z jednostką domyślnego limitu, pola hasła administratora, teksty odświeżane bez przeładowania');
+    $logFrom = strlen((string) @file_get_contents($tmp . '/server.log'));
+    require_once $root . '/app/src/Panel/Quota.php';
+    [$pu, ] = $login('solo@example.test', $adminPw);
+    // add-user quota as rendered: the unit options, the selected one(s) and the number
+    $nuQuota = static function (string $html): array {
+        preg_match('~<select name="nu_quota_unit"[^>]*>(.*?)</select>~s', $html, $sel);
+        preg_match_all('~<option value="([^"]*)"\s*(selected)?~', $sel[1] ?? '', $opt, PREG_SET_ORDER);
+        preg_match('~<input[^>]*id="nu_quota_value"[^>]*value="([^"]*)"~', $html, $val);
+        return [
+            array_map(static fn(array $o): string => $o[1], $opt),
+            array_values(array_map(static fn(array $o): string => $o[1], array_filter($opt, static fn(array $o): bool => ($o[2] ?? '') !== ''))),
+            $val[1] ?? null,
+        ];
+    };
+    foreach ([2048, 1536] as $defMb) {
+        $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('mailbox_default_quota_mb', '$defMb')");
+        [$bestValue, $bestUnit] = \App\Panel\Quota::toBest($defMb);
+        [$units, $selected, $value] = $nuQuota($pu->page('/panel/index.php?tab=users')['body']);
+        eq($units, ['KiB', 'MiB', 'GiB'], "domyślny limit $defMb MiB: okno nowego konta ma te same jednostki co Ustawienia");
+        eq($selected, [$bestUnit], "... wybrana jednostka = Quota::toBest($defMb)[1] (dawniej zawsze MiB: 1 GiB dawało 1 MiB)");
+        eq($value, (string) $bestValue, '... liczba = Quota::toBest()[0]');
+        $local = 'nowe.konto.' . $defMb;
+        $r = $pu->panel(['create_user' => '1', 'nu_local' => $local, 'nu_domain' => 'example.test', 'nu_password' => 'Silne-Haslo-99!',
+            'nu_password2' => 'Silne-Haslo-99!', 'nu_quota_value' => (string) $value, 'nu_quota_unit' => $selected[0] ?? ''])['json'] ?? [];
+        eq([$r['ok'] ?? null, $count('SELECT quota_mb FROM virtual_users WHERE email = ?', [$local . '@example.test'])], [true, $defMb],
+            '... konto założone z wartościami okna dostaje dokładnie domyślny limit');
+    }
+    $pg = $pu->page('/panel/index.php?tab=users')['body'];
+    ok(str_contains($pg, '<b data-bind="deleted_name_hold_days">' . (int) $setting('deleted_name_hold_days') . '</b>'),
+        'okno usuwania: dni blokady nazwy z data-bind (zapis Ustawień zmienia tekst bez przeładowania)');
+    preg_match('~<div id="resetPassModal".*?</form>~s', $pg, $rp);
+    ok(preg_match('~<input type="password" id="rp_admin_pass" name="admin_confirm_password" required[^>]*autocomplete="current-password"~', $rp[0] ?? '') === 1,
+        'reset hasła skrzynki: wymagane pole hasła administratora (current-password) w formularzu resetu');
+    preg_match('~<div id="addUserModal".*?</form>~s', $pg, $au);
+    ok(preg_match('~id="nu_admin_wrap" hidden>.*?<input type="password" id="nu_admin_pass" name="admin_confirm_password" disabled~s', $au[0] ?? '') === 1,
+        'nowe konto: pole hasła administratora ukryte i wyłączone (wysyłane tylko przy zgodzie na nazwę zarezerwowaną)');
+    ok(!str_contains($pg, 'fontawesome') && !is_dir($root . '/assets/vendor/fontawesome') && !str_contains($pg, 'data-modal-form') && !str_contains($pg, 'data-reauth-limit'),
+        'bez nieużywanego Font Awesome (plik i <link>) i bez martwych atrybutów');
+    $sortTh = preg_match_all('~<th class="sortable"[^>]*>~', $pg, $thm);
+    ok($sortTh > 0 && !str_contains(implode('', $thm[0]), 'tabindex') && substr_count($pg, '<button type="button" class="th-sort"') === $sortTh
+        && !preg_match('~<button type="button" class="th-sort"(?:(?!</button>).)*<button~s', $pg),
+        'nagłówki sortowania: przycisk w komórce (komórka bez fokusu, przycisk wiadomości obok, nie w środku)');
+    ok(!preg_match('~id="(?:total-results|reg-total|admin-total|audit-total)-text"[^>]*aria-live~', $pg) && str_contains($pg, '<div id="list-status" class="sr-only" role="status"></div>'),
+        'sumy list bez aria-live (odświeżenie w tle po zapisie nie jest odczytywane), osobny region statusu');
+    foreach (['203.0.113.50' => 90, '203.0.113.51' => 5] as $ip => $min) {
+        $pu->panel(['ban_user_ip' => '1', 'ban_ip' => $ip, 'ban_reason' => '', 'ban_note' => '', 'ban_duration' => (string) $min]);
+    }
+    $bans = (string) ($pu->get('/panel/index.php?ajax_fetch_bans=1')['json']['html'] ?? '');
+    ok(preg_match('~\(pozostało 1 h (?:29|30) min\)~u', $bans) === 1 && preg_match('~\(pozostało [45] min\)~u', $bans) === 1 && !preg_match('~\d(?:d|h|min)\b~u', $bans),
+        'lista blokad: czas do końca w jednym formacie (1 h 30 min, 5 min — zawsze ze spacją)');
+    foreach (['203.0.113.50', '203.0.113.51'] as $ip) {
+        $pu->panel(['unban_ip' => '1', 'ip' => $ip, 'unban_type' => 'local']);
+    }
+    $en = $pu->page('/panel/index.php?lang=en')['body'];
+    ok(str_contains($en, '>Sign out</button>') && str_contains($en, '>Sign in again</a>'), 'panel po angielsku: "Sign out" i "Sign in again" (jak "sign in again" w komunikatach serwera)');
+    $pu->page('/panel/index.php?lang=pl');
+    $bridge = static function (string $html): array {
+        preg_match('~<script type="application/json" id="i18n-data">(.*?)</script>~s', $html, $m);
+        return (array) (json_decode($m[1] ?? '', true)['strings'] ?? []);
+    };
+    $jsPanel = $bridge($pg);
+    ok(isset($jsPanel['scan.count.one'], $jsPanel['scan.count.few'], $jsPanel['scan.count.many'], $jsPanel['users.page_filter'], $jsPanel['users.page_filter_none'])
+        && !isset($jsPanel['ban.custom_reason']), 'teksty panelu dla JS: liczba IP ze skanera z odmianą, notka filtra strony; pusty własny powód bana wysyłany pusty');
+    $jsPortal = $bridge((new Client($base))->page('/portal.php')['body']);
+    ok(str_contains((string) ($jsPortal['net.bad_response'] ?? ''), ':status') && !isset($jsPortal['pwd.hide']),
+        'teksty portalu dla JS: błąd odpowiedzi serwera z kodem HTTP; przycisk hasła ma stałą nazwę (bez "Ukryj hasło")');
+    $tail = substr((string) @file_get_contents($tmp . '/server.log'), $logFrom);
+    ok(!preg_match('/PHP (Warning|Notice|Deprecated|Fatal)/', $tail), 'serwer: brak ostrzeżeń PHP w tej grupie' . (preg_match('/PHP (Warning|Notice|Deprecated|Fatal)[^\n]*/', $tail, $mm) ? ' — ' . $mm[0] : ''));
 } catch (Throwable $e) {
     ok(false, 'WYJĄTEK: ' . $e::class . ': ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
 }

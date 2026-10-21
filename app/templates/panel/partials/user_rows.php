@@ -22,7 +22,7 @@ foreach ($users as $u):
 ?>
 <tr data-id="<?= $id ?>">
     <td><?= $id ?></td>
-    <td><strong><?= $em ?></strong></td>
+    <td class="email-cell"><strong><?= $em ?></strong></td>
     <td><?= Html::e($u['created']) ?></td>
     <td><?= Html::e($u['last_login']) ?></td>
     <td>
@@ -50,11 +50,15 @@ foreach ($users as $u):
         </div>
     </td>
     <td class="usage-cell" data-email="<?= $em ?>"><span class="usage-wait">…</span></td>
-    <td>
+    <?php /* below 1440 px only the icons show (panel.css): the name stays in aria-label, title gives the same tooltip */
+    $aPass = h('rows.pass_aria', ['email' => (string) $u['email']]);
+    $aBan  = h('rows.ban_aria', ['email' => (string) $u['email']]);
+    $aDel  = h('rows.delete_aria', ['email' => (string) $u['email']]); ?>
+    <td class="col-actions">
         <div class="actions-col">
-            <button type="button" class="btn btn-small btn-secondary" data-action="reset-pass" data-id="<?= $id ?>" data-email="<?= $em ?>" aria-label="<?= h('rows.pass_aria', ['email' => (string) $u['email']]) ?>"><i class="ri-key-2-line" aria-hidden="true"></i> <?= h('rows.pass') ?></button>
-            <button type="button" class="btn btn-small btn-warning" data-action="ban" data-email="<?= $em ?>" aria-label="<?= h('rows.ban_aria', ['email' => (string) $u['email']]) ?>"><i class="ri-forbid-line" aria-hidden="true"></i> <?= h('rows.ban') ?></button>
-            <button type="button" class="btn btn-danger btn-small" data-action="delete" data-id="<?= $id ?>" data-email="<?= $em ?>" aria-label="<?= h('rows.delete_aria', ['email' => (string) $u['email']]) ?>"><i class="ri-delete-bin-line" aria-hidden="true"></i> <?= h('rows.delete') ?></button>
+            <button type="button" class="btn btn-small btn-secondary" data-action="reset-pass" data-id="<?= $id ?>" data-email="<?= $em ?>" aria-label="<?= $aPass ?>" title="<?= $aPass ?>"><i class="ri-key-2-line" aria-hidden="true"></i> <span class="btn-label"><?= h('rows.pass') ?></span></button>
+            <button type="button" class="btn btn-small btn-warning" data-action="ban" data-email="<?= $em ?>" aria-label="<?= $aBan ?>" title="<?= $aBan ?>"><i class="ri-forbid-line" aria-hidden="true"></i> <span class="btn-label"><?= h('rows.ban') ?></span></button>
+            <button type="button" class="btn btn-danger btn-small" data-action="delete" data-id="<?= $id ?>" data-email="<?= $em ?>" aria-label="<?= $aDel ?>" title="<?= $aDel ?>"><i class="ri-delete-bin-line" aria-hidden="true"></i> <span class="btn-label"><?= h('rows.delete') ?></span></button>
         </div>
     </td>
 </tr>

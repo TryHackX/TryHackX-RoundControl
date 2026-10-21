@@ -8,7 +8,7 @@ use function App\I18n\t;
 
 /** @var array<int,array> $bans */
 
-/** Pozostały czas do chwili $ts w zwięzłej formie (np. "2d 5h", "1h 12min"). */
+/** Time left until $ts, one format for every length: a space between number and unit ("2 d 5 h", "1 h 12 min", "5 min"). */
 $remaining = static function (int $ts): string {
     $d = $ts - time();
     if ($d <= 0) {
@@ -18,10 +18,10 @@ $remaining = static function (int $ts): string {
     $h    = intdiv($d % 86400, 3600);
     $m    = intdiv($d % 3600, 60);
     if ($days > 0) {
-        return $days . t('rows.unit_d') . ' ' . $h . t('rows.unit_h');
+        return $days . ' ' . t('rows.unit_d') . ' ' . $h . ' ' . t('rows.unit_h');
     }
     if ($h > 0) {
-        return $h . t('rows.unit_h') . ' ' . $m . t('rows.unit_min');
+        return $h . ' ' . t('rows.unit_h') . ' ' . $m . ' ' . t('rows.unit_min');
     }
     return max(1, $m) . ' ' . t('rows.unit_min');
 };

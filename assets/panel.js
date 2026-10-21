@@ -164,6 +164,7 @@
         if (!btn) return;
         if (on) {
             if (btn.dataset.busy === '1') return;
+            endSaved(btn);                                   // a "Saved" label still showing is not the button's label
             btn.dataset.busy = '1';
             btn.dataset.html = btn.innerHTML;
             btn.style.minWidth = btn.offsetWidth + 'px';     // ta sama szerokość — nic obok się nie przesuwa
@@ -183,10 +184,21 @@
 
     function flashSaved(btn) {
         if (!btn || REDUCED) return;
-        var html = btn.innerHTML;
+        endSaved(btn);
+        btn.dataset.label0 = btn.innerHTML;
         btn.classList.add('is-saved');
         btn.innerHTML = '<i class="ri-check-line" aria-hidden="true"></i> ' + t('btn.saved');
-        setTimeout(function () { btn.classList.remove('is-saved'); if (btn.dataset.busy !== '1') btn.innerHTML = html; }, 1500);
+        btn.dataset.savedTimer = String(setTimeout(function () { endSaved(btn); }, 1500));
+    }
+
+    // back from the temporary "Saved" label to the button's own label
+    function endSaved(btn) {
+        if (btn.dataset.label0 === undefined) return;
+        clearTimeout(+btn.dataset.savedTimer);
+        btn.classList.remove('is-saved');
+        btn.innerHTML = btn.dataset.label0;
+        delete btn.dataset.label0;
+        delete btn.dataset.savedTimer;
     }
 
     /* ---------------- Okna (dialogi) ---------------- */
@@ -202,6 +214,7 @@
     function openModal(id, focusId) {
         var m = $(id);
         if (!m || !m.hidden) return;
+        if (expired) { toast('err', t('session.expired')); return; }   // nothing can be saved any more
         modalStack.push({ id: id, opener: document.activeElement });
         m.hidden = false;
         body.classList.add('modal-open');
@@ -332,6 +345,7 @@
      * Wczytaj stronę listy w miejscu.
      * opts.paging = true: zmiana strony (wysokość trzymana), opts.focusPage = przywróć fokus na paginacji,
      * opts.flash = id wiersza do podświetlenia (users).
+     * opts.announce = the admin changed the list (search, page, sort, refresh): read its totals out (announceList).
      */
     function loadList(nav, opts) {
         opts = opts || {};
@@ -360,6 +374,7 @@
             if (d.page) state[nav].page = d.page;
             renderSortHeaders(nav);
             if (nav === 'users') afterUsersRendered(opts.flash);
+            if (opts.announce) announceList(nav);
             if (opts.focusPage) {
                 var act = $(LIST[nav].pag).querySelector('.pagination-btn.active');
                 if (act) act.focus({ preventScroll: true });
@@ -367,6 +382,17 @@
         }).catch(function () {
             if (my === seq[nav]) toast('err', t('list.load_offline'));
         }).then(function () { if (my === seq[nav]) release(); });
+    }
+
+    /* Totals of a list the admin searched, paged, sorted or refreshed go to the status region (#list-status). The totals
+       themselves are not live regions: background refreshes after a save would be read out next to the save message. */
+    function announceList(nav) {
+        var box = $('list-status');
+        if (!box) return;
+        var text = [$(LIST[nav].total), $(LIST[nav].pag).querySelector('.pagination-info')]
+            .filter(Boolean).map(function (el) { return el.textContent.replace(/\s+/g, ' ').trim(); }).filter(Boolean).join('. ');
+        box.textContent = '';                                     // the same text again is read again
+        setTimeout(function () { box.textContent = text; }, 60);
     }
 
     var loadUsers = function (o) { return loadList('users', o); };
@@ -420,7 +446,9 @@
         if (r.indexOf('users') > -1) loadUsers({ paging: true, flash: extra && extra.flash });
         if (r.indexOf('bans') > -1) refreshBans();
         if (r.indexOf('stats') > -1) loadStats();
-        if ((d && (d.ok || d.done)) || r.indexOf('audit') > -1) loadAudit({ paging: true });
+        if (r.indexOf('reg') > -1) loadReg({ paging: true });
+        if (r.indexOf('admin') > -1) loadAdmin({ paging: true });
+        if ((d && (d.ok || d.done || d.msg)) || r.indexOf('audit') > -1) loadAudit({ paging: true });
     }
 
     /* ---------------- Wyszukiwanie kont ---------------- */
@@ -503,8 +531,8 @@
     function userRows() { return Array.prototype.slice.call(document.querySelectorAll('#users-tbody tr:not(.empty-row)')); }
 
     function applyUserFilters() {
-        var crit = state.users.filters;
-        userRows().forEach(function (tr) {
+        var crit = state.users.filters, rows = userRows(), shown = 0;
+        rows.forEach(function (tr) {
             if (!crit.length) { tr.classList.remove('row-filtered'); return; }
             var cell = tr.querySelector('.usage-cell');
             var q = cell ? usageCache[cell.dataset.email] : null;
@@ -515,7 +543,28 @@
                 return c.target === 'pct' ? cmpOp(q.pct, c.op, c.val) : cmpOp(q.used_kb, c.op, c.val);
             });
             tr.classList.toggle('row-filtered', !show);
+            if (show) shown++;
         });
+        pageFilterNote(crit.length ? shown : -1, rows.length);
+    }
+
+    /* Quota / usage conditions filter only the rows of this page (totals and pages stay the server's): say how many rows
+       match, and say it in the table when none does. shown < 0 = no such condition. */
+    function pageFilterNote(shown, all) {
+        var note = $('users-page-filter'), tb = $('users-tbody');
+        var empty = tb.querySelector('tr.page-filter-empty');
+        if (note) {
+            note.hidden = shown < 0 || !all;
+            note.textContent = note.hidden ? '' : t('users.page_filter', { n: shown, m: all });
+        }
+        if (shown !== 0 || !all) { if (empty) tb.removeChild(empty); return; }
+        if (!empty) {
+            empty = document.createElement('tr');
+            empty.className = 'empty-row page-filter-empty';
+            empty.innerHTML = '<td colspan="9" class="empty-state-text"></td>';
+            tb.insertBefore(empty, tb.firstChild);
+        }
+        empty.firstChild.textContent = t('users.page_filter_none');
     }
 
     function loadQuotaUsage() {
@@ -621,7 +670,7 @@
             state.users.crit = [{ kind: kind, key: key, dir: first }];
         }
         renderSortHeaders('users');
-        if (usersSrvSort() !== before) loadUsers({ paging: true });
+        if (usersSrvSort() !== before) loadUsers({ paging: true, announce: true });
         else applyUnifiedSort();
     }
 
@@ -643,7 +692,7 @@
             st.sort = [{ field: field, dir: 'ASC' }];
         }
         renderSortHeaders(nav);
-        loaders[nav]({ paging: true });
+        loaders[nav]({ paging: true, announce: true });
     }
 
     function qVal(tr, key) {
@@ -743,15 +792,41 @@
         });
     }
 
+    /* Rows replaced under the keyboard focus (bans, languages, scanner results): the focus goes back to the control at the
+       same place in the same row (key = row attribute), else in the row now at that position or the nearest one with a
+       control, else to the fallback. hint = the control that started the action, when a busy state dropped the focus. */
+    function markRowFocus(box, key, hint) {
+        var ae = document.activeElement;
+        if ((!ae || ae === body) && hint) ae = hint;
+        var tr = box && ae && box.contains(ae) ? ae.closest('tr') : null;
+        if (!tr) return null;
+        return { key: tr.getAttribute(key), idx: Array.prototype.indexOf.call(box.querySelectorAll('tr'), tr), ctl: focusables(tr).indexOf(ae) };
+    }
+
+    function restoreRowFocus(box, mark, key, fallback) {
+        if (!mark) return;
+        var rows = Array.prototype.filter.call(box.querySelectorAll('tr'), function (tr) { return tr.offsetParent !== null; });
+        var at = Math.min(mark.idx, rows.length);
+        var order = rows.filter(function (tr) { return mark.key !== null && tr.getAttribute(key) === mark.key; })
+            .concat(rows.slice(at), rows.slice(0, at).reverse());
+        for (var i = 0; i < order.length; i++) {
+            var c = focusables(order[i]);
+            if (c.length) { c[Math.min(Math.max(mark.ctl, 0), c.length - 1)].focus({ preventScroll: true }); return; }
+        }
+        if (fallback) fallback.focus({ preventScroll: true });
+    }
+
     function refreshBans() {
         var release = holdLayout('bans', false);
         return getJSON(ENDPOINT + '?ajax_fetch_bans=1').then(function (d) {
             if (typeof d.html !== 'string') return;
-            $('bans-tbody').innerHTML = d.html;
+            var tb = $('bans-tbody'), mark = markRowFocus(tb, 'data-ip');
+            tb.innerHTML = d.html;
             if ($('stat-banned-ips')) setStat('stat-banned-ips', d.count);
             rebuildBansIndex();
             sortBansTable(bansSort ? bansSort.col : 0, false);
             applyBansFilter();
+            restoreRowFocus(tb, mark, 'data-ip', $('bans'));
             if (scan.agg && !scan.running) renderScanResults();
         }).catch(function () {}).then(release);
     }
@@ -771,7 +846,7 @@
         syncAdvClear(input);
         state.users.page = 1;
         showTab('users');
-        loadUsers();
+        loadUsers({ announce: true });
     }
 
     var advClear = { timer: null, input: null };
@@ -841,9 +916,17 @@
             .catch(function () { box.innerHTML = '<span class="usage-na">—</span>'; });
     }
 
-    function showBanModal(email) {
-        $('ban_user_email').value = email;
+    // every ban starts from the defaults: no note, duration or reason left over from the previous one
+    function resetBanForm() {
+        $('banModal').querySelector('form').reset();
+        $('custom_reason_group').hidden = true;
+        $('ban_reason_input').value = $('ban_reason_select').options[0].value;   // reset() keeps a hidden field's value
         formMsg($('banModal'), '');
+    }
+
+    function showBanModal(email) {
+        resetBanForm();
+        $('ban_user_email').value = email;
         var sel = $('ban_ip_select');
         sel.innerHTML = '<option value="">' + t('ban.ip.loading') + '</option>';
         tfetch('user_ips.php?email=' + encodeURIComponent(email)).then(readJson)
@@ -863,8 +946,8 @@
     }
 
     function showDirectBanModal(ip) {
+        resetBanForm();
         $('ban_user_email').value = t('ban.direct_email');
-        formMsg($('banModal'), '');
         var sel = $('ban_ip_select');
         sel.innerHTML = '';
         addOpt(sel, ip, ip, true);
@@ -897,7 +980,7 @@
         ok.innerHTML = '<i class="ri-check-line" aria-hidden="true"></i> ' + esc(o.okLabel || t('confirm.ok'));
         formMsg($('confirmModal'), '');
         confirmAction = o;
-        openModal('confirmModal', 'confirm_ok');
+        openModal('confirmModal', o.danger ? 'confirm_cancel' : 'confirm_ok');   // destructive: the safe choice has the focus
     }
 
     function runConfirm() {
@@ -909,17 +992,18 @@
             busy(ok, false);
             d = d || {};
             if (d.auth) return;
-            if (d.ok || d.done) {
+            // msg = something was done, even when a side step failed (then error comes too): report it like any save
+            if (d.ok || d.done || d.msg) {
                 confirmAction = null;
                 closeModal('confirmModal', true);
                 var under = topModal();      // potwierdzenie z wnętrza innego okna (np. usunięcie aliasu) — komunikat tam
                 if (under) formMsg(under, d.error || d.msg, d.error ? 'err' : 'ok');
                 else report(d, o.form);
                 if (o.after) o.after(d);
-                refreshAfter(d);
             } else {
                 formMsg($('confirmModal'), d.error || t('op.failed'));
             }
+            refreshAfter(d);
         });
     }
 
@@ -968,10 +1052,16 @@
     ];
     var scan = { running: false, finished: false, agg: null, banned: {}, failed: [], from: '', to: '' };
 
+    // YYYY-MM-DD in local time (toISOString() gives the UTC date: after local midnight that is still yesterday)
+    function localDate(d) {
+        var two = function (n) { return (n < 10 ? '0' : '') + n; };
+        return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate());
+    }
+
     function openScanner() {
         var f = $('scan_from'), t = $('scan_to');
-        if (!f.value) { var d = new Date(); d.setDate(d.getDate() - 7); f.value = d.toISOString().slice(0, 10); }
-        if (!t.value) { t.value = new Date().toISOString().slice(0, 10); }
+        if (!f.value) { var d = new Date(); d.setDate(d.getDate() - 7); f.value = localDate(d); }
+        if (!t.value) { t.value = localDate(new Date()); }
         rebuildBansIndex();
         if (scan.agg && !scan.running) renderScanResults();
         openModal('scannerModal', 'scan_run');
@@ -1060,33 +1150,37 @@
         if (bansIndex[ip]) {
             return '<div class="scan-ban-controls"><span class="scan-already" title="' + escAttr(t('scan.already_title')) + '">' +
                 '<i class="ri-shield-check-line" aria-hidden="true"></i> ' + t('scan.already', { label: esc(bansIndex[ip].label) }) + '</span>' +
-                '<button type="button" class="btn-action btn-manage" data-scan-unban="' + esc(ip) + '"><i class="ri-lock-unlock-line" aria-hidden="true"></i> ' + t('scan.unban') + '</button></div>';
+                '<button type="button" class="btn-action btn-manage" data-scan-unban="' + escAttr(ip) + '"><i class="ri-lock-unlock-line" aria-hidden="true"></i> ' + t('scan.unban') + '</button></div>';
         }
         return '<div class="scan-ban-controls"><select class="scan-ban-sel" aria-label="' + escAttr(t('scan.ban_kind', { ip: ip })) + '">' +
             '<option value="perma">' + t('scan.dur.perma') + '</option><option value="3600">' + t('scan.dur.1h') + '</option><option value="21600">' + t('scan.dur.6h') + '</option>' +
             '<option value="86400">' + t('scan.dur.24h') + '</option><option value="259200">' + t('scan.dur.3d') + '</option><option value="604800">' + t('scan.dur.7d') + '</option>' +
             '<option value="2592000">' + t('scan.dur.30d') + '</option><option value="7776000">' + t('scan.dur.3m') + '</option></select>' +
-            '<button type="button" class="btn-action btn-danger-action" data-scan-ban="' + esc(ip) + '"><i class="ri-forbid-line" aria-hidden="true"></i> ' + t('scan.ban') + '</button></div>';
+            '<button type="button" class="btn-action btn-danger-action" data-scan-ban="' + escAttr(ip) + '"><i class="ri-forbid-line" aria-hidden="true"></i> ' + t('scan.ban') + '</button></div>';
     }
 
-    function renderScanResults() {
+    // hint: the button that started a ban (see markRowFocus)
+    function renderScanResults(hint) {
         var box = $('scan_results');
         var rows = scanRows();
-        $('scan_status_count').textContent = t('scan.count', { n: rows.length, min: scanMin() });
+        var mark = markRowFocus(box, 'data-ip', hint);
+        $('scan_status_count').textContent = plural(rows.length, 'scan.count', { min: scanMin() });
         if (!rows.length) {
             box.innerHTML = '<p class="empty-state-text">' + (scan.finished ? t('scan.none') : t('scan.no_results_yet')) + '</p>';
+            restoreRowFocus(box, mark, 'data-ip', $('scan_run'));
             return;
         }
         var h = '<div class="table-responsive"><table><thead><tr><th scope="col">' + t('scan.col.ip') + '</th><th scope="col">' + t('scan.col.failed') +
             '</th><th scope="col">' + t('scan.col.services') + '</th><th scope="col">' + t('scan.col.block') + '</th></tr></thead><tbody>';
         rows.slice(0, 100).forEach(function (r) {
             var svc = Object.keys(r.services).map(function (s) { return s + ': ' + r.services[s]; }).join(', ');
-            h += '<tr><td class="scan-ip"><strong>' + esc(r.ip) + '</strong></td><td>' + r.total + '</td>' +
+            h += '<tr data-ip="' + escAttr(r.ip) + '"><td class="scan-ip"><strong>' + esc(r.ip) + '</strong></td><td>' + r.total + '</td>' +
                 '<td class="scan-svc">' + esc(svc) + '</td><td>' + scanActionCell(r.ip) + '</td></tr>';
         });
         h += '</tbody></table></div>';
         if (rows.length > 100) h += '<div class="help-text">' + t('scan.shown', { shown: 100, n: rows.length }) + '</div>';
         box.innerHTML = h;
+        restoreRowFocus(box, mark, 'data-ip', $('scan_run'));
     }
 
     function scanBan(btn, ip, mode, label) {
@@ -1096,7 +1190,7 @@
             if (d.auth) return;
             if (d.ok) {
                 scan.banned[ip] = d.label || label;
-                renderScanResults();
+                renderScanResults(btn);
                 refreshBans();
                 loadAudit({ paging: true });
                 scanNote(true, t('scan.banned_note', { ip: ip, label: d.label || label }));
@@ -1164,6 +1258,7 @@
         var wasOn = !allow.hidden;
         allow.hidden = !n.override;
         if (!n.override || !wasOn) $('nu_allow_reserved').checked = false;
+        nuSyncAdmin();
     }
 
     function nuResetName() {
@@ -1173,6 +1268,18 @@
         $('nu_reason_actions').innerHTML = '';
         $('nu_allow_wrap').hidden = true;
         $('nu_allow_reserved').checked = false;
+        nuSyncAdmin();
+    }
+
+    /* The consent to take a reserved or held name is confirmed with the administrator password: the field is shown and
+       required only while the consent is ticked; otherwise it is disabled, so it is neither checked nor sent. */
+    function nuSyncAdmin() {
+        var on = !$('nu_allow_wrap').hidden && $('nu_allow_reserved').checked;
+        var pass = $('nu_admin_pass');
+        $('nu_admin_wrap').hidden = !on;
+        pass.disabled = !on;
+        pass.required = on;
+        if (!on) pass.value = '';
     }
 
     function nuCheckAvailability() {
@@ -1189,7 +1296,8 @@
         nuSetAvail('loading', t('checking'));
         return getJSON(ENDPOINT + '?ajax_check_user=1&local=' + encodeURIComponent(local) + '&domain=' + encodeURIComponent(domain))
             .then(function (d) {
-                if (my !== nuSeq || d.auth) return;
+                if (my !== nuSeq) return;
+                if (d.auth) { nuResetName(); return; }
                 if (d.ok) renderNameStatus(d);
                 else { nuResetName(); nuName = { status: 'invalid' }; nuSetAvail('taken', '✗ ' + (d.msg || t('error'))); }
             })
@@ -1282,6 +1390,7 @@
         $('rp_user_email').value = email;
         $('rp_password').value = '';
         $('rp_password2').value = '';
+        $('rp_admin_pass').value = '';
         formMsg($('resetPassModal'), '');
         resetPwdUi('rp_pwd_bar', 'rp_pwd_reqs', 'rp_pass_match');
         openModal('resetPassModal', 'rp_password');
@@ -1372,6 +1481,13 @@
             if (sec && set[pid]) sec.placeholder = sec.dataset.placeholderSet || sec.placeholder;
         });
         captchaSwitch(form.querySelector('[data-captcha-switch]'));
+        // the saved default quota (value and unit, as the server stored it) is what "Add user" starts from: its
+        // form.reset() restores these defaults, unsaved edits in this form never reach it
+        var v = d.values || {};
+        if (v.mailbox_quota_value !== undefined && $('nu_quota_value')) {
+            $('nu_quota_value').defaultValue = v.mailbox_quota_value;
+            Array.prototype.forEach.call($('nu_quota_unit').options, function (o) { o.defaultSelected = o.value === v.mailbox_quota_unit; });
+        }
     }
 
     /* Ustawienia → CAPTCHA: widoczne są tylko pola kluczy wybranego dostawcy. */
@@ -1396,7 +1512,11 @@
     function afterLangOp(form, d) {
         if (!d || !d.data || typeof d.data.languages_html !== 'string') return;
         var rows = $('lang-rows');
-        if (rows) rows.innerHTML = d.data.languages_html;
+        if (rows) {
+            var mark = markRowFocus(rows, 'data-code', form && rows.contains(form) ? form.querySelector('[type="submit"]') : null);
+            rows.innerHTML = d.data.languages_html;
+            restoreRowFocus(rows, mark, 'data-code', null);
+        }
         // przełącznik języka w nagłówku (pusty, gdy włączony jest tylko jeden język) — od razu, bez przeładowania
         var slot = $('langSwitchSlot');
         if (slot && typeof d.data.lang_switch_html === 'string') slot.innerHTML = d.data.lang_switch_html;
@@ -1432,6 +1552,8 @@
         if (modal) formMsg(modal, '');
         send().then(function (d) {
             busy(btn, false);
+            var admin = form.elements.namedItem('admin_confirm_password');
+            if (admin) admin.value = '';          // the administrator password is never kept after an answer
             if (d.auth) return;
             applyValues(form, d.values);
             if (form.elements.namedItem('update_settings')) afterSettingsSaved(form, d);
@@ -1444,8 +1566,8 @@
                 } else {
                     formMsg(modal, d.error || t('op.failed'));
                     if (d.data && d.data.name) renderNameStatus(Object.assign({ email: '' }, d.data.name));
-                    var pass = form.querySelector('input[type="password"]');
-                    if (form.elements.namedItem('delete_user_confirm') && pass) pass.focus();
+                    // refused (a wrong administrator password says how many attempts are left): type it again
+                    if (admin && !admin.disabled && admin.offsetParent !== null) admin.focus();
                 }
             } else {
                 if (d.ok) flashSaved(btn);
@@ -1508,7 +1630,7 @@
             var pnav = pag.dataset.nav;
             if (state[pnav]) {
                 state[pnav].page = parseInt(pag.dataset.page, 10);
-                loaders[pnav]({ paging: true, focusPage: document.activeElement === pag });
+                loaders[pnav]({ paging: true, focusPage: document.activeElement === pag, announce: true });
             }
             return;
         }
@@ -1530,7 +1652,7 @@
         else if (a === 'delete')      showDeleteModal(el.dataset.id, el.dataset.email);
         else if (a === 'delete-alias') deleteAlias(el);
         else if (a === 'show-user')   { closeModal('addUserModal', true); triggerSearch(el.dataset.email, false); }
-        else if (a === 'refresh-audit') { busy(el, true, t('btn.refreshing')); loadAudit({ paging: true }).then(function () { busy(el, false); }); }
+        else if (a === 'refresh-audit') { busy(el, true, t('btn.refreshing')); loadAudit({ paging: true, announce: true }).then(function () { busy(el, false); }); }
         else if (a === 'modal-close') closeModal(el.dataset.modal);
     });
 
@@ -1574,8 +1696,10 @@
             showTab(TABS[n], true);
             return;
         }
-        var th = e.target.closest && e.target.closest('th.sortable');
-        if (th && (e.key === 'Enter' || e.key === ' ') && e.target === th) {
+        // header sort button: Enter / Space are handled here (not as a click), so Shift+Enter adds a column from the keyboard
+        var sb = e.target.closest && e.target.closest('th.sortable .th-sort');
+        if (sb && (e.key === 'Enter' || e.key === ' ')) {
+            var th = sb.closest('th.sortable');
             e.preventDefault();
             if (th.dataset.nav === 'bans') sortBansTable(parseInt(th.dataset.col, 10), true);
             else changeSort(th.dataset.nav, th.dataset.col, e.shiftKey);
@@ -1592,16 +1716,17 @@
             state[nav].per = parseInt(per.value, 10);
             state[nav].page = 1;
             releaseWidths();
-            loaders[nav]();
+            loaders[nav]({ announce: true });
         }
         if (e.target.id === 'ban_reason_select') {
             var custom = $('custom_reason_group');
-            if (e.target.value === 'custom') { custom.hidden = false; $('ban_reason_input').value = $('ban_custom_reason').value || t('ban.custom_reason'); $('ban_custom_reason').focus(); }
+            // an empty custom reason is sent empty: the server writes the default reason in the site language
+            if (e.target.value === 'custom') { custom.hidden = false; $('ban_reason_input').value = $('ban_custom_reason').value; $('ban_custom_reason').focus(); }
             else { custom.hidden = true; $('ban_reason_input').value = e.target.value; }
         }
         if (e.target.id === 'nu_domain') nuCheckAvailability();
         if (e.target.id === 'mb_target_jail') $('mb_duration').hidden = e.target.value !== 'panel-tempban';
-        if (e.target.id === 'nu_allow_reserved') formMsg($('addUserModal'), '');
+        if (e.target.id === 'nu_allow_reserved') { formMsg($('addUserModal'), ''); nuSyncAdmin(); }
     });
 
     var logSearchTimer = null;
@@ -1611,18 +1736,18 @@
         if (id && document.querySelector('[data-adv-clear="' + id + '"]')) syncAdvClear(e.target);
         if (id === 'user-search-input') {
             clearTimeout(searchTimer);
-            searchTimer = setTimeout(function () { state.users.page = 1; loadUsers(); }, 400);
+            searchTimer = setTimeout(function () { state.users.page = 1; loadUsers({ announce: true }); }, 400);
         }
         if (id === 'log-search-input') {
             clearTimeout(logSearchTimer);
             var val = e.target.value.trim();
             logSearchTimer = setTimeout(function () {
                 ['reg', 'admin', 'audit'].forEach(function (nav) { state[nav].search = val; state[nav].page = 1; });
-                loadReg(); loadAdmin(); loadAudit();
+                loadReg({ announce: true }); loadAdmin({ announce: true }); loadAudit({ announce: true });
             }, 400);
         }
         if (id === 'ban-search-input') applyBansFilter();
-        if (id === 'ban_custom_reason') $('ban_reason_input').value = e.target.value || t('ban.custom_reason');
+        if (id === 'ban_custom_reason') $('ban_reason_input').value = e.target.value;
         if (id === 'nu_local') {
             formMsg($('addUserModal'), '');
             clearTimeout(nuAvailTimer);
@@ -1640,6 +1765,8 @@
             pwdMatch($('rp_password').value, $('rp_password2').value, $('rp_pass_match'));
         }
         if (id === 'del_admin_pass') formMsg($('deleteUserModal'), '');
+        if (id === 'rp_admin_pass') formMsg($('resetPassModal'), '');
+        if (id === 'nu_admin_pass') formMsg($('addUserModal'), '');
         if (id === 'scan_min' && scan.agg && !scan.running) renderScanResults();
     });
 

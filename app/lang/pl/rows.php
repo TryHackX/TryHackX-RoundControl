@@ -21,7 +21,7 @@ return [
     'rows.search_ip_title'  => 'Szukaj kont z tym IP',
 
     // blokady
-    'rows.expires_now'      => 'wygasa',
+    'rows.expires_now'      => '0 min',
     'rows.remaining'        => '(pozostało :time)',
     'rows.unit_d'           => 'd',
     'rows.unit_h'           => 'h',

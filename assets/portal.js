@@ -67,7 +67,12 @@
         return tfetch(ENDPOINT, {
             method: 'POST', body: fd, credentials: 'same-origin',
             headers: { 'X-Requested-With': 'fetch', 'Accept': 'application/json' }
-        }).then(function (r) { return r.json(); });
+        }).then(readJson);
+    }
+
+    // a reply that is not JSON (502 from the proxy, a PHP error page) is the server's fault, not "no connection"
+    function readJson(r) {
+        return r.json().catch(function () { return { ok: false, msg: t('net.bad_response', { status: r.status }) }; });
     }
 
     /* Nowy widżet CAPTCHA w danym formularzu (token widżetu jest jednorazowy). Render niejawny: reCAPTCHA numeruje
@@ -208,7 +213,7 @@
 
     /* Jeden nakładający się morph: stary krok odpływa (absolutna nakładka), nowy wyłania się pod spodem,
        karta płynnie zmienia wysokość. */
-    function animateStep(currentId, nextId, direction) {
+    function animateStep(currentId, nextId) {
         return new Promise(function (resolve) {
             var current = $(currentId);
             var next = $(nextId);
@@ -261,7 +266,7 @@
                 flow.email = email.toLowerCase();
                 var dyn = $('step-dynamic');
                 dyn.innerHTML = data.html;
-                animateStep('step-identity', 'step-dynamic', 'forward').then(function () { focusLater(data.focus_id); });
+                animateStep('step-identity', 'step-dynamic').then(function () { focusLater(data.focus_id); });
             } else {
                 showMessage(data.msg, 'error');
                 resetCaptcha(form);
@@ -318,7 +323,7 @@
                 // kafelek wyłączony przez serwer zostaje wyłączony także po błędzie wyboru drugiego
                 document.querySelectorAll('#step-choice .service-card[disabled]').forEach(function (t) { t.dataset.disabled = '1'; });
                 busy(btn, false);
-                animateStep('step-dynamic', 'step-choice', 'forward').then(function () { focusLater(data.focus_id); });
+                animateStep('step-dynamic', 'step-choice').then(function () { focusLater(data.focus_id); });
                 return;
             }
             busy(btn, false);
@@ -404,7 +409,7 @@
         flow.choiceKey = '';
         if (!serverForgot) post({ ajax_action: 'cancel_login' }).catch(function () {});
         var from = visibleStep();
-        return animateStep(from, 'step-identity', 'back').then(function () {
+        return animateStep(from, 'step-identity').then(function () {
             $('step-dynamic').innerHTML = '';
             $('step-dynamic').hidden = true;
             $('step-choice').innerHTML = '';
@@ -485,6 +490,7 @@
             var statusDiv = $('availability-status');
             var seq = 0;
             var check = function () {
+                var my = ++seq;                      // first: an answer still on its way is stale for an empty / invalid name too
                 var local = fieldLocal.value.trim();
                 if (!local) { statusDiv.textContent = ''; statusDiv.className = ''; return; }
                 if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(local)) {
@@ -494,7 +500,6 @@
                 }
                 statusDiv.textContent = t('checking');
                 statusDiv.className = 'status-load show';
-                var my = ++seq;
                 post({ ajax_action: 'check_availability', local: local, domain: fieldDomain.value })
                     .then(function (data) {
                         if (my !== seq) return;      // starsza odpowiedź po nowszej — pomijamy
@@ -566,8 +571,8 @@
         if (!inp) return;
         var show = inp.type === 'password';
         inp.type = show ? 'text' : 'password';
+        // a toggle button: the name stays "Show password", the state is aria-pressed (not "Hide password, pressed")
         btn.setAttribute('aria-pressed', show ? 'true' : 'false');
-        btn.setAttribute('aria-label', show ? t('pwd.hide') : t('pwd.show'));
         btn.classList.toggle('is-on', show);
         inp.focus({ preventScroll: true });
     }
@@ -610,7 +615,9 @@
             if (next) { e.preventDefault(); next.focus(); }
             return;
         }
-        if (e.key === 'Escape' && visibleStep() !== 'step-identity' && $('card-login').classList.contains('active')) {
+        // Esc with the language list open only closes the list (handler below), it does not cancel the sign-in
+        if (e.key === 'Escape' && !document.querySelector('.lang-switch[open]') && visibleStep() !== 'step-identity'
+            && $('card-login').classList.contains('active')) {
             goBack(false);
         }
         capsLock(e);
