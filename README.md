@@ -62,25 +62,37 @@ backups before editing). Details and manual installation — see the sections be
 
 ## Upgrading from 1.3.2 to 1.4.0
 
-**Code, the two root helpers, one SQL file and one Fail2Ban value.** Details: [CHANGELOG](CHANGELOG.md).
+**Code, the two root helpers, the sudoers file, one SQL file, one Fail2Ban value and a new timer.** Details:
+[CHANGELOG](CHANGELOG.md).
 
+- **Timed bans keep their own end now.** Fail2Ban gives a manually banned address no ban time of its own — it ends every
+  such ban by the jail's *current* bantime — and up to 1.3.2 the panel set that bantime right before each ban, so every
+  new timed ban re-timed all the others (a 30-day ban was lifted soon after a later 1-hour one). Now `[panel-tempban]`
+  keeps one fixed `bantime = 90d` (the longest ban the panel hands out, never changed at runtime), the panel stores the
+  end of each of its bans in the new table `f2b_tempbans`, and the new timer `mailpanel-tempban-expire` (every minute,
+  as the pool user, through the panel's existing `unbanip` rule) lifts the bans whose time is up. The panel also lifts
+  them whenever it lists the bans; if both stop, Fail2Ban still ends every ban after 90 days.
 - `sql/upgrade_1.4.0.sql` (as root): gives the panel's tables the collation of `virtual_users.email` where they differ
   (tables created on MariaDB 11.5+ got `utf8mb4_uca1400_ai_ci`; tables that already match are not touched), adds
-  `deleted_accounts.files_left` and an index on `virtual_aliases.source`, and re-creates both procedures. No grant
-  changes. **Run it before the new code** — the new code joins tables the old collations could not compare.
+  `deleted_accounts.files_left`, an index on `virtual_aliases.source` and the table `f2b_tempbans`, re-creates both
+  procedures and, as its LAST statement, grants the panel's account `'mailpanel'@'localhost'` the new table (another
+  account name: that one statement fails — run it for yours). **Run it before the new code** — the new code joins
+  tables the old collations could not compare.
 - The root helpers changed: `mailpanel-f2b-apply` (value ranges, host names in `ignoreip`) and
   `mailpanel-policy-daily.php` (the day of the counter from the database clock, English log lines).
-- `[panel-tempban]` needs `bantime = 90d` (the longest ban the panel hands out): after a Fail2Ban restart a jail
-  restores only bans younger than its configured bantime. It lives in `/etc/fail2ban/jail.d/mailpanel.local`, or in
-  `jail.local` on installations of the 1.0 layout — change the one line where it is, never both files.
-- Nothing else: no sudoers, php-fpm, Apache or unit change; `install.sh` is not needed.
+- `/etc/sudoers.d/mailpanel`: the rule `set panel-tempban bantime` is gone (nothing uses it any more).
+- `[panel-tempban]` needs `bantime = 90d`. It lives in `/etc/fail2ban/jail.d/mailpanel.local`, or in `jail.local` on
+  installations of the 1.0 layout — change the one line where it is, never both files. Then **restart** that one jail:
+  only a starting jail restores its bans from Fail2Ban's database, each with its own stored time — so the longer bans
+  that 1.3.2 lost on a Fail2Ban restart (it restored only bans younger than 24 h) come back until their original end.
+- No php-fpm or Apache change. Re-running `install.sh` (sections 2 and 11) installs the sudoers file and the timer too.
 
 ```bash
 PKG=/root/rc-1.4.0 ; RC=/var/www/roundcube ; TS=$(date +%F-%H%M%S)
 tar czf /root/roundcube-pre-1.4.0-$TS.tgz -C "$(dirname $RC)" "$(basename $RC)"        # backup (owners and modes kept)
 mysqldump --single-transaction --routines mailserver | gzip > /root/mailserver-pre-1.4.0-$TS.sql.gz
-mkdir -p /root/helpers-pre-1.4.0-$TS && cp -a /usr/local/sbin/mailpanel-f2b-apply /usr/local/bin/mailpanel-policy-daily.php /root/helpers-pre-1.4.0-$TS/
-# 1) database first (collation, files_left, index, procedures)
+mkdir -p /root/helpers-pre-1.4.0-$TS && cp -a /usr/local/sbin/mailpanel-f2b-apply /usr/local/bin/mailpanel-policy-daily.php /etc/sudoers.d/mailpanel /root/helpers-pre-1.4.0-$TS/
+# 1) database first (collation, files_left, index, f2b_tempbans + its grant, procedures)
 mysql mailserver < $PKG/sql/upgrade_1.4.0.sql
 mysql -N -e "SELECT DISTINCT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA='mailserver'"   # one family (x_general_ci or uca1400)
 # 2) code (root:root) and the two helpers
@@ -91,14 +103,24 @@ rm -rf $RC/assets/vendor/fontawesome                                            
 install -o root -g root -m 755 $PKG/scripts/mailpanel-f2b-apply.php /usr/local/sbin/mailpanel-f2b-apply
 install -o root -g root -m 755 $PKG/scripts/mailpanel-policy-daily.php /usr/local/bin/
 find $RC/app $RC/panel $RC/portal.php -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors'   # prints nothing
-# 3) the timed-ban jail keeps 90 days (the file that holds [panel-tempban]):
+# 3) sudoers without the bantime rule: the file alone, then the WHOLE configuration (its User_Alias line names the
+#    pool user mailweb - change it there first if yours differs)
+visudo -cf $PKG/system/sudoers.d/mailpanel && install -o root -g root -m 440 $PKG/system/sudoers.d/mailpanel /etc/sudoers.d/mailpanel.rc-new \
+  && mv /etc/sudoers.d/mailpanel.rc-new /etc/sudoers.d/mailpanel && visudo -c
+# 4) the timed-ban jail keeps 90 days (the file that holds [panel-tempban]):
 grep -l '^\[panel-tempban\]' /etc/fail2ban/jail.local /etc/fail2ban/jail.d/*.local
-#    in that file, inside [panel-tempban]: bantime = 90d   then:
-fail2ban-client -t && fail2ban-client reload panel-tempban && fail2ban-client get panel-tempban bantime   # 7776000
+#    in that file, inside [panel-tempban]: bantime = 90d   then RESTART only that jail (it restores the bans still due):
+fail2ban-client -t && fail2ban-client reload --restart panel-tempban && fail2ban-client get panel-tempban bantime   # 7776000
+# 5) the timer that lifts timed bans when their time is up (both files name /var/www/roundcube and the user mailweb -
+#    change them there first if yours differ)
+install -o root -g root -m 644 $PKG/system/systemd/mailpanel-tempban-expire.service $PKG/system/systemd/mailpanel-tempban-expire.timer /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now mailpanel-tempban-expire.timer
+systemctl start mailpanel-tempban-expire.service && systemctl show -p Result --value mailpanel-tempban-expire.service   # success
 ```
 
-Going back: unpack the tarball over the same paths and copy the two helpers back; the new column, the index and the
-aligned collation can stay (1.3.2 ignores them).
+Going back: `systemctl disable --now mailpanel-tempban-expire.timer`, remove its two unit files, unpack the tarball over
+the same paths and copy the helpers and the sudoers file back; the new column, the index, `f2b_tempbans` and the aligned
+collation can stay (1.3.2 ignores them).
 
 ## Upgrading from 1.3.1 to 1.3.2
 
@@ -504,7 +526,7 @@ systemctl daemon-reload
 ```bash
 stat -c '%A %U:%G' /etc/fail2ban/jail.local      # -rw-r--r-- root:root
 for c in "ping" "status" "status dovecot" "set dovecot banip 203.0.113.7" "set dovecot unbanip 2001:db8::7" \
-         "set panel-tempban bantime 86400" "get dovecot banip --with-time" "reload"; do
+         "get dovecot banip --with-time" "reload"; do
   sudo -l -U www-data /usr/bin/fail2ban-client $c >/dev/null 2>&1 && echo "allowed (as it should be): $c" || echo "NOT allowed (should be): $c"
 done
 for c in "set dovecot action nftables actionban touch banip 1.2.3.4" "set dovecot banip 1.2.3.4 extra" "start" "stop"; do
@@ -576,6 +598,7 @@ roundcube/                        ← your Roundcube root directory
 │   ├── .htaccess                 ←   deny all
 │   ├── bootstrap.php             ←   autoloader + .env
 │   ├── web.php                   ←   web kernel (session, error mode)
+│   ├── cli/tempban-expire.php    ←   timer job: lifts the panel's timed bans when their time is up
 │   ├── src/                      ←   classes (Auth, I18n, Panel, Portal, Security…)
 │   ├── lang/pl/  lang/en/        ←   built-in languages (added ones: /var/lib/roundcontrol/lang, JSON)
 │   └── templates/                ←   HTML templates (portal + panel)
@@ -802,10 +825,10 @@ What each entry enables (without an entry, that feature shows a readable message
 | Entry | Panel feature |
 |---|---|
 | `fail2ban-client ping`, `status`, `status <jail>` | the F2B ban list in the "IP blocks" tab |
-| `fail2ban-client set <jail> unbanip <ip>` | the "Unban (F2B)" button |
+| `fail2ban-client set <jail> unbanip <ip>` | the "Unban (F2B)" button, and the end of the panel's timed bans (`mailpanel-tempban-expire.timer` lifts each one when its time is up) |
 | `fail2ban-client set <jail> banip <ip>` | manual IP block + bans from the scanner |
 | `fail2ban-client get <jail> banip --with-time` | the "Expires" column with the remaining ban time |
-| `fail2ban-client set panel-tempban bantime <seconds>` | timed bans (jail `panel-tempban` **only** — a rule for any jail would let the PHP user set the bantime of `sshd` or `recidive` to one second) |
+| *(1.4.0: no `set … bantime` rule)* | `panel-tempban` keeps a fixed bantime: Fail2Ban ends every manually banned address by the jail's **current** bantime, so the panel stores each ban's end itself (`f2b_tempbans`) instead of setting the bantime before each ban |
 | `mailpanel-f2b-apply ""` | saving the "Fail2Ban" tab; takes no arguments, reads the proposal from stdin, reloads Fail2Ban itself (so there is no `fail2ban-client reload` rule) |
 | `update-postfix-limits.sh` | applying Postfix limits ("Security"); three integers, read back and checked |
 | `mailpanel-delete-user.sh` | removing an account's maildir: validates the address, asks Dovecot whether the account still exists (refuses if it does or cannot tell), checks the real path, and **moves** the maildir to `/var/mail/deleted` (a quarantine purged after 30 days by the systemd timer `mailpanel-purge-deleted.timer` — the age is the deletion time in the entry's name, since `mv` keeps the maildir's old mtime) instead of `rm -rf` |
@@ -836,10 +859,11 @@ bantime.increment = false
 findtime = 1d
 maxretry = 1000000
 
-# Jail for TIMED blocks from the panel (scanner and "Manage": 1 hour .. 90 days).
-# The panel sets bantime right before banip, so each ban has its own duration. After a Fail2Ban
-# restart, though, the jail restores only bans younger than the bantime written HERE and caps them
-# to it — so this is the longest ban the panel hands out (with 24h, a 30-day ban vanished on restart).
+# Jail for TIMED blocks from the panel ("Ban", the scanner and "Manage": 1 minute .. 90 days).
+# Fail2Ban ends every manually banned address by the jail's CURRENT bantime and restores after a
+# restart only bans younger than it — so this bantime is fixed at the longest ban the panel hands
+# out and never changed at runtime; the panel stores each ban's end (table f2b_tempbans) and lifts
+# the ban itself (timer mailpanel-tempban-expire, every minute).
 [panel-tempban]
 enabled = true
 filter = panel-tempban
@@ -1049,6 +1073,7 @@ file (`.env.bak`, `.env.save`, `panel.env` …), backups / dumps / keys / logs b
 | `mysql -N -e "SELECT DISTINCT REPLACE(TABLE_COLLATION,'utf8mb3_','utf8mb4_') FROM information_schema.TABLES WHERE TABLE_SCHEMA='mailserver'"` | **one** line (1.4.0: the schema aligns the panel's tables to `virtual_users.email`) |
 | `mysql -N -e "SELECT ROUTINE_NAME, DEFINER FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='mailserver'"` | both procedures, DEFINER an account that exists (normally `root@localhost`; if it is dropped, both procedures fail) |
 | `mysql -N -e "SELECT MAX(created_at) FROM mailserver.user_login_events"` after an IMAP login | a fresh time (the Dovecot post-login script records sign-ins) |
+| `systemctl list-timers mailpanel-tempban-expire.timer`; *Ban* a test address (e.g. `203.0.113.1`) for 2 minutes | the timer runs every minute; after about 3 minutes the address is gone from `panel-tempban` (`journalctl -u mailpanel-tempban-expire.service` says it ended) |
 
 ## 9. CAPTCHA (optional)
 
@@ -1138,6 +1163,8 @@ Behaviour worth knowing (1.1.0, updated for 1.2.0):
   the script is checked and shown (a failed or "not found" outcome is a visible error, not a success message).
 - **"Ban IP"** (Users tab) acts in two layers: the portal and panel (`ip_blocks`) **and**, when Fail2Ban is available,
   the jail `panel-tempban` (webmail, IMAP, SMTP at the firewall); the confirmation says which layers took effect.
+  Every timed ban ends at its own time (at most about a minute late): the panel stores the end and the timer
+  `mailpanel-tempban-expire` lifts it.
   Admin sessions end after 1 h idle / 12 h absolute, when the admin is removed or changes the password.
 - **Database accounts:** `mailpanel` gets per-table grants (`sql/panel_grants.sql`), the Dovecot post-login script its
   own account `mailpostlogin` (`EXECUTE` on one procedure). `config/panel_config.php` imports only five numeric
@@ -1156,9 +1183,11 @@ Your responsibilities:
 - keep `ignoreip` in the Fail2Ban tab (it edits `[DEFAULT]`, which `sshd` inherits) set to your own address (the
   panel and the root helper refuse networks broader than IPv4 /8 or IPv6 /32 there, and `maxretry` above 100 or times
   under a minute anywhere: a jail that never bans protects nothing),
-- keep `bantime = 90d` in `[panel-tempban]` (`jail.d/mailpanel.local`): Fail2Ban 1.x keeps active and permanent bans in
-  its database whatever `dbpurgeage` says, but after a restart it restores a jail's bans only up to the bantime written in
-  its configuration,
+- keep `bantime = 90d` in `[panel-tempban]` (`jail.d/mailpanel.local`) and never change it at runtime: Fail2Ban ends every
+  manually banned address by the jail's current bantime (the panel times its own bans in `f2b_tempbans`), and after a
+  restart it restores a jail's bans only up to the bantime written in its configuration; keep
+  `mailpanel-tempban-expire.timer` enabled, or the panel's timed bans last until the panel next lists them (at most
+  90 days),
 - run `scripts/mailpanel-sudoers-cleanup.sh` after any manual sudoers edit: one leftover wildcard rule voids all the exact ones,
 - update Roundcube (`program/`, `vendor/`) independently — the package does not
   modify the core, so RC updates don't overwrite the panel.
