@@ -34,7 +34,7 @@ jobs:
       - name: ShellCheck
         run: |
           shellcheck --version
-          shellcheck -S warning install.sh scripts/*.sh scripts/mailpanel-purge-deleted
+          shellcheck -S warning install.sh scripts/*.sh scripts/mailpanel-purge-deleted .github/annotate.sh
 
   tests:
     name: Tests (PHP ${{ matrix.php }}, MariaDB ${{ matrix.mariadb }})
@@ -88,16 +88,20 @@ jobs:
         env:
           fail-fast: true
 
+      # .github/annotate.sh prints each suite's output and turns its FAIL lines and PHP errors into
+      # annotations, which anyone can read; the job log needs a signed-in user.
       - name: Suites without a database
         run: |
-          php tests/security_test.php
-          php tests/sudoers_test.php
-          php tests/i18n_test.php
+          rc=0
+          bash .github/annotate.sh security_test php tests/security_test.php || rc=1
+          bash .github/annotate.sh sudoers_test php tests/sudoers_test.php || rc=1
+          bash .github/annotate.sh i18n_test php tests/i18n_test.php || rc=1
+          exit $rc
 
       # The Fail2Ban root helper insists on a root-owned jail.local, the scratch one included, so on
       # Linux this suite runs as root (it then skips its read-only-file check, and says so).
       - name: Scripts and installers (as root)
-        run: sudo env "PATH=$PATH" "$(command -v php)" tests/scripts_test.php
+        run: sudo env "PATH=$PATH" bash .github/annotate.sh scripts_test "$(command -v php)" tests/scripts_test.php
 
       - name: Wait for MariaDB
         run: |
@@ -111,7 +115,7 @@ jobs:
           exit 1
 
       - name: Database suite (scratch database, the panel account with exactly sql/panel_grants.sql)
-        run: php tests/db_test.php
+        run: bash .github/annotate.sh db_test php tests/db_test.php
 
       - name: HTTP suite (php -S against a scratch database)
-        run: php tests/http_test.php
+        run: bash .github/annotate.sh http_test php tests/http_test.php
