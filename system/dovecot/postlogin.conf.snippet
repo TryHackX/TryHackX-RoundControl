@@ -1,11 +1,19 @@
 # =====================================================================
 # Dovecot 2.4 (Debian 13) — post-login services that record IMAP/POP3
-# sign-ins in the panel's database (CALL sp_register_login through
+# logins in the panel's database (CALL sp_register_login through
 # /usr/local/bin/dovecot-postlogin.sh; credentials in
 # /etc/dovecot/mysql-mailpanel.cnf — install.sh section 6).
-# Local connections (Roundcube / webmail) are skipped by the script itself.
+# Local connections (Roundcube/webmail) are skipped by the script itself.
 #
-# Paste into /etc/dovecot/dovecot.conf (checked on 2.4.1, 2026-07-12).
+# install.sh section 6 installs this file as
+#   /etc/dovecot/conf.d/99-roundcontrol-postlogin.conf
+# (checked with doveconf -n, removed again on any error). By hand: copy it
+# there, or paste it into /etc/dovecot/dovecot.conf when that file does not
+# include conf.d/*.conf; then doveconf -n && systemctl reload dovecot.
+# Every IMAP/POP3 session starts through the script: if it cannot run,
+# nobody can log in over IMAP/POP3 — test a login right after the reload.
+# The listeners belong to vmail, the user that runs imap/pop3.
+# (Verified on Dovecot 2.4.1, 2026-07-12.)
 # =====================================================================
 
 service imap-postlogin {

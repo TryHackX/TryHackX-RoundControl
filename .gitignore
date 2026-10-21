@@ -5,15 +5,21 @@
 *.env
 panel.env
 plugins/password/config.inc.php
+# Roundcube's own configuration (des_key, database password), when working inside a Roundcube checkout
+config/config.inc.php
 mailpanel-policy.cf
 mysql-mailpanel.cnf
 all_settings/
 sql_backup/
 _legacy/
+# TLS / DKIM keys and certificates
+*.pem
+*.key
 
 # Backups, dumps, editor and OS leftovers
 *.bak
 *.bak-*
+*.pre-*
 *.sql.gz
 *.dump
 *.swp

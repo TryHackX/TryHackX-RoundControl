@@ -21,7 +21,9 @@
 #
 # Variables (optional):  RC_DIR=/var/www/roundcube   PANEL_USER=mailweb   APACHE_USER=www-data   PHP_VER=8.5
 #   PANEL_USER=www-data (or the old WEB_USER=www-data) = no separate pool: Roundcube stays in the shared [www] pool.
-# The application layer (.env, schema, admin) is installed separately: php install.php
+# The application layer (.env, default language, first administrator) is installed separately, AFTER section 0 here
+# (database, accounts, schema, grants; it prints the mailpanel password once): sudo php install.php in the Roundcube
+# directory. The other sections can run before or after it.
 # =====================================================================
 set -uo pipefail
 
@@ -111,8 +113,10 @@ install_f2b_helper() {
 # Kopie plików z sekretami zostawione ręcznie albo przez starsze instalatory (config.inc.php.bak-*, config.old.php,
 # .env.bak ...): tylko dla roota (600). Proces PHP ich nie potrzebuje, a czytelne dla wszystkich (755 po kopiowaniu)
 # zdradzają hasło bazy i des_key Roundcube każdemu lokalnemu kontu.
+# *.pre-*: copies taken before an upgrade step, e.g. config.inc.php.pre-password left by the old
+# scripts/install-password-plugin.sh (a plain cp: the source mode, 0644 before section 7).
 SECRET_COPY_NAMES=(-name 'config.inc.php.bak*' -o -name 'config.inc.php.save' -o -name 'config.inc.php.orig'
-                   -o -name 'config.old.php' -o -name '.env.*' ! -name '.env.example')
+                   -o -name 'config.old.php' -o -name '*.pre-*' -o -name '.env.*' ! -name '.env.example')
 secure_secret_copies() {
   local d f n=0
   for d in "$RC_DIR" "$RC_DIR/config" "$RC_DIR/plugins/password"; do
@@ -121,7 +125,7 @@ secure_secret_copies() {
       chown root:root "$f" && chmod 600 "$f" && n=$((n + 1))
     done < <(find "$d" -maxdepth 1 -type f \( "${SECRET_COPY_NAMES[@]}" \) -print0 2>/dev/null)
   done
-  ok "copies of files with secrets (config.inc.php.bak*, config.old.php, .env.*): $n file(s) — root:root 600"
+  ok "copies of files with secrets (config.inc.php.bak*, config.old.php, *.pre-*, .env.*): $n file(s) — root:root 600"
 }
 
 # --- pool helpers begin (tests/scripts_test.php sources exactly this block) ----------------------------------------
@@ -271,12 +275,25 @@ switch_vhosts() {
   ok "vhosts (${changed[*]}): PHP -> $sock (backups in $bdir); Apache reloaded"
 }
 
+# The pool handler (SetHandler "proxy:unix:<socket>|fcgi://localhost") needs mod_proxy and mod_proxy_fcgi. Without them
+# apache2ctl configtest still passes — and Apache would hand out Roundcube's and the panel's PHP files as plain text.
+# The module list is captured first: grep -q straight from apache2ctl's pipe could end it with SIGPIPE (pipefail).
+apache_proxy_fcgi() {
+  local mods
+  mods=$(apache2ctl -M 2>/dev/null) || return 1
+  grep -qE '^[[:space:]]*proxy_module[[:space:]]' <<<"$mods" && grep -qE '^[[:space:]]*proxy_fcgi_module[[:space:]]' <<<"$mods"
+}
+
 # Sekcja 1b: użytkownik systemowy, katalog sesji, plik puli (php-fpm -t), reload php-fpm, własność plików dla puli,
 # handler w vhostach. Przy błędzie po zmianie własności wraca ona do użytkownika Apache (Roundcube dalej działa w [www]).
 setup_pool() {
   local svc="php$PHP_VER-fpm" conf sock sess tmp bdir i
   conf=$(pool_conf); sock=$(pool_sock); sess="/var/lib/php/sessions-$PANEL_USER"
   command -v "php-fpm$PHP_VER" >/dev/null || { warn "php-fpm$PHP_VER not found in PATH"; return 1; }
+  if ! apache_proxy_fcgi; then
+    warn "Apache's proxy and proxy_fcgi modules are not both enabled (apache2ctl -M) — with the pool handler Apache would serve the PHP files as text. Enable them (a2enmod proxy_fcgi && systemctl restart apache2), then run section 1b again; nothing was changed"
+    return 1
+  fi
   if ! id -u "$PANEL_USER" >/dev/null 2>&1; then
     useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$PANEL_USER" \
       || { warn "useradd $PANEL_USER failed"; return 1; }
@@ -313,6 +330,211 @@ setup_pool() {
   return 0
 }
 # --- pool helpers end ------------------------------------------------------------------------------------------------
+
+# --- section helpers begin (tests/scripts_test.php sources exactly this block) -------------------------------------
+# Sections 3, 4, 6 and 9. System paths are constants here (the tests replace them after sourcing).
+JAIL_LOCAL=/etc/fail2ban/jail.local
+MAIL_LOG=/var/log/mail.log
+LOCALTIME_LINK=/etc/localtime
+TIMEZONE_FILE=/etc/timezone
+ZONEINFO_DIR=/usr/share/zoneinfo
+DOVECOT_CONF_D=/etc/dovecot/conf.d
+POSTLOGIN_CONF=/etc/dovecot/conf.d/99-roundcontrol-postlogin.conf
+POSTLOGIN_SCRIPT=/usr/local/bin/dovecot-postlogin.sh
+POSTLOGIN_CNF=/etc/dovecot/mysql-mailpanel.cnf
+
+# The value of a string option in Roundcube's config.inc.php (the last plain assignment) — read as text, never executed.
+rc_cfg_str() {
+  local cfg="$RC_DIR/config/config.inc.php"
+  [ -f "$cfg" ] || return 0
+  grep -E "^[[:space:]]*\\\$config\[['\"]$1['\"]\][[:space:]]*=" "$cfg" | tail -1 \
+    | sed -nE "s/.*=[[:space:]]*['\"]([^'\"]*)['\"][[:space:]]*;.*/\1/p"
+}
+
+# Roundcube's errors log: <log_dir>/errors.log, log_dir from config.inc.php when it is an absolute path, else logs/
+# (Roundcube's default, RCUBE_INSTALL_PATH . 'logs/').
+rc_errors_log() {
+  local d
+  d=$(rc_cfg_str log_dir)
+  d=${d%/}
+  [[ "$d" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$d" != *..* ]] || d="$RC_DIR/logs"
+  printf '%s/errors.log' "$d"
+}
+
+# The server's time zone, the default install.php offers for APP_TIMEZONE: the /etc/localtime link, /etc/timezone,
+# timedatectl; UTC when none of them names a zone of the tz database. Section 4 writes it into
+# /etc/mailpanel-policy.cf: the policy service and the panel must agree about "today" (the daily send limit).
+system_tz() {
+  local z="" link=""
+  link=$(readlink "$LOCALTIME_LINK" 2>/dev/null) || link=""
+  case "$link" in *zoneinfo/*) z=${link##*zoneinfo/}; z=${z#posix/}; z=${z#right/} ;; esac
+  if [ -z "$z" ] && [ -f "$TIMEZONE_FILE" ]; then
+    z=$(head -n 1 "$TIMEZONE_FILE" | tr -d '[:space:]')
+  fi
+  if [ -z "$z" ] && command -v timedatectl >/dev/null; then
+    z=$(timedatectl show -p Timezone --value 2>/dev/null) || z=""
+  fi
+  case "$z" in Etc/UTC|Etc/UCT|Etc/Universal|Etc/Zulu|Etc/GMT|Etc/GMT0|UCT|Universal|Zulu|GMT) z=UTC ;; esac
+  if [ "$z" != "UTC" ] && { [[ ! "$z" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] || [ ! -f "$ZONEINFO_DIR/$z" ]; }; then
+    z=UTC
+  fi
+  printf '%s' "$z"
+}
+
+# Section 9: adds plugins that are not in the first $config['plugins'] list of config.inc.php yet (either quote style),
+# in front, in the order given, and prints the names it added. Exit: 0 added, 2 nothing to add, 1 no list found,
+# 3 the file could not be written. PHP edits the file as text; it is never included.
+rc_add_plugins() {
+  local cfg=$1
+  shift
+  RC_CFG="$cfg" RC_PLUGINS="$*" php <<'PHP'
+<?php
+$f = (string) getenv('RC_CFG');
+$s = (string) file_get_contents($f);
+if (preg_match('/^[ \t]*\$config\[[\'"]plugins[\'"]\][ \t]*=[ \t]*(?:\[|array[ \t]*\()(.*?)(?:\]|\))[ \t]*;/ms', $s, $m, PREG_OFFSET_CAPTURE) !== 1) {
+    exit(1);
+}
+$add = [];
+foreach (preg_split('/\s+/', trim((string) getenv('RC_PLUGINS')), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $p) {
+    if (preg_match('/[\'"]' . preg_quote($p, '/') . '[\'"]/', $m[1][0]) !== 1) {
+        $add[] = $p;
+    }
+}
+if ($add === []) {
+    exit(2);
+}
+$at = $m[1][1];                     // right after "[" or "array("
+$n = substr($s, 0, $at) . implode('', array_map(static fn(string $p): string => "'$p', ", $add)) . substr($s, $at);
+if (file_put_contents($f, $n) !== strlen($n)) {
+    exit(3);
+}
+echo implode(' ', $add);
+PHP
+}
+
+# Can Fail2Ban read the systemd journal? (backend = systemd needs python3-systemd)
+f2b_journal_ok() {
+  command -v python3 >/dev/null && python3 -c 'import systemd.journal' >/dev/null 2>&1
+}
+
+# Section 3: /etc/fail2ban/jail.local from system/fail2ban/jail.local.example when there is none (Debian 13 ships none;
+# an existing file is never touched). The template holds exactly the options the "Fail2Ban" tab edits — the tab only
+# rewrites lines that exist — plus the backends: roundcube-auth reads Roundcube's errors.log (polling) or the journal
+# (log_driver 'syslog'); dovecot and postfix-sasl read the journal (Debian 13 has no /var/log/mail.log without
+# rsyslog); recidive reads /var/log/fail2ban.log. fail2ban-client -t must pass before and with the new file; a file it
+# rejects is removed again.
+create_jail_local() {
+  local tmp out rcbe=polling mailbe=systemd logfile
+  if [ -e "$JAIL_LOCAL" ] || [ -L "$JAIL_LOCAL" ]; then
+    ok "$JAIL_LOCAL exists — left as it is"
+    return 0
+  fi
+  if command -v fail2ban-client >/dev/null && ! out=$(fail2ban-client -t 2>&1); then
+    warn "fail2ban-client -t reports an error BEFORE any change — not creating $JAIL_LOCAL: $(tail -n 2 <<<"$out" | tr '\n' ' ')"
+    return 1
+  fi
+  if [ "$(rc_cfg_str log_driver)" = "syslog" ]; then
+    rcbe=systemd
+  fi
+  logfile=$(rc_errors_log)
+  if ! f2b_journal_ok; then
+    if [ -f "$MAIL_LOG" ]; then
+      mailbe=auto
+      warn "python3-systemd is missing: the dovecot and postfix-sasl jails read $MAIL_LOG instead of the journal"
+    else
+      warn "python3-systemd is missing and there is no $MAIL_LOG: the dovecot and postfix-sasl jails need the journal — apt install python3-systemd"
+    fi
+  fi
+  tmp=$(mktemp) || return 1
+  if ! render_template "$SRC/system/fail2ban/jail.local.example" @RC_LOG@ "$logfile" | render_template - @RC_BACKEND@ "$rcbe" \
+       | render_template - @MAIL_BACKEND@ "$mailbe" > "$tmp" || grep -qE '@[A-Z_]+@' "$tmp"; then
+    rm -f "$tmp"
+    warn "could not render $SRC/system/fail2ban/jail.local.example"
+    return 1
+  fi
+  # the roundcube-auth jail needs the file it watches (fail2ban-client -t refuses a missing log): an empty one, owned
+  # like the rest of logs/ by the PHP user that writes it
+  if [ "$rcbe" = "polling" ] && [ ! -e "$logfile" ] && [ -d "${logfile%/*}" ]; then
+    install -o "$RUN_USER" -g "$RUN_USER" -m 640 /dev/null "$logfile" && ok "empty $logfile for the roundcube-auth jail (owner $RUN_USER)"
+  fi
+  if ! install -o root -g root -m 644 "$tmp" "$JAIL_LOCAL"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+  if command -v fail2ban-client >/dev/null && ! out=$(fail2ban-client -t 2>&1); then
+    rm -f "$JAIL_LOCAL"
+    warn "fail2ban-client -t rejects the new jail.local — removed again: $(tail -n 3 <<<"$out" | tr '\n' ' ')"
+    return 1
+  fi
+  ok "$JAIL_LOCAL (root:root 644): [DEFAULT], roundcube-auth ($rcbe, $logfile), dovecot and postfix-sasl ($mailbe), recidive — the values are edited in the panel's Fail2Ban tab"
+}
+
+# Does Dovecot already run the post-login script (wired by hand in dovecot.conf or by this installer)?
+dovecot_postlogin_active() {
+  local conf
+  command -v doveconf >/dev/null || return 1
+  conf=$(doveconf -n 2>/dev/null) || return 1
+  grep -qF -- "$POSTLOGIN_SCRIPT" <<<"$conf"
+}
+
+# Section 6: wires the post-login script into Dovecot as a conf.d file of its own (system/dovecot/postlogin.conf.snippet).
+# Dovecot then starts every IMAP/POP3 session through the script (as the dovecot user): if the script cannot run, no
+# IMAP/POP3 login works. So the script, its database file and the listeners' user are checked first, and the file is
+# removed again when doveconf -n fails with it, when dovecot.conf does not read conf.d/, or when the reload fails.
+wire_dovecot_postlogin() {
+  local out
+  command -v doveconf >/dev/null || { warn "doveconf not found — is Dovecot installed?"; return 1; }
+  if ! out=$(doveconf -n 2>&1); then
+    warn "doveconf -n reports an error BEFORE any change — not touching Dovecot: $(head -n 2 <<<"$out" | tr '\n' ' ')"
+    return 1
+  fi
+  if grep -qF -- "$POSTLOGIN_SCRIPT" <<<"$out"; then
+    ok "Dovecot already runs $POSTLOGIN_SCRIPT after IMAP/POP3 logins"
+    return 0
+  fi
+  if [ -e "$POSTLOGIN_CONF" ]; then
+    warn "$POSTLOGIN_CONF exists but doveconf -n does not show it (dovecot.conf does not include conf.d/*.conf) — paste system/dovecot/postlogin.conf.snippet into /etc/dovecot/dovecot.conf by hand"
+    return 1
+  fi
+  if [ ! -f "$POSTLOGIN_SCRIPT" ] || ! sudo -u dovecot test -x "$POSTLOGIN_SCRIPT"; then
+    warn "$POSTLOGIN_SCRIPT is missing or not executable for the dovecot user — run section 1 first (every IMAP/POP3 login would fail)"
+    return 1
+  fi
+  if [ ! -f "$POSTLOGIN_CNF" ]; then
+    warn "$POSTLOGIN_CNF is missing — the script could not record anything"
+    return 1
+  fi
+  if ! id -u vmail >/dev/null 2>&1; then
+    warn "user vmail does not exist — the snippet's listeners belong to vmail (the user that runs imap/pop3); adapt it and install it by hand"
+    return 1
+  fi
+  if [ ! -d "$DOVECOT_CONF_D" ]; then
+    warn "$DOVECOT_CONF_D not found — paste system/dovecot/postlogin.conf.snippet into /etc/dovecot/dovecot.conf by hand"
+    return 1
+  fi
+  install -o root -g root -m 644 "$SRC/system/dovecot/postlogin.conf.snippet" "$POSTLOGIN_CONF" || return 1
+  if ! out=$(doveconf -n 2>&1); then
+    rm -f "$POSTLOGIN_CONF"
+    warn "doveconf -n rejects the configuration with $POSTLOGIN_CONF — removed again: $(head -n 2 <<<"$out" | tr '\n' ' ')"
+    return 1
+  fi
+  if ! grep -qF -- "$POSTLOGIN_SCRIPT" <<<"$out"; then
+    rm -f "$POSTLOGIN_CONF"
+    warn "dovecot.conf does not include conf.d/*.conf — $POSTLOGIN_CONF removed again; paste system/dovecot/postlogin.conf.snippet into /etc/dovecot/dovecot.conf by hand"
+    return 1
+  fi
+  if ! systemctl reload dovecot; then
+    rm -f "$POSTLOGIN_CONF"
+    systemctl reload dovecot >/dev/null 2>&1
+    warn "systemctl reload dovecot failed — $POSTLOGIN_CONF removed again and the previous configuration reloaded"
+    return 1
+  fi
+  ok "Dovecot: $POSTLOGIN_CONF (IMAP/POP3 post-login -> $POSTLOGIN_SCRIPT), doveconf -n OK, reloaded"
+  echo "   Check now: log in over IMAP from a mail client — it must work, and the login appears in the panel (last login, IPs)."
+  echo "   If IMAP or POP3 logins fail: rm $POSTLOGIN_CONF && systemctl reload dovecot"
+}
+# --- section helpers end ---------------------------------------------------------------------------------------------
 
 # Instaluje plik reguł jako /etc/sudoers.d/mailpanel tak, żeby sudo NIGDY nie zostało zepsute: plik sprawdzany sam
 # (visudo -cf), kładziony pod nazwą z kropką (sudo takie pliki pomija), przenoszony na miejsce i dopiero wtedy sprawdzana
@@ -527,6 +749,13 @@ if ask "3) Configure Fail2Ban (panel filters + jails)"; then
     ok "panel jails: /etc/fail2ban/jail.d/mailpanel.local"
   fi
 
+  # Debian 13 ships no jail.local, and the Fail2Ban tab edits only lines that exist: offer the panel's template.
+  if [ ! -e /etc/fail2ban/jail.local ] && [ ! -L /etc/fail2ban/jail.local ]; then
+    if ask "   Create /etc/fail2ban/jail.local from system/fail2ban/jail.local.example ([DEFAULT] + the jails roundcube-auth, dovecot, postfix-sasl, recidive with the options the Fail2Ban tab edits; root:root 644)"; then
+      create_jail_local || warn "jail.local NOT created (see the message above)"
+    fi
+  fi
+
   # jail.local należy do ROOTA (root:root 644) — panel go nie zapisuje (patrz install_f2b_helper).
   # Stare kopie jail.local.bak-* (robione kiedyś przez panel) też przechodzą na roota, 600.
   if [ -f /etc/fail2ban/jail.local ]; then
@@ -535,7 +764,7 @@ if ask "3) Configure Fail2Ban (panel filters + jails)"; then
     for b in /etc/fail2ban/jail.local.bak-*; do [ -e "$b" ] && chown root:root "$b" && chmod 600 "$b"; done
     ok "jail.local: root:root 644 (the panel only proposes changes; the mailpanel-f2b-apply helper writes them)"
   else
-    warn "Missing /etc/fail2ban/jail.local — create it following the README (jails sshd/dovecot/postfix-sasl/roundcube-auth/recidive), as root:root 644."
+    warn "Missing /etc/fail2ban/jail.local — the Fail2Ban tab has nothing to edit. Run section 3 again and let it create one from system/fail2ban/jail.local.example (root:root 644)."
   fi
 
   if command -v fail2ban-client >/dev/null; then
@@ -607,11 +836,15 @@ FLUSH PRIVILEGES;"; then
     ok "DB user mailpolicy + grants"
     if [ ! -f /etc/mailpanel-policy.cf ] || [ "$(file_kv /etc/mailpanel-policy.cf password || true)" != "$PW" ]; then
       [ -f /etc/mailpanel-policy.cf ] && cp -p /etc/mailpanel-policy.cf "/etc/mailpanel-policy.cf.bak-$(date +%s)"
-      ( umask 077; render_template "$SRC/system/mailpanel-policy.cf.example" HASLO_MAILPOLICY "$PW" > /etc/mailpanel-policy.cf.new ) \
+      # the script's PHP time zone = the server's (the default install.php offers for APP_TIMEZONE as well); the day of
+      # the counter itself comes from the database clock since 1.4.0, the same one the panel reads
+      ( umask 077; render_template "$SRC/system/mailpanel-policy.cf.example" HASLO_MAILPOLICY "$PW" \
+          | render_template - @TIMEZONE@ "$(system_tz)" > /etc/mailpanel-policy.cf.new ) \
         && mv /etc/mailpanel-policy.cf.new /etc/mailpanel-policy.cf
     fi
     chown root:nogroup /etc/mailpanel-policy.cf && chmod 640 /etc/mailpanel-policy.cf
-    ok "/etc/mailpanel-policy.cf (640 root:nogroup)"
+    PTZ=$(file_kv /etc/mailpanel-policy.cf timezone || true)
+    ok "/etc/mailpanel-policy.cf (640 root:nogroup; timezone ${PTZ:-Europe/Warsaw, the script's default}; the day of the counter = the database clock)"
     install -o root -g root -m 755 "$SRC/scripts/mailpanel-policy-daily.php" /usr/local/bin/
     echo "   Postfix: finish by hand following system/postfix/master.cf.snippet:"
     echo "     - in submission/submissions add  -o smtpd_data_restrictions=\$mua_data_restrictions  and  -o smtpd_recipient_limit=50"
@@ -707,8 +940,15 @@ if ask "6) Configure /etc/dovecot/mysql-mailpanel.cnf (mailpostlogin account: EX
       fi
     fi
   fi
-  echo "   Remember the imap-postlogin/pop3-postlogin services in /etc/dovecot/dovecot.conf"
-  echo "   (template: system/dovecot/postlogin.conf.snippet)."
+  # the imap-postlogin / pop3-postlogin services that run the script (without them IMAP/POP3 logins are not recorded)
+  if dovecot_postlogin_active; then
+    ok "Dovecot runs $POSTLOGIN_SCRIPT after IMAP/POP3 logins (doveconf -n)"
+  elif [ -f "$CNF" ] && ask "   Wire the script into Dovecot now: $POSTLOGIN_CONF (imap/pop3 post-login services; doveconf -n checked, removed again on any error)"; then
+    wire_dovecot_postlogin || warn "Dovecot post-login NOT wired (see the message above) — by hand: system/dovecot/postlogin.conf.snippet"
+  else
+    echo "   Without the imap-postlogin/pop3-postlogin services IMAP/POP3 logins are not recorded (last login, IP history):"
+    echo "   system/dovecot/postlogin.conf.snippet — this section installs it as $POSTLOGIN_CONF."
+  fi
 fi
 
 # --- 7. Symlinki w webroot + właściciel plików ---
@@ -791,7 +1031,7 @@ fi
 
 # --- 9. Wpięcie panelu w config.inc.php Roundcube ---
 hr
-if ask "9) Hook the panel into config.inc.php (require panel_config.php + the 'password' plugin)"; then
+if ask "9) Hook the panel into config.inc.php (require panel_config.php + the plugins custom_auth and password)"; then
   CFG="$RC_DIR/config/config.inc.php"
   if [ ! -f "$CFG" ]; then
     warn "Missing $CFG — configure Roundcube first, then run this section again."
@@ -810,27 +1050,22 @@ if ask "9) Hook the panel into config.inc.php (require panel_config.php + the 'p
       printf "\nrequire_once __DIR__ . '/panel_config.php';\n" >> "$CFG"
       CHANGED=1; ok "added require_once panel_config.php (at the end of the file)"
     fi
-    if grep -q "'password'" "$CFG"; then
-      ok "'password' — already in the plugin list"
-    else
-      if RC_CFG="$CFG" php <<'PHP'
-<?php
-$f = getenv('RC_CFG');
-$s = (string) file_get_contents($f);
-$n = preg_replace(
-    '/(\$config\[[\'"]plugins[\'"]\]\s*=\s*(?:\[|array\())/',
-    '$1' . "'password', ",
-    $s, 1, $cnt
-);
-if ($cnt !== 1) { exit(1); }
-file_put_contents($f, $n);
-PHP
-      then
-        CHANGED=1; ok "added 'password' to \$config['plugins']"
-      else
-        warn "\$config['plugins'] not found in $CFG — add 'password' by hand"
-      fi
+    # custom_auth: a visitor without a Roundcube session goes to the portal (CAPTCHA, the login limits and the log lines
+    # Fail2Ban reads) instead of Roundcube's own login form; password: the mailbox password self-service.
+    PLUGINS=(custom_auth password)
+    if [ ! -f "$RC_DIR/plugins/custom_auth/custom_auth.php" ]; then
+      PLUGINS=(password)
+      warn "$RC_DIR/plugins/custom_auth is missing — copy plugins/custom_auth from the package first; until then Roundcube keeps its own login form"
+    elif [ -d "$RC_DIR/public_html" ] && [ ! -e "$RC_DIR/public_html/portal.php" ]; then
+      warn "public_html/portal.php is missing (section 7 publishes it): custom_auth sends every visitor without a session to /portal.php"
     fi
+    ADDED=$(rc_add_plugins "$CFG" "${PLUGINS[@]}"); rc=$?
+    case $rc in
+      0) CHANGED=1; ok "added to \$config['plugins']: $ADDED" ;;
+      2) ok "${PLUGINS[*]} — already in the plugin list" ;;
+      1) warn "\$config['plugins'] not found in $CFG — add ${PLUGINS[*]} there by hand" ;;
+      *) warn "could not write $CFG — add ${PLUGINS[*]} to \$config['plugins'] by hand" ;;
+    esac
     if php -l "$CFG" >/dev/null 2>&1; then
       if [ "$CHANGED" -eq 1 ]; then
         ok "syntax OK (php -l); backup: $BAK"
@@ -842,7 +1077,7 @@ PHP
     else
       cp -a "$BAK" "$CFG"
       warn "php -l reported a syntax error — the original was RESTORED from $BAK."
-      warn "Hook it in by hand: require_once + 'password' in plugins (README section 5)."
+      warn "Hook it in by hand: require_once + 'custom_auth' and 'password' in plugins (README section 5)."
     fi
   fi
 fi
@@ -929,6 +1164,7 @@ fi
 
 hr
 ok "Done. Verification:"
+echo "   - application layer, if not done yet: sudo php install.php in $RC_DIR (enter the mailpanel password from section 0)"
 echo "   - https://<host>/portal.php  → the login screen"
 echo "   - https://<host>/.env  and  /.env.bak  and  /scripts/mailpanel-f2b-apply.php  → 403"
 echo "   - panel: Fail2Ban/Security without red warnings; saving in the Fail2Ban tab ends with a message that the configuration was saved, verified and reloaded"
@@ -941,3 +1177,5 @@ echo "   - sudo -l -U $RUN_USER  → only exact ^regex\$ / \"\" rules, no * char
 echo "   - find $RC_DIR -user $RUN_USER -o -user $APACHE_USER -o -perm -o+w  → only temp/ and logs/"
 echo "   - systemctl list-timers mailpanel-purge-deleted.timer  → daily quarantine purge"
 echo "   - stat -c '%A %U:%G' /var/lib/roundcontrol/lang  → drwxr-x--- $RUN_USER:$RUN_USER (languages added in the panel)"
+echo "   - fail2ban-client status  → also roundcube-auth, dovecot, postfix-sasl, recidive (from jail.local)"
+echo "   - doveconf -n | grep -c dovecot-postlogin.sh  → 2 (IMAP and POP3 logins are recorded)"

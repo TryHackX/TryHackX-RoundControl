@@ -1,9 +1,10 @@
 ; /etc/mailpanel-policy.cf  —  configuration of the daily send limit.
-; Read by /usr/local/bin/mailpanel-policy-daily.php (spawned as nobody).
+; Read by /usr/local/bin/mailpanel-policy-daily.php (a Postfix spawn service running as nobody).
 ; Permissions:  chown root:nogroup  &&  chmod 640
-; Replace HASLO_MAILPOLICY with a generated password (openssl rand -hex 24); install.sh section 4 does it.
+; install.sh section 4 writes this file with a generated password (openssl rand -hex 24) and the server's time zone;
+; by hand, fill in both placeholders below.
 ;
-; Database account `mailpolicy` — the minimal grants:
+; DB account `mailpolicy` — minimal grants:
 ;   GRANT SELECT ON mailserver.virtual_users TO 'mailpolicy'@'localhost';
 ;   GRANT SELECT ON mailserver.app_settings  TO 'mailpolicy'@'localhost';
 ;   GRANT SELECT, INSERT, UPDATE ON mailserver.send_counters TO 'mailpolicy'@'localhost';
@@ -13,5 +14,5 @@ user = mailpolicy
 password = "HASLO_MAILPOLICY"
 ; PHP's time zone of the script. Since 1.4.0 the day of the counter comes from the database clock (CURDATE()), the
 ; same one the panel reads, so this setting no longer moves the daily limit.
-timezone = Europe/Warsaw
-; notify = 1  ; (optional) 0 = no e-mail telling the sender that the limit is used up
+timezone = @TIMEZONE@
+; notify = 1  ; (optional) 0 = no e-mail to the sender when the limit is reached

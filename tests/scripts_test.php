@@ -852,6 +852,267 @@ foreach (['scripts', 'sql_backup', '_legacy', 'tests', 'install\\.(php|sh)', '\\
     ok(str_contains($htaccess, $needle), ".htaccess blokuje $needle");
 }
 
+/* ====================================================================== install.sh: sections 1b, 3, 4, 6, 7, 9 */
+// The functions run as install.sh runs them (the three marked blocks, sourced), with the system commands as shell
+// functions: fail2ban-client, doveconf, systemctl, apache2ctl, sudo, id, python3, timedatectl; install copies (owner and
+// mode need root). The behaviour of each fake is switched by a flag file in the scratch directory.
+group('install.sh section 9: custom_auth and password in $config[\'plugins\'] — added once, either quote style');
+
+$size = 44;
+if ($bash === null) {
+    skip('no bash — the install.sh section tests not run', $size);
+} else {
+    $start = seen();
+    $inst = str_replace("\r\n", "\n", (string) file_get_contents($root . '/install.sh'));
+    $blocks = [];
+    foreach (['helpers', 'pool helpers', 'section helpers'] as $b) {
+        $found = preg_match('/# --- ' . $b . ' begin[^\n]*\n(.*?)\n# --- ' . $b . ' end/s', $inst, $bm) === 1;
+        ok($found, "install.sh: the \"$b\" block is there");
+        $blocks[] = $found ? $bm[1] : '';
+    }
+    $sx = $work . '/sections';
+    foreach (['rc/config', 'rc/logs', 'rc/plugins/custom_auth', 'conf.d', 'zoneinfo/Europe', 'zoneinfo/Asia'] as $sub) { mkdir($sx . '/' . $sub, 0777, true); }
+    foreach (['Europe/Warsaw', 'Asia/Tokyo'] as $z) { touch($sx . '/zoneinfo/' . $z); }
+    file_put_contents($sx . '/helpers.sh', implode("\n", $blocks) . "\n");
+    $SX = toPosix($sx);
+    $fakes = <<<'SH'
+set -uo pipefail
+ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }; chown() { :; }; chmod() { :; }
+install() { local a=(); while [ $# -gt 0 ]; do case "$1" in -o|-g|-m) shift 2 ;; -d) shift ;; *) a+=("$1"); shift ;; esac; done; cp -- "${a[0]}" "${a[1]}"; }
+fail2ban-client() {
+  echo "fail2ban-client $*" >> "$T/calls"
+  [ "${1:-}" = "-t" ] || return 0
+  [ -e "$T/f2b_bad" ] && { echo "ERROR  broken already"; return 1; }
+  [ -e "$T/f2b_rejects_new" ] && [ -e "$JAIL_LOCAL" ] && { echo "ERROR  Have not found any log file for roundcube-auth jail"; return 1; }
+  echo "OK: configuration test is successful"
+}
+python3() { [ ! -e "$T/no_pysystemd" ]; }
+doveconf() {
+  [ -e "$T/dove_bad" ] && { echo "doveconf: Fatal: Error in configuration file /etc/dovecot/dovecot.conf line 1"; return 1; }
+  echo "protocols = imap pop3"
+  [ -e "$T/dove_manual" ] && echo "  executable = script-login $POSTLOGIN_SCRIPT"
+  [ -e "$T/dove_noinclude" ] && return 0
+  local f
+  for f in "$T"/conf.d/*.conf; do
+    [ -f "$f" ] || continue
+    [ -e "$T/dove_rejects_new" ] && { echo "doveconf: Fatal: Error in configuration file $f line 12"; return 1; }
+    sed -e '/^[[:space:]]*#/d' -e "s#/usr/local/bin/dovecot-postlogin.sh#$POSTLOGIN_SCRIPT#" "$f"
+  done
+}
+systemctl() { echo "systemctl $*" >> "$T/calls"; [ ! -e "$T/reload_bad" ]; }
+sudo() { [ "${1:-}" = "-u" ] && shift 2; "$@"; }
+id() { [ "${1:-}" = "-u" ] && [ "${2:-}" = "vmail" ] && [ ! -e "$T/no_vmail" ] && echo 5000; }
+apache2ctl() {
+  [ "${1:-}" = "-M" ] || return 0
+  [ -e "$T/apache_M_bad" ] && return 1
+  echo "Loaded Modules:"; echo " core_module (static)"
+  [ -e "$T/no_proxy" ] || echo " proxy_module (shared)"
+  [ -e "$T/no_proxy_fcgi" ] || echo " proxy_fcgi_module (shared)"
+}
+timedatectl() { [ -e "$T/timedatectl_out" ] && cat "$T/timedatectl_out"; return 0; }
+useradd() { echo "useradd $*" >> "$T/calls"; }
+. "$T/helpers.sh"
+SRC="$R"; RC_DIR="$T/rc"; RUN_USER=mailweb; PANEL_USER=mailweb; APACHE_USER=www-data; PHP_VER=8.5
+JAIL_LOCAL="$T/jail.local"; MAIL_LOG="$T/mail.log"; LOCALTIME_LINK="$T/localtime"; TIMEZONE_FILE="$T/timezone"
+ZONEINFO_DIR="$T/zoneinfo"; DOVECOT_CONF_D="$T/conf.d"; POSTLOGIN_CONF="$T/conf.d/99-roundcontrol-postlogin.conf"
+POSTLOGIN_SCRIPT="$T/dovecot-postlogin.sh"; POSTLOGIN_CNF="$T/mysql-mailpanel.cnf"
+
+SH;
+    $sh = static function (string $body) use ($bash, $SX, $root, $fakes): array {
+        return runProc([$bash, '-c', $fakes . $body], '', array_merge(getenv(), ['T' => $SX, 'R' => toPosix($root)]));
+    };
+    $flags = static function (array $on) use ($sx): void {
+        foreach (['f2b_bad', 'f2b_rejects_new', 'no_pysystemd', 'dove_bad', 'dove_manual', 'dove_noinclude', 'dove_rejects_new', 'reload_bad',
+                  'no_vmail', 'apache_M_bad', 'no_proxy', 'no_proxy_fcgi', 'timedatectl_out', 'calls'] as $f) { @unlink($sx . '/' . $f); }
+        foreach ($on as $f) { touch($sx . '/' . $f); }
+    };
+    $calls = static fn(): string => (string) @file_get_contents($sx . '/calls');
+
+    // section 9
+    $cfg = $sx . '/rc/config/config.inc.php';
+    $plugins = static function (?string $php) use ($cfg, $sh): array {     // null = run again on the file as it is
+        if ($php !== null) { file_put_contents($cfg, $php); }
+        [$rc, $out] = $sh('rc_add_plugins "$RC_DIR/config/config.inc.php" custom_auth password');
+        return [$rc, $out, (string) file_get_contents($cfg)];
+    };
+    [$rc, $out, $txt] = $plugins("<?php\n\$config['plugins'] = ['archive', 'zipdownload'];\n");
+    ok($rc === 0 && $out === 'custom_auth password' && str_contains($txt, "\$config['plugins'] = ['custom_auth', 'password', 'archive', 'zipdownload'];"), 'stock list: both plugins added in front (' . $out . ')');
+    [$rc, , $txt2] = $plugins(null);
+    ok($rc === 2 && $txt2 === $txt, 'second run: exit 2, file unchanged (idempotent)');
+    [$rc, $out, $txt] = $plugins("<?php\n// \$config['plugins'] = ['custom_auth'];\n\$config[\"plugins\"] = array(\"password\", \"archive\");\n");
+    ok($rc === 0 && $out === 'custom_auth' && str_contains($txt, "\$config[\"plugins\"] = array('custom_auth', \"password\", \"archive\");"), 'double quotes and array(): only the missing one; a commented-out list does not count');
+    [$rc, , $txt] = $plugins("<?php\n\$config['plugins'] = [\n    'archive',   // (archive folder)\n    'zipdownload',\n];\n");
+    [$lrc, ] = runProc(['php', '-l', $cfg]);
+    ok($rc === 0 && $lrc === 0 && substr_count($txt, "'custom_auth'") === 1, 'a list over several lines with a comment: added, the file still passes php -l');
+    $noList = "<?php\n\$config['des_key'] = 'x';\n";
+    [$rc, , $txt] = $plugins($noList);
+    ok($rc === 1 && $txt === $noList, 'no plugins list: exit 1, file unchanged');
+    ok(str_contains($inst, 'PLUGINS=(custom_auth password)') && str_contains($inst, 'rc_add_plugins "$CFG" "${PLUGINS[@]}"'), 'section 9 asks rc_add_plugins for custom_auth and password');
+
+    group('install.sh section 3: jail.local from system/fail2ban/jail.local.example — never over an existing one');
+    $tpl = (string) file_get_contents($root . '/system/fail2ban/jail.local.example');
+    file_put_contents($cfg, "<?php\n\$config['plugins'] = [];\n");
+    $flags([]);
+    [$rc, $out] = $sh('create_jail_local');
+    $jl = (string) @file_get_contents($sx . '/jail.local');
+    ok($rc === 0 && $jl !== '' && !preg_match('/@[A-Z_]+@/', $jl), 'created, every placeholder filled (' . substr($out, -90) . ')');
+    ok(str_contains($jl, "[roundcube-auth]\nenabled = true\nbackend = polling\nlogpath = $SX/rc/logs/errors.log\n"), 'roundcube-auth: polling on Roundcube\'s errors.log (logs/ by default)');
+    ok(is_file($sx . '/rc/logs/errors.log'), 'the log it watches exists (fail2ban-client -t refuses a jail without its log)');
+    ok(str_contains($jl, "[dovecot]\nenabled = true\nbackend = systemd\n") && str_contains($jl, "[postfix-sasl]\nenabled = true\nbackend = systemd\n"), 'dovecot and postfix-sasl: the journal (Debian 13 has no mail.log)');
+    eq(substr_count($calls(), 'fail2ban-client -t'), 2, 'fail2ban-client -t before and after');
+    file_put_contents($sx . '/jail.local', "[DEFAULT]\nbantime = 5m\n");
+    [$rc, $out] = $sh('create_jail_local');
+    ok($rc === 0 && (string) file_get_contents($sx . '/jail.local') === "[DEFAULT]\nbantime = 5m\n", 'an existing jail.local is left as it is');
+    unlink($sx . '/jail.local');
+    $flags(['f2b_bad']);
+    [$rc, ] = $sh('create_jail_local');
+    ok($rc === 1 && !is_file($sx . '/jail.local'), 'Fail2Ban configuration broken before: nothing created');
+    $flags(['f2b_rejects_new']);
+    [$rc, $out] = $sh('create_jail_local');
+    ok($rc === 1 && !is_file($sx . '/jail.local') && str_contains($out, 'removed again'), 'fail2ban-client -t rejects the new file: removed again');
+    file_put_contents($cfg, "<?php\n\$config['log_driver'] = 'syslog';\n\$config['log_dir'] = '/var/log/roundcube/';\n");
+    $flags(['no_pysystemd']);
+    [$rc, $out] = $sh('create_jail_local');
+    $jl2 = (string) @file_get_contents($sx . '/jail.local');
+    ok($rc === 0 && str_contains($jl2, "backend = systemd\nlogpath = /var/log/roundcube/errors.log\n") && str_contains($out, 'apt install python3-systemd'),
+        "log_driver 'syslog': roundcube-auth on the journal; log_dir from config.inc.php; missing python3-systemd is named");
+    unlink($sx . '/jail.local');
+    touch($sx . '/mail.log');
+    [$rc, ] = $sh('create_jail_local');
+    ok($rc === 0 && str_contains((string) @file_get_contents($sx . '/jail.local'), "[dovecot]\nenabled = true\nbackend = auto\n"), 'without python3-systemd but with mail.log: the mail jails read the file (auto)');
+    unlink($sx . '/jail.local'); unlink($sx . '/mail.log');
+    $flags([]);
+    file_put_contents($cfg, "<?php\n");
+    $sh('create_jail_local');
+
+    group('install.sh section 3: the template is exactly what the Fail2Ban tab and its root helper work with');
+    // the panel side: the real Commands::fail2banLoadConfig() and PanelController::f2bFields() on the created file
+    file_put_contents($work . '/f2b.env', "APP_ENV=prod\nF2B_JAIL_LOCAL=" . $sx . "/jail.local\n");
+    putenv('MAILPANEL_ENV_FILE=' . $work . '/f2b.env');
+    require_once $root . '/app/bootstrap.php';
+    $loaded = App\System\Commands::fail2banLoadConfig();
+    $fields = App\Panel\PanelController::f2bFields();
+    $missing = [];
+    foreach ($fields as $name => [$sec, $key]) {
+        if (!isset($loaded['values'][$sec][$key])) { $missing[] = "[$sec] $key"; }
+    }
+    ok($loaded['available'] === true && $missing === [], 'every field of the tab (' . count($fields) . ') has its line in the file — the tab only rewrites lines that exist' . ($missing ? ': missing ' . implode(', ', $missing) : ''));
+    $san = new ReflectionMethod(App\System\Commands::class, 'sanitize');
+    $types = ['findtime' => 'time', 'bantime' => 'bantime', 'maxretry' => 'retry', 'bantime.factor' => 'float', 'bantime.maxtime' => 'time', 'ignoreip' => 'ip_list'];
+    $drift = [];
+    foreach ($fields as $name => [$sec, $key, , $kind]) {
+        $v = (string) ($loaded['values'][$sec][$key] ?? '');
+        $back = $kind === 'check' ? ($v === 'true' ? 'true' : 'false') : (string) $san->invoke(null, $v, $types[$key] ?? 'text');
+        if ($back !== $v) { $drift[] = "[$sec] $key = $v -> $back"; }
+    }
+    ok($drift === [], 'saving the tab as rendered changes nothing (every value comes back from the sanitizer as it is)' . ($drift ? ': ' . implode('; ', $drift) : ''));
+    // the root side: the real helper, against the created file — every editable value changed to another valid one
+    $hDir = $work . '/f2bt';
+    @mkdir($hDir, 0777, true);
+    $hLive = $hDir . '/jail.local';
+    file_put_contents($hDir . '/prepend.php', '<?php define("LIVE", ' . var_export($hLive, true) . '); define("BAK", ' . var_export($hDir . '/bak', true)
+        . '); define("F2B", "php " . ' . var_export('"' . $fake . '"', true) . '); define("KEEP_BACKUPS", 3);');
+    $other = ['findtime' => '15m', 'bantime' => '2h', 'maxretry' => '7', 'bantime.factor' => '2', 'bantime.maxtime' => '2w', 'ignoreip' => '127.0.0.1/8 ::1 203.0.113.9',
+              'bantime.increment' => 'false', 'enabled' => 'false'];
+    $editable = array_unique(array_map(static fn(array $f): string => $f[0] . '|' . $f[1], array_values($fields)));
+    $shifted = []; $sec = null;
+    foreach (explode("\n", $jl) as $line) {
+        if (preg_match('/^\[([^\]]+)\]/', $line, $mm)) { $sec = $mm[1]; }
+        if (preg_match('/^([A-Za-z0-9_.]+) = /', $line, $mm) && in_array($sec . '|' . $mm[1], $editable, true)) {
+            $line = $mm[1] . ' = ' . ($sec === 'recidive' && $mm[1] === 'findtime' ? '2d' : $other[$mm[1]]);
+        }
+        $shifted[] = $line;
+    }
+    $shifted = implode("\n", $shifted);
+    $runHelper = static function (string $liveContent, string $proposal) use ($root, $hDir, $hLive): array {
+        file_put_contents($hLive, $liveContent);
+        foreach (glob($hDir . '/bak/*') ?: [] as $b) { @unlink($b); }
+        return runProc(['php', '-d', 'auto_prepend_file=' . $hDir . '/prepend.php', $root . '/scripts/mailpanel-f2b-apply.php'], $proposal);
+    };
+    [$rc, $out] = $runHelper($jl, $shifted);
+    ok($rc === 0 && str_contains($out, 'saved and reloaded (' . count($editable) . ' changes)'), 'helper: all ' . count($editable) . ' editable lines of the template are the options it lets the panel change (' . $out . ')');
+    [$rc, $out] = $runHelper($shifted, $jl);
+    ok($rc === 0 && str_starts_with($out, 'saved and reloaded'), 'helper: the template\'s own values are in the ranges it accepts (' . $out . ')');
+    ok(!preg_match('/^enabled\s*=/m', (string) preg_replace('/\n\[(?!DEFAULT\]).*$/s', '', $tpl)) && str_contains($tpl, "[recidive]\nenabled = true\nbackend = polling\nlogpath = /var/log/fail2ban.log\n"),
+        'no "enabled" under [DEFAULT] (the helper refuses it there); recidive reads fail2ban.log');
+
+    group('install.sh section 4: the policy file gets the server\'s time zone');
+    $tz = static function (array $files) use ($sh, $sx): string {
+        foreach (['timezone', 'timedatectl_out'] as $f) { @unlink($sx . '/' . $f); }
+        foreach ($files as $f => $c) { file_put_contents($sx . '/' . $f, $c); }
+        return $sh('system_tz')[1];
+    };
+    eq([$tz(['timezone' => "Europe/Warsaw\n"]), $tz(['timezone' => "Etc/UTC\n"]), $tz(['timezone' => "Mars/Olympus\n"]), $tz(['timezone' => "../../etc/passwd\n"]),
+        $tz(['timedatectl_out' => "Asia/Tokyo\n"]), $tz([])],
+        ['Europe/Warsaw', 'UTC', 'UTC', 'UTC', 'Asia/Tokyo', 'UTC'], '/etc/timezone, Etc/UTC -> UTC, unknown and hostile names -> UTC, timedatectl, nothing -> UTC');
+    if (@symlink($sx . '/zoneinfo/Europe/Warsaw', $sx . '/localtime')) {
+        eq($tz(['timezone' => "Asia/Tokyo\n"]), 'Europe/Warsaw', 'the /etc/localtime link wins over /etc/timezone');
+        unlink($sx . '/localtime');
+    } else {
+        skip('symlink() unavailable — the /etc/localtime link not tested', 1);
+    }
+    [$rc, $out] = $sh('render_template "$R/system/mailpanel-policy.cf.example" HASLO_MAILPOLICY 0123456789abcdef0123 | render_template - @TIMEZONE@ "Europe/Warsaw"');
+    file_put_contents($sx . '/policy.cf', $out);
+    $ini = @parse_ini_file($sx . '/policy.cf');
+    ok(is_array($ini) && ($ini['timezone'] ?? '') === 'Europe/Warsaw' && ($ini['password'] ?? '') === '0123456789abcdef0123' && substr_count($out, '0123456789abcdef0123') === 1,
+        'rendered policy.cf: the policy\'s own parser reads the zone and the password (the password only on its line)');
+    ok(str_contains($inst, 'render_template - @TIMEZONE@ "$(system_tz)"'), 'section 4 renders the server zone into the policy file');
+
+    group('install.sh section 6: Dovecot post-login wired as conf.d/99-roundcontrol-postlogin.conf, removed again on any error');
+    file_put_contents($sx . '/dovecot-postlogin.sh', "#!/bin/bash\nexec \"\$@\"\n");
+    chmod($sx . '/dovecot-postlogin.sh', 0755);
+    file_put_contents($sx . '/mysql-mailpanel.cnf', "[client]\n");
+    $snippet = (string) file_get_contents($root . '/system/dovecot/postlogin.conf.snippet');
+    $pconf = $sx . '/conf.d/99-roundcontrol-postlogin.conf';
+    $flags([]);
+    [$rc, $out] = $sh('dovecot_postlogin_active && echo ACTIVE; wire_dovecot_postlogin; echo "rc=$?"; dovecot_postlogin_active && echo ACTIVE2');
+    ok(!str_starts_with($out, 'ACTIVE') && str_contains($out, 'rc=0') && str_contains($out, 'ACTIVE2') && (string) @file_get_contents($pconf) === $snippet, 'wired: the snippet installed as is, doveconf -n shows the script');
+    ok(str_contains($calls(), 'systemctl reload dovecot'), 'Dovecot reloaded');
+    $flags([]);
+    [$rc, $out] = $sh('wire_dovecot_postlogin');
+    ok($rc === 0 && str_contains($out, 'already runs') && $calls() === '', 'second run: "already runs", no reload (idempotent)');
+    unlink($pconf);
+    $scenarios = [
+        'doveconf -n rejects the new file' => [['dove_rejects_new'], 'removed again'],
+        'dovecot.conf does not read conf.d/' => [['dove_noinclude'], 'does not include conf.d'],
+        'the reload fails'                   => [['reload_bad'], 'reload dovecot failed'],
+        'Dovecot already broken before'      => [['dove_bad'], 'BEFORE any change'],
+        'no vmail user'                      => [['no_vmail'], 'vmail does not exist'],
+    ];
+    foreach ($scenarios as $label => [$on, $needle]) {
+        $flags($on);
+        [$rc, $out] = $sh('wire_dovecot_postlogin');
+        ok($rc === 1 && !is_file($pconf) && str_contains($out, $needle), "$label: exit 1, no file left (" . $needle . ')');
+    }
+    $flags(['dove_manual']);
+    [$rc, $out] = $sh('wire_dovecot_postlogin');
+    ok($rc === 0 && !is_file($pconf) && str_contains($out, 'already runs'), 'wired by hand in dovecot.conf: nothing added');
+    $flags([]);
+    unlink($sx . '/dovecot-postlogin.sh');
+    [$rc, $out] = $sh('wire_dovecot_postlogin');
+    ok($rc === 1 && !is_file($pconf) && str_contains($out, 'run section 1 first'), 'script missing: nothing wired (every IMAP login would fail)');
+    ok(str_contains($snippet, 'executable = script-login /usr/local/bin/dovecot-postlogin.sh') && preg_match('/^POSTLOGIN_SCRIPT=\/usr\/local\/bin\/dovecot-postlogin\.sh$/m', $inst) === 1
+        && str_contains($inst, '"$SRC/scripts/dovecot-postlogin.sh" /usr/local/bin/'), 'the snippet, the check and section 1 name the same script path');
+
+    group('install.sh section 1b: the pool handler only with mod_proxy + mod_proxy_fcgi; section 7: *.pre-* copies are secrets');
+    $mods = static function (array $on) use ($sh, $flags): int { $flags($on); return $sh('apache_proxy_fcgi')[0]; };
+    eq([$mods([]), $mods(['no_proxy_fcgi']), $mods(['no_proxy']), $mods(['apache_M_bad'])], [0, 1, 1, 1], 'both modules: yes; without proxy_fcgi, without proxy, apache2ctl -M failing: no');
+    $flags(['no_proxy_fcgi']);
+    [$rc, $out] = $sh('php-fpm8.5() { :; }; setup_pool');
+    ok($rc === 1 && str_contains($out, 'a2enmod proxy_fcgi') && !str_contains($calls(), 'useradd'), 'setup_pool stops before changing anything and says how to enable the module');
+    ok(preg_match('/(SECRET_COPY_NAMES=\(.*?\)\nsecure_secret_copies\(\) \{.*?\n\})/s', $inst, $sm) === 1, 'install.sh: secure_secret_copies found');
+    foreach (['rc/config.inc.php.pre-password', 'rc/config/config.inc.php.pre-password', 'rc/config/config.inc.php.bak-1', 'rc/config/config.inc.php', 'rc/.env.example', 'rc/.env.pre-1.4', 'rc/config/defaults.inc.php'] as $f) {
+        file_put_contents($sx . '/' . $f, 'x');
+    }
+    file_put_contents($sx . '/secrets.sh', ($sm[1] ?? '') . "\n");
+    [$rc, $out] = $sh('chown() { echo "chown $*" >> "$T/calls"; }; . "$T/secrets.sh"; secure_secret_copies');
+    $sec = $calls();
+    ok(str_contains($sec, 'config.inc.php.pre-password') && str_contains($sec, '.env.pre-1.4') && str_contains($sec, 'config.inc.php.bak-1') && str_contains($out, '4 file(s)'),
+        '*.pre-* (config.inc.php.pre-password left by the old password-plugin installer), .env.*, *.bak*: root:root 600 (' . $out . ')');
+    ok(!preg_match('#/config\.inc\.php$|\.env\.example|defaults\.inc\.php#m', $sec), 'the live config, .env.example and Roundcube\'s own files are not touched');
+    blockSize($start, $size, 'install.sh sections 1b, 3, 4, 6, 7, 9');
+}
+
 echo "\n";
 echo ($T['fail'] === 0 ? 'OK' : 'BŁĘDY') . ": {$T['pass']} przeszło, {$T['fail']} nie, {$T['skip']} pominięto\n";
 foreach ($T['fails'] as $f) { echo "  FAIL: $f\n"; }

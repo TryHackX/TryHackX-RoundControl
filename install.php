@@ -337,8 +337,8 @@ function sqlStr(string $s): string
 
 /**
  * The time zone of this server: the /etc/localtime link, /etc/timezone or timedatectl; UTC when none of them names a
- * known zone. install.sh section 4 renders the same zone into /etc/mailpanel-policy.cf, so the panel ("sent today")
- * and the policy service (the daily counter) agree about the day.
+ * known zone. install.sh section 4 renders the same zone into /etc/mailpanel-policy.cf (the day of the daily counter
+ * itself comes from the database clock since 1.4.0, so the panel and the policy service agree about it either way).
  */
 function systemTimezone(): string
 {

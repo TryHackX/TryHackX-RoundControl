@@ -1,0 +1,65 @@
+# =====================================================================
+# /etc/fail2ban/jail.local — the base the panel's "Fail2Ban" tab edits.
+# install.sh section 3 creates it from this template when the file is missing (Debian 13 ships none) and never
+# overwrites an existing one; it fills in the Roundcube log path and the backends, and removes the file again if
+# fail2ban-client -t rejects it. root:root 644: the tab only PROPOSES changes, the root helper mailpanel-f2b-apply
+# checks them and rewrites this file in place.
+#
+# The tab edits exactly these options, and only lines that already exist (it adds none):
+#   [DEFAULT]                                      findtime, bantime, maxretry, bantime.increment, bantime.factor,
+#                                                  bantime.maxtime, ignoreip
+#   [roundcube-auth] [dovecot] [postfix-sasl] [recidive]   enabled, findtime, maxretry, bantime
+# What the helper accepts: maxretry 1..100; times from 60 s to one year (600, 10m, 1h30m, 1d, 1w), bantime also -1
+# (permanent); bantime.factor 1..10; ignoreip addresses and networks no broader than IPv4 /8 or IPv6 /32.
+# Everything else here is edited by hand, as root (keep one "option = value" per line). Each section below adds to the
+# jail of the same name in jail.conf (filter, port, actions stay Debian's). The panel's own jails (panel-permaban,
+# panel-tempban, mailpanel-portal) live in jail.d/mailpanel.local.
+# =====================================================================
+
+[DEFAULT]
+# Every jail inherits these, sshd included. Add your own fixed address, so a few typos never lock you out.
+ignoreip = 127.0.0.1/8 ::1
+bantime = 1h
+findtime = 10m
+maxretry = 5
+# a repeat offender is banned longer each time (bantime x 2^n x factor), at most bantime.maxtime
+bantime.increment = true
+bantime.factor = 1.5
+bantime.maxtime = 1w
+
+# Failed logins in Roundcube's errors.log ("Login failed for ... from ..."): its own form and IMAP errors.
+# backend: polling for the log file (Roundcube's default log_driver 'file'); systemd when config.inc.php sets
+# log_driver = 'syslog' (logpath is then ignored). A log_file_ext other than '.log' needs logpath edited by hand.
+[roundcube-auth]
+enabled = true
+backend = @RC_BACKEND@
+logpath = @RC_LOG@
+findtime = 10m
+maxretry = 5
+bantime = 1h
+
+# IMAP/POP3 password guessing. Debian 13 logs mail to the systemd journal (no /var/log/mail.log without rsyslog).
+[dovecot]
+enabled = true
+backend = @MAIL_BACKEND@
+findtime = 10m
+maxretry = 5
+bantime = 1h
+
+# SMTP AUTH password guessing (submission, submissions, smtp). On Debian Postfix runs as postfix@-.service.
+[postfix-sasl]
+enabled = true
+backend = @MAIL_BACKEND@
+journalmatch = _SYSTEMD_UNIT=postfix@-.service + _SYSTEMD_UNIT=postfix.service
+findtime = 10m
+maxretry = 5
+bantime = 1h
+
+# Repeat offenders of all jails, read from Fail2Ban's own log.
+[recidive]
+enabled = true
+backend = polling
+logpath = /var/log/fail2ban.log
+findtime = 1d
+maxretry = 5
+bantime = 1w
