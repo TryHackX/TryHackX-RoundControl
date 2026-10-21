@@ -1,0 +1,14 @@
+# /etc/systemd/system/mailpanel-tempban-expire.timer   (install.sh section 11)
+# Every minute (1.4.0): a timed ban from the panel ends at most about a minute late. The server has no cron — systemd
+# timers only. If the timer does not run, the panel still lifts due bans whenever it lists them, and Fail2Ban lifts
+# every ban of panel-tempban after the jail's 90 days.
+[Unit]
+Description=RoundControl: lift timed Fail2Ban bans every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

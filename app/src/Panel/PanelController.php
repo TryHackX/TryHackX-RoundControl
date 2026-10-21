@@ -45,6 +45,7 @@ final class PanelController
     private LogRepository $logs;
     private AdminRepository $admins;
     private AuditLog $audit;
+    private TempBans $tempBans;
 
     private string $success = '';
     private string $error   = '';
@@ -76,6 +77,7 @@ final class PanelController
         $this->logs   = new LogRepository($this->pdo);
         $this->admins = new AdminRepository($this->pdo);
         $this->audit  = new AuditLog($this->pdo);
+        $this->tempBans = new TempBans($this->pdo);
     }
 
     public function handle(): void
@@ -729,9 +731,8 @@ final class PanelController
         // (2) jail Fail2Ban panel-tempban — firewall, czyli także webmail, IMAP i SMTP. Gdy Fail2Ban jest
         // niedostępny, ban obejmuje tylko portal/panel i komunikat mówi to wprost.
         $f2b = false;
-        if (in_array('panel-tempban', Commands::fail2banJails(), true)) {
-            $f2b = Commands::fail2banSetBantime('panel-tempban', max(60, $duration * 60))
-                && Commands::fail2banBan('panel-tempban', $ip);
+        if (in_array(TempBans::JAIL, Commands::fail2banJails(), true)) {
+            $f2b = $this->tempBans->ban($ip, max(TempBans::MIN_SECONDS, $duration * 60));
         }
         $this->bans->ban($ipBin, $duration, $reason . ($f2b ? BanRepository::F2B_MARK : ''));
         $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
@@ -1089,23 +1090,23 @@ final class PanelController
             return;
         }
         // 1.4.0: ban in the target jail FIRST, unban from the source only after that worked — the other order left the
-        // address banned nowhere when setting the ban time or the ban itself failed
-
-        // Ban czasowy: przy przenoszeniu do panel-tempban można podać czas
-        // (1h..3 miesiące) — ustawiany tak samo jak przy banie ze skanera.
+        // address banned nowhere when the ban failed. Into panel-tempban only with a duration (1 hour .. 90 days, as
+        // from the scanner): the panel lifts that ban itself when the time is up (TempBans).
         $durTxt = '';   // " na 3 dni" w języku administratora
         $durLog = '';   // to samo w języku serwisu (dziennik audytowy)
-        $dur    = (int) ($_POST['duration'] ?? 0);
-        if ($to === 'panel-tempban' && $dur >= 3600 && $dur <= 7776000) {
-            if (!Commands::fail2banSetBantime('panel-tempban', $dur)) {
-                $this->error = t('msg.f2b.bantime_failed', ['cmd' => 'set panel-tempban bantime <' . t('msg.f2b.seconds') . '>']);
+        if ($to === TempBans::JAIL) {
+            $dur = (int) ($_POST['duration'] ?? 0);
+            if ($dur < 3600 || $dur > TempBans::MAX_SECONDS) {
+                $this->error = t('msg.scan.bad_duration');
                 return;
             }
             $durTxt = t('msg.bans.for_dur', ['dur' => self::durationText($dur)]);
             $durLog = Lang::site('msg.bans.for_dur', ['dur' => self::durationText($dur, true)]);
+            $banned = $this->tempBans->ban($ip, $dur);
+        } else {
+            $banned = Commands::fail2banBan($to, $ip);
         }
-
-        if (!Commands::fail2banBan($to, $ip)) {
+        if (!$banned) {
             $this->error = t('msg.f2b.move_failed');     // the address stays banned where it was
             return;
         }
@@ -1117,8 +1118,12 @@ final class PanelController
             ? t('msg.bans.moved', $move)
             : t('msg.bans.moved_for', $move + ['dur' => $durTxt]);
         $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
-        if ($from !== '' && $from !== $to && !Commands::fail2banUnban($from, $ip)) {
-            $this->error = t('msg.bans.moved_unban_failed', $move);   // now in both jails: harmless, but say so
+        if ($from !== '' && $from !== $to) {
+            if (!Commands::fail2banUnban($from, $ip)) {
+                $this->error = t('msg.bans.moved_unban_failed', $move);   // now in both jails: harmless, but say so
+            } elseif ($from === TempBans::JAIL) {
+                $this->tempBans->forget($ip);
+            }
         }
     }
 
@@ -1140,6 +1145,9 @@ final class PanelController
                 return;
             }
             if (Commands::fail2banUnban($jail, $ip)) {
+                if ($jail === TempBans::JAIL) {
+                    $this->tempBans->forget($ip);
+                }
                 $this->audit->log('UNBAN_IP', Lang::site('audit.unban_f2b', ['ip' => $ip, 'jail' => $jail]));
                 $this->success = t('msg.bans.unbanned_f2b', ['ip' => $ip]);
                 $this->refresh = array_merge($this->refresh, ['bans', 'stats']);
@@ -1153,7 +1161,10 @@ final class PanelController
         $reason = $this->bans->reasonFor($ipBin);
         $also   = '';   // '' | 'also' (zdjęto też wpis w Fail2Ban) | 'warn' (wpisu w Fail2Ban nie udało się zdjąć)
         if ($reason !== null && str_contains($reason, BanRepository::F2B_MARK)) {
-            $also = Commands::fail2banUnban('panel-tempban', $ip) ? 'also' : 'warn';
+            $also = Commands::fail2banUnban(TempBans::JAIL, $ip) ? 'also' : 'warn';
+            if ($also === 'also') {
+                $this->tempBans->forget($ip);
+            }
         }
         $this->bans->unbanLocal($ipBin);
         $this->audit->log('UNBAN_IP', match ($also) {
@@ -1398,18 +1409,15 @@ final class PanelController
             Http::json(['ok' => true, 'label' => t('msg.scan.label_perma')]);
         }
 
-        // Ban czasowy: 1h..3 miesiące
+        // Ban czasowy: 1h..3 miesiące (1.4.0: the panel lifts it when the time is up — TempBans)
         $seconds = (int) $mode;
-        if ($seconds < 3600 || $seconds > 7776000) {
+        if ($seconds < 3600 || $seconds > TempBans::MAX_SECONDS) {
             Http::json(['ok' => false, 'error' => t('msg.scan.bad_duration')]);
         }
-        if (!in_array('panel-tempban', $jails, true)) {
+        if (!in_array(TempBans::JAIL, $jails, true)) {
             Http::json(['ok' => false, 'error' => t('msg.scan.no_tempban')]);
         }
-        if (!Commands::fail2banSetBantime('panel-tempban', $seconds)) {
-            Http::json(['ok' => false, 'error' => t('msg.scan.bantime_failed', ['cmd' => 'set panel-tempban bantime <' . t('msg.f2b.seconds') . '>'])]);
-        }
-        if (!Commands::fail2banBan('panel-tempban', $ip)) {
+        if (!$this->tempBans->ban($ip, $seconds)) {
             Http::json(['ok' => false, 'error' => t('msg.scan.ban_failed')]);
         }
 
@@ -1484,11 +1492,26 @@ final class PanelController
     private function collectBans(array $jails): array
     {
         $bans = $this->bans->activeLocal();
+        $ends = [];
+        if (in_array(TempBans::JAIL, $jails, true)) {
+            // 1.4.0: lift what is due right away (the timer does it every minute), then show the panel's own end of each
+            // timed ban — Fail2Ban would show "start + 90 days" (the jail's fixed bantime) for every one of them
+            try {
+                $this->tempBans->expire(25);
+                $ends = $this->tempBans->ends();
+            } catch (Throwable $e) {
+                error_log('mailpanel: timed bans: ' . $e->getMessage());
+            }
+        }
         foreach ($jails as $jail) {
             $isPerma = $jail === 'panel-permaban';
-            $isTemp  = $jail === 'panel-tempban';
+            $isTemp  = $jail === TempBans::JAIL;
             foreach (Commands::fail2banBansWithTime($jail) as $b) {
                 $perm = $isPerma || $b['perm'];
+                if ($isTemp && !$perm) {
+                    $key = Ip::toStr((string) Ip::toBin($b['ip'])) ?? '';
+                    $b['end'] = $ends[$key] ?? $b['end'];
+                }
                 $bans[] = [
                     'type' => 'fail2ban', 'ip_address' => $b['ip'],
                     'reason' => $isPerma

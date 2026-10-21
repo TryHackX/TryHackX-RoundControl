@@ -126,8 +126,7 @@ group('sudoers: polecenia panelu są dozwolone');
 foreach ([
     "$F2B ping", "$F2B status", "$F2B status dovecot", "$F2B status panel-tempban", "$F2B status roundcube-auth",
     "$F2B set dovecot banip 203.0.113.7", "$F2B set panel-permaban banip 2001:db8::7",
-    "$F2B set recidive unbanip 203.0.113.7", "$F2B set dovecot unbanip 2001:db8::7",
-    "$F2B set panel-tempban bantime 86400", "$F2B set panel-tempban bantime 60", "$F2B set panel-tempban bantime 7776000",
+    "$F2B set recidive unbanip 203.0.113.7", "$F2B set dovecot unbanip 2001:db8::7", "$F2B set panel-tempban unbanip 203.0.113.7",
     "$F2B get dovecot banip --with-time",
     '/usr/local/sbin/mailpanel-f2b-apply',
     '/usr/bin/doveadm -f flow quota get -u user.name+tag@example.com',
@@ -147,10 +146,11 @@ foreach ([
     "$F2B set dovecot banip 1.2.3.4\n", "$F2B set dovecot addaction x", "$F2B set dovecot addlogpath /etc/shadow",
     "$F2B set dovecot unbanip 1.2.3.4 extra", "$F2B set panel-tempban bantime 60 extra", "$F2B set panel-tempban bantime abc",
     "$F2B set panel-tempban bantime", "$F2B get dovecot banip", "$F2B get dovecot banip --with-time extra",
-    // bantime TYLKO dla panel-tempban: inaczej www-data wyłączyłby ochronę sshd / recidive ustawiając 1 s
+    // 1.4.0: bantime of NO jail — panel-tempban keeps a fixed one (the panel lifts its timed bans itself)
     "$F2B set sshd bantime 1", "$F2B set sshd bantime 3600", "$F2B set recidive bantime 10", "$F2B set dovecot bantime 60",
     "$F2B set panel-permaban bantime 3600", "$F2B set panel-tempban bantime -1", "$F2B set panel-tempban bantime 1",
     "$F2B set panel-tempban bantime 77760000", "$F2B set panel-tempban bantime 99999999999",
+    "$F2B set panel-tempban bantime 86400", "$F2B set panel-tempban bantime 60", "$F2B set panel-tempban bantime 7776000",
     "$F2B status dovecot extra", "$F2B status ../x", "$F2B status 'a b'", "$F2B ping extra",
     "$F2B reload", "$F2B reload now",                                    // reload robi helper, reguły już nie ma
     "$F2B start", "$F2B stop", "$F2B restart", "$F2B unban --all", "$F2B -c /tmp/evil status", "$F2B set loglevel 4",
@@ -196,7 +196,7 @@ ok(!str_contains($code, '/var/lib/mailpanel-f2b'), 'brak pliku propozycji w kata
 ok(!preg_match('/file_put_contents\(\$file\b/', $code), 'Commands.php nie zapisuje jail.local bezpośrednio');
 ok(!str_contains($code, 'is_writable($file)'), 'brak sprawdzania zapisywalności jail.local (należy do roota)');
 ok(!str_contains($code, 'fail2banReload') && !str_contains($code, 'fail2ban-client reload'), 'brak wywołań fail2ban-client reload (reload robi helper)');
-ok(preg_match("/sudo -n fail2ban-client set panel-tempban bantime/", $cmd) === 1, 'bantime ustawiany tylko dla panel-tempban');
+ok(preg_match('/fail2ban-client set [^\'"]*bantime/', $code) === 0, '1.4.0: panel nie ustawia bantime żadnego jaila (Fail2Ban przelicza nim KAŻDY ręczny ban)');
 
 group('helper vs Commands.php: te same sekcje i opcje (osobno dla każdej sekcji)');
 $helper = (string) file_get_contents($root . '/scripts/mailpanel-f2b-apply.php');

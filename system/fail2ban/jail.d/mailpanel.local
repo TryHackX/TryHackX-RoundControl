@@ -24,10 +24,12 @@ bantime.increment = false
 findtime = 1d
 maxretry = 1000000
 
-# TIMED blocks from the panel (scanner and "Manage": 1 hour .. 90 days)
-# (1.4.0) The panel sets bantime right before every banip, but after a Fail2Ban restart (package upgrade, reboot) the
-# jail restores only the bans younger than the bantime written HERE, capped to it. So this is the longest ban the panel
-# hands out (90 days); with 24h (up to 1.3.2) a 30-day ban vanished on the first restart.
+# TIMED blocks from the panel ("Ban", the scanner and "Manage": 1 minute .. 90 days)
+# (1.4.0) Fail2Ban gives a manually banned address no ban time of its own: it ends every such ban by the jail's CURRENT
+# bantime, and after a restart it restores only the bans younger than it. So the bantime here is fixed at the longest
+# ban the panel hands out — 90 days — and never changed at runtime: the panel stores the end of each of its bans and
+# lifts the ban itself (timer mailpanel-tempban-expire, every minute). Up to 1.3.2 the panel set the bantime before
+# every ban, which re-timed all the other bans as well.
 [panel-tempban]
 enabled = true
 filter = panel-tempban

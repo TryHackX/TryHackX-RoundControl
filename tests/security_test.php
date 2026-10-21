@@ -324,6 +324,21 @@ ok(!App\Security\Password::meetsPolicy('Aa1!' . str_repeat('x', 253)) && App\Sec
 eq([Ip::toBin('::ffff:198.51.100.9'), Ip::toBin('198.51.100.9'), strlen((string) Ip::toBin('2001:db8::1'))], [inet_pton('198.51.100.9'), inet_pton('198.51.100.9'), 16], 'toBin: ::ffff:a.b.c.d = IPv4 (4 bajty)');
 ok(Ip::inCidr('::ffff:198.51.100.77', '198.51.100.0/24'), 'inCidr: ::ffff:… pasuje do sieci IPv4');
 
+group('1.4.0: bany czasowe — stały bantime jaila, timer, brak reguły bantime w sudoers');
+$jailFile = (string) file_get_contents(PROJECT_ROOT . '/system/fail2ban/jail.d/mailpanel.local');
+preg_match('/^\[panel-tempban\]\s*$(.*?)^\[/ms', $jailFile, $sec);
+preg_match('/^bantime\s*=\s*(\S+)\s*$/m', $sec[1] ?? '', $bt);
+eq($bt[1] ?? null, '90d', 'jail.d/mailpanel.local: [panel-tempban] bantime = 90d');
+eq(90 * 86400, App\Panel\TempBans::MAX_SECONDS, 'TempBans::MAX_SECONDS = bantime jaila (najdłuższy ban panelu)');
+$svc = (string) file_get_contents(PROJECT_ROOT . '/system/systemd/mailpanel-tempban-expire.service');
+$tmr = (string) file_get_contents(PROJECT_ROOT . '/system/systemd/mailpanel-tempban-expire.timer');
+ok(str_contains($svc, "\nUser=mailweb\n") && str_contains($svc, "\nExecStart=/usr/bin/php /var/www/roundcube/app/cli/tempban-expire.php\n")
+    && str_contains($svc, "\nConditionPathExists=/var/www/roundcube/app/cli/tempban-expire.php\n"), 'usługa timera: jako użytkownik puli, uruchamia app/cli/tempban-expire.php');
+ok(is_file(PROJECT_ROOT . '/app/cli/tempban-expire.php'), 'skrypt timera jest w app/cli/ (wdrażany razem z kodem)');
+ok(!preg_match('/^NoNewPrivileges/m', $svc), 'usługa timera bez NoNewPrivileges (zdejmuje bany przez sudo, jak pula php-fpm)');
+ok(str_contains($tmr, "\nOnUnitActiveSec=1min\n") && str_contains($tmr, "\nWantedBy=timers.target\n"), 'timer: co minutę');
+ok(!str_contains((string) file_get_contents(PROJECT_ROOT . '/system/sudoers.d/mailpanel'), ' bantime '), 'sudoers: brak reguły set … bantime (stały bantime jaila)');
+
 echo "\n";
 echo ($T['fail'] === 0 ? 'OK' : 'BŁĘDY') . ": {$T['pass']} przeszło, {$T['fail']} nie\n";
 foreach ($T['fails'] as $f) { echo "  FAIL: $f\n"; }

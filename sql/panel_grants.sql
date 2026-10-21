@@ -44,6 +44,8 @@ GRANT SELECT, DELETE                 ON mailserver.user_login_events    TO 'mail
 GRANT SELECT, DELETE                 ON mailserver.send_counters        TO 'mailpanel'@'localhost';
 GRANT SELECT, INSERT, DELETE         ON mailserver.throttle_events      TO 'mailpanel'@'localhost';
 GRANT SELECT, INSERT, UPDATE         ON mailserver.deleted_accounts     TO 'mailpanel'@'localhost';
+-- 1.4.0: the end of each timed Fail2Ban ban (the panel and its expiry timer lift the bans whose time is up)
+GRANT SELECT, INSERT, UPDATE, DELETE ON mailserver.f2b_tempbans         TO 'mailpanel'@'localhost';
 GRANT EXECUTE ON PROCEDURE mailserver.sp_register_login                 TO 'mailpanel'@'localhost';
 -- 1.3.2: przechowywanie logów — usuwanie wyłącznie przez procedurę (wpisy starsze niż okno, min. 90 dni), nigdy DELETE
 GRANT EXECUTE ON PROCEDURE mailserver.sp_prune_logs                     TO 'mailpanel'@'localhost';

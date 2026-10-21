@@ -62,18 +62,33 @@ final class Commands
     /** @return string[] */
     public static function fail2banBans(string $jail): array
     {
-        if (!self::enabled()) {
-            return [];
+        return self::fail2banBanList($jail) ?? [];
+    }
+
+    /**
+     * The addresses banned in the jail; null = Fail2Ban did not answer (1.4.0: the expiry of timed bans must tell "no
+     * longer banned" from "cannot ask").
+     *
+     * @return string[]|null
+     */
+    public static function fail2banBanList(string $jail): ?array
+    {
+        if (!self::enabled() || preg_match('/^[A-Za-z0-9_-]+$/', $jail) !== 1) {
+            return null;
         }
         $out = [];
-        exec(self::QUICK . 'sudo -n fail2ban-client status ' . escapeshellarg($jail), $out);
+        $ret = 0;
+        exec(self::QUICK . 'sudo -n fail2ban-client status ' . escapeshellarg($jail) . ' 2>/dev/null', $out, $ret);
+        if ($ret !== 0) {
+            return null;
+        }
         foreach ($out as $line) {
             if (preg_match('/Banned IP list:\s*(.*)/', $line, $m)) {
                 $list = trim($m[1]);
                 return $list === '' ? [] : (preg_split('/[\s,]+/', $list, -1, PREG_SPLIT_NO_EMPTY) ?: []);
             }
         }
-        return [];
+        return null;
     }
 
     /**
@@ -146,21 +161,9 @@ final class Commands
         return $ret === 0;
     }
 
-    /**
-     * Zmiana bieżącego bantime jaila panelu `panel-tempban` (reguła sudoers: set panel-tempban bantime <sekundy>).
-     * Ban czasowy z panelu = ustaw bantime, potem banip — f2b przypisuje czas obowiązujący w momencie bana, więc każdy
-     * ban ma własny okres. Wyłącznie ten jail: reguła sudoers nie pozwala zmieniać bantime sshd / recidive itd.
-     */
-    public static function fail2banSetBantime(string $jail, int $seconds): bool
-    {
-        if (!self::enabled() || $jail !== 'panel-tempban' || $seconds < 60 || $seconds > 7776000) {
-            return false;
-        }
-        $out = [];
-        $ret = 0;
-        exec(self::QUICK . 'sudo -n fail2ban-client set panel-tempban bantime ' . $seconds . ' 2>/dev/null', $out, $ret);
-        return $ret === 0;
-    }
+    // 1.4.0: fail2banSetBantime() removed. Fail2Ban ends every manually banned address by the jail's CURRENT bantime, so
+    // setting it before each ban re-timed all the other bans; timed bans are App\Panel\TempBans now (fixed 90-day jail,
+    // the panel lifts each ban when its time is up).
 
     /**
      * Uruchamia polecenie i podaje $stdin na jego standardowe wejście (dane nie przechodzą przez plik ani przez

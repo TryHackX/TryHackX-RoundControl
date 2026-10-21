@@ -11,7 +11,9 @@
 -- 3) an index on virtual_aliases.source (Postfix and the panel look aliases up by source).
 -- 4) both procedures again (sp_prune_logs keeps tombstones with files_left = 1; sp_register_login only so its
 --    parameters take the database collation). CREATE OR REPLACE keeps the EXECUTE grants.
--- No grant changes. Idempotent: a second run changes nothing.
+-- 5) the table f2b_tempbans (the end of each timed Fail2Ban ban of the panel) and, LAST, its grant for the panel's
+--    database account. If yours is not 'mailpanel'@'localhost', that one statement fails: run it for your account.
+-- Idempotent: a second run changes nothing.
 -- =====================================================================
 
 SET NAMES utf8mb4;
@@ -31,6 +33,17 @@ DEALLOCATE PREPARE rc_stmt;
 ALTER TABLE deleted_accounts ADD COLUMN IF NOT EXISTS files_left TINYINT(1) NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_source ON virtual_aliases (source);
+
+-- 1.4.0: the end of each timed Fail2Ban ban the panel put into the jail panel-tempban. Fail2Ban ends a manually banned
+-- address only by the jail's CURRENT bantime, so the jail keeps a fixed 90 days and the panel lifts each ban itself when
+-- until_ts has passed (timer mailpanel-tempban-expire, App\Panel\TempBans). ip = VARBINARY(16) as in ip_blocks.
+CREATE TABLE IF NOT EXISTS f2b_tempbans (
+  ip VARBINARY(16) NOT NULL,
+  until_ts DATETIME NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (ip),
+  KEY idx_until_ts (until_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DELIMITER $$
 CREATE OR REPLACE PROCEDURE sp_register_login (IN p_email VARCHAR(190), IN p_ip_str VARCHAR(45))
@@ -186,3 +199,9 @@ SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_
 PREPARE rc_stmt FROM @rc_sql;
 EXECUTE rc_stmt;
 DEALLOCATE PREPARE rc_stmt;
+SET @rc_sql := (SELECT IF(@rc_coll IS NULL OR REPLACE(TABLE_COLLATION, 'utf8mb3_', 'utf8mb4_') = @rc_coll, 'DO 0', CONCAT('ALTER TABLE f2b_tempbans CONVERT TO CHARACTER SET utf8mb4 COLLATE ', @rc_coll)) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'f2b_tempbans');
+PREPARE rc_stmt FROM @rc_sql;
+EXECUTE rc_stmt;
+DEALLOCATE PREPARE rc_stmt;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON f2b_tempbans TO 'mailpanel'@'localhost';

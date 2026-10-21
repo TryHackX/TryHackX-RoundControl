@@ -718,6 +718,87 @@ try {
         ok(str_contains($o1['error'], 'SCAN_TRUSTED_IPS') && str_contains($o2['error'], 'SCAN_TRUSTED_IPS'), "ręczny ban i przeniesienie: $tip odrzucony jako zaufany");
     }
 
+    /* -------------------------------------------------------------- bany czasowe */
+    group('1.4.0: bany czasowe — koniec każdego bana w f2b_tempbans, panel zdejmuje je sam (TempBans)');
+    // Fail2Ban na niby: ban/unban/lista jak fail2ban-client (unban adresu, który nie jest zbanowany = błąd)
+    $f2b = ['banned' => [], 'calls' => [], 'failBan' => false, 'failUnban' => [], 'listNull' => false];
+    $tb = new App\Panel\TempBans(
+        App\Support\Database::pdo(),
+        static function (string $jail, string $ip) use (&$f2b): bool {
+            $f2b['calls'][] = "ban $jail $ip";
+            if ($f2b['failBan']) { return false; }
+            $f2b['banned'][$ip] = true;
+            return true;
+        },
+        static function (string $jail, string $ip) use (&$f2b): bool {
+            $f2b['calls'][] = "unban $jail $ip";
+            if (in_array($ip, $f2b['failUnban'], true) || !isset($f2b['banned'][$ip])) { return false; }
+            unset($f2b['banned'][$ip]);
+            return true;
+        },
+        static function (string $jail) use (&$f2b): ?array {
+            $f2b['calls'][] = "list $jail";
+            return $f2b['listNull'] ? null : array_map('strval', array_keys($f2b['banned']));
+        }
+    );
+    $left = static function (string $ip) use ($admin): ?int {
+        $s = $admin->prepare('SELECT TIMESTAMPDIFF(SECOND, NOW(), until_ts) FROM f2b_tempbans WHERE ip = ?');
+        $s->execute([App\Support\Ip::toBin($ip)]);
+        $v = $s->fetchColumn();
+        return $v === false ? null : (int) $v;
+    };
+    $due = static fn(string $ip) => $admin->prepare('UPDATE f2b_tempbans SET until_ts = NOW() - INTERVAL 1 SECOND WHERE ip = ?')->execute([App\Support\Ip::toBin($ip)]);
+
+    ok($tb->ban('203.0.113.5', 3600) && isset($f2b['banned']['203.0.113.5']), 'ban na godzinę: adres w jailu');
+    ok(abs((int) $left('203.0.113.5') - 3600) <= 5, 'koniec bana zapisany: za ~3600 s (' . var_export($left('203.0.113.5'), true) . ')');
+    ok($tb->ban('2001:DB8::5', 86400) && in_array('ban panel-tempban 2001:db8::5', $f2b['calls'], true), 'IPv6 trafia do Fail2Ban w postaci kanonicznej (2001:db8::5)');
+    ok($tb->ban('::ffff:203.0.113.9', 600) && in_array('ban panel-tempban 203.0.113.9', $f2b['calls'], true), '::ffff:a.b.c.d = ten sam klient IPv4');
+    ok($tb->ban('203.0.113.5', 7200) && abs((int) $left('203.0.113.5') - 7200) <= 5, 'ponowny ban tego samego adresu: nowy koniec');
+    eq($count('SELECT COUNT(*) FROM f2b_tempbans WHERE ip = ?', [App\Support\Ip::toBin('203.0.113.5')]), 1, 'jeden wiersz na adres');
+    $f2b['failBan'] = true;
+    ok(!$tb->ban('203.0.113.6', 600) && $left('203.0.113.6') === null, 'ban nieudany: wiersz cofnięty');
+    ok(!$tb->ban('203.0.113.5', 60) && abs((int) $left('203.0.113.5') - 7200) <= 5, 'ban nieudany przy istniejącym wierszu: poprzedni koniec zostaje');
+    $f2b['failBan'] = false;
+    $before = count($f2b['calls']);
+    ok(!$tb->ban('203.0.113.7', 59) && !$tb->ban('203.0.113.7', 7776001) && !$tb->ban('nie-adres', 600), 'czas spoza 60 s .. 90 dni albo zły adres: odmowa');
+    eq(count($f2b['calls']), $before, '...bez wołania Fail2Ban');
+    $ends = $tb->ends();
+    ok(isset($ends['203.0.113.5'], $ends['2001:db8::5']) && abs($ends['2001:db8::5'] - time() - 86400) <= 5, 'ends(): adres => koniec (epoch) dla listy banów');
+
+    $due('203.0.113.5');
+    $f2b['calls'] = [];
+    eq($tb->expire(), ['203.0.113.5'], 'expire(): zdejmuje tylko bany po czasie');
+    ok(!isset($f2b['banned']['203.0.113.5']) && $left('203.0.113.5') === null && $left('2001:db8::5') !== null, '...ban zdjęty w Fail2Ban, wiersz usunięty, reszta nietknięta');
+    eq($tb->expire(), [], 'expire() drugi raz: nic do zrobienia');
+    $tb->ban('203.0.113.7', 600);
+    $due('203.0.113.7');
+    $f2b['failUnban'] = ['203.0.113.7'];
+    eq($tb->expire(), [], 'unban się nie udał, adres nadal zbanowany: wiersz zostaje (następny przebieg spróbuje znowu)');
+    ok($left('203.0.113.7') !== null, '...wiersz jest');
+    $tb->ban('203.0.113.8', 600);
+    $due('203.0.113.8');
+    unset($f2b['banned']['203.0.113.8']);                       // zdjęty ręcznie (fail2ban-client) przed czasem
+    eq($tb->expire(), ['203.0.113.8'], 'adresu już nie ma w jailu: wiersz usunięty bez ponawiania');
+    $f2b['listNull'] = true;
+    $f2b['calls'] = [];
+    eq($tb->expire(), [], 'Fail2Ban nie odpowiada: nic nie usunięte');
+    ok($left('203.0.113.7') !== null && $f2b['calls'] === ['unban panel-tempban 203.0.113.7', 'list panel-tempban'], '...i przebieg przerwany po pierwszym adresie: ' . implode(' | ', $f2b['calls']));
+    $f2b['listNull'] = false;
+    $f2b['failUnban'] = [];
+    eq($tb->expire(), ['203.0.113.7'], 'Fail2Ban znowu działa: zaległy ban zdjęty');
+    $tb->forget('2001:DB8::5');
+    ok($left('2001:db8::5') === null, 'forget(): ban zdjęty ręcznie albo przeniesiony — koniec zapomniany');
+
+    // skrypt timera: jako osobny proces z tym samym .env (tryb dev: Commands nic nie robi, więc nic nie zdejmuje)
+    $tb->ban('203.0.113.9', 600);
+    $due('203.0.113.9');
+    $p = proc_open(['php', $root . '/app/cli/tempban-expire.php'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    $cliOut = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+    fclose($pipes[1]); fclose($pipes[2]);
+    $cliCode = proc_close($p);
+    ok($cliCode === 0 && $cliOut === '' && $left('203.0.113.9') !== null, 'app/cli/tempban-expire.php: kod 0, cisza, bez Fail2Ban wiersz zostaje (' . $cliCode . ' ' . trim($cliOut) . ')');
+    $admin->exec('DELETE FROM f2b_tempbans');
+
     /* -------------------------------------------------------------- panel_config.php */
     group('config/panel_config.php: tylko dozwolone klucze rc_*');
     $admin->exec("REPLACE INTO app_settings (k, v) VALUES ('rc_imap_host', 'evil.example'), ('rc_smtp_host', 'evil.example'), ('rc_max_recipients', '12'), ('rc_sendmail_delay', 'abc'), ('rc_login_rate_limit', '999999'), ('rc_des_key', 'x'), ('rcx', 'y')");
@@ -818,6 +899,9 @@ try {
     // 1.4.0: upgrade_1.4.0.sql na bazie w stanie 1.3.2 — bez files_left i indeksu, tabela panelu w innej kolacji (MariaDB 11.5+)
     $admin->exec('ALTER TABLE deleted_accounts DROP COLUMN files_left');
     $admin->exec('DROP INDEX idx_source ON virtual_aliases');
+    // stan 1.3.2: bez tabeli i bez jej grantu (DROP TABLE grantu NIE odbiera — osobny REVOKE)
+    $admin->exec("REVOKE SELECT, INSERT, UPDATE, DELETE ON `$db`.f2b_tempbans FROM '$uPanel'@'localhost'");
+    $admin->exec('DROP TABLE f2b_tempbans');
     $admin->exec('ALTER TABLE throttle_events CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci');
     $mailColl = (string) $admin->query("SELECT REPLACE(COLLATION_NAME, 'utf8mb3_', 'utf8mb4_') FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'virtual_users' AND COLUMN_NAME = 'email'")->fetchColumn();
@@ -829,6 +913,9 @@ try {
     eq((string) $admin->query("SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'throttle_events'")->fetchColumn(), $mailColl,
         'upgrade_1.4.0.sql: tabela panelu dostaje kolację virtual_users.email');
     ok($callProc($panelPdo, 365) !== [], 'upgrade_1.4.0.sql: procedura odtworzona, konto panelu ma EXECUTE');
+    $tbUp = new App\Panel\TempBans($panelPdo, static fn() => true, static fn() => true, static fn() => []);
+    ok($tbUp->ban('203.0.113.77', 600) && $tbUp->ends() !== [], 'upgrade_1.4.0.sql: tabela f2b_tempbans i grant konta panelu (zapis, odczyt)');
+    $tbUp->forget('203.0.113.77');
     runSql($admin, $mk('upgrade_1.4.0.sql', $names));
     ok($callProc($panelPdo, 365) !== [], 'upgrade_1.4.0.sql: drugie uruchomienie bez błędów (idempotentny)');
     // raz na dobę

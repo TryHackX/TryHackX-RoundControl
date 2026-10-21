@@ -1,0 +1,23 @@
+# /etc/systemd/system/mailpanel-tempban-expire.service   (install.sh section 11)
+# Lifts the panel's timed Fail2Ban bans whose time is up (1.4.0). Fail2Ban ends a manually banned address only by the
+# jail's CURRENT bantime, so panel-tempban keeps a fixed 90 days and the panel stores the end of each of its bans in the
+# table f2b_tempbans; this job unbans what is due. It runs as the panel's PHP user and unbans through the panel's own
+# sudo rule — no rights beyond the panel's. install.sh writes the user and the Roundcube path in.
+# Started by mailpanel-tempban-expire.timer (every minute); by hand:  systemctl start mailpanel-tempban-expire.service
+[Unit]
+Description=RoundControl: lift timed Fail2Ban bans whose time is up
+After=mariadb.service fail2ban.service
+ConditionPathExists=/var/www/roundcube/app/cli/tempban-expire.php
+
+[Service]
+Type=oneshot
+User=mailweb
+Group=mailweb
+ExecStart=/usr/bin/php /var/www/roundcube/app/cli/tempban-expire.php
+Nice=5
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+# No NoNewPrivileges=: the unban goes through sudo, exactly as from the panel's php-fpm pool.
+# Every minute: the job's own "started/finished" lines stay out of the journal; lifted bans (notice) and errors stay in.
+LogLevelMax=notice

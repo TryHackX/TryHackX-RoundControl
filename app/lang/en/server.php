@@ -78,10 +78,8 @@ return [
     'msg.f2b.bad_jail_from'  => 'Invalid source jail.',
     'msg.f2b.banned'         => 'IP :ip has been banned in Fail2Ban (jail: :jail).',
     'msg.f2b.ban_failed'     => 'Fail2Ban command failed — check the sudoers rule: :cmd (file system/sudoers.d/mailpanel).',
-    'msg.f2b.bantime_failed' => 'Failed to set the ban time (sudoers: :cmd).',
     'msg.f2b.move_failed'    => 'Fail2Ban command failed while moving the ban.',
     'msg.f2b.cmd_failed'     => 'Fail2Ban command failed.',
-    'msg.f2b.seconds'        => 'seconds',
 
     /* ------------------------------------------------------------------ accounts */
     'msg.users.gone_refreshed'  => 'This account no longer exists (deleted in another tab?) — the list has been refreshed.',
@@ -170,7 +168,6 @@ return [
     'msg.scan.label_perma'     => 'permanent',
     'msg.scan.bad_duration'    => 'Invalid ban duration.',
     'msg.scan.no_tempban'      => 'There is no panel-tempban jail in Fail2Ban (add the section to jail.local).',
-    'msg.scan.bantime_failed'  => 'Failed to set bantime (sudoers: :cmd).',
     'msg.scan.ban_failed'      => 'fail2ban-client error while banning.',
 
     /* ------------------------------------------------------------------ audit log (site language) */
