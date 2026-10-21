@@ -245,6 +245,16 @@ try {
     // zaufane IP
     for ($i = 0; $i < 30; $i++) { $limiter->recordLoginFailure('admin', 'boss@example.test', inet_pton('198.51.100.99')); }
     ok($limiter->loginBlocked('boss@example.test', inet_pton('198.51.100.99')) === null, 'adres z SCAN_TRUSTED_IPS nie podlega limitom');
+    // 1.3.3: ani CAPTCHA przy logowaniu — droga administratora, gdy klucze CAPTCHA przestały działać
+    App\Settings\Settings::set('captcha_provider', 'recaptcha');
+    App\Settings\Settings::set('recaptcha_site_key', 'SITE-KEY');
+    App\Settings\Settings::set('recaptcha_secret', 'SECRET-KEY');
+    App\Settings\Settings::set('recaptcha_enabled', '1');
+    $r = $call('check_identity', ['email' => 'boss@example.test'], '198.51.100.99');
+    ok(!empty($r['ok']) && ($r['focus_id'] ?? '') === 'inpPassword', 'CAPTCHA włączona: zaufany adres przechodzi do hasła bez tokenu');
+    $r = $call('check_identity', ['email' => 'boss@example.test'], '203.0.113.61');
+    ok(empty($r['ok']) && str_contains((string) ($r['msg'] ?? ''), 'CAPTCHA'), 'CAPTCHA włączona: inny adres bez tokenu odrzucony (fail-closed)');
+    App\Settings\Settings::set('recaptcha_enabled', '0');
     // ręczny ban lokalny (ip_blocks) działa w portalu dla WSZYSTKICH akcji
     $banRepo = new App\Panel\BanRepository($pdo);
     $banRepo->ban(inet_pton('203.0.113.90'), 30, 'test');
@@ -317,6 +327,17 @@ try {
     eq($made, 3, 'IPv6: trzy konta z jednego /64, czwarte (inny adres w tym samym /64) odrzucone');
     $r = $reg('u5', '2001:db8:bbbb:8::1');
     ok(!empty($r['ok']), 'IPv6: inny /64 ma własny limit');
+    // 1.3.3: klient IPv4 z gniazda dwustosowego (::ffff:a.b.c.d) — wcześniej limit widział 0 jego rejestracji
+    $made = 0;
+    foreach (['m1', 'm2', 'm3', 'm4'] as $n) {
+        $r = $reg($n, '::ffff:198.51.100.77');
+        if (!empty($r['ok'])) { $made++; }
+    }
+    eq($made, 3, 'IPv4 jako ::ffff:…: trzy konta, czwarte odrzucone (jak zwykły IPv4)');
+    $r = $reg('m5', '198.51.100.77');
+    ok(empty($r['ok']), 'ten sam klient bez prefiksu ::ffff: — ten sam limit');
+    ok($count('SELECT COUNT(*) FROM registration_events WHERE ip = ?', [inet_pton('198.51.100.77')]) >= 3
+        && $count('SELECT COUNT(*) FROM registration_events WHERE ip = ?', [inet_pton('::ffff:198.51.100.77')]) === 0, 'zdarzenia zapisane jako adres IPv4 (4 bajty), nie ::ffff:…');
 
     /* -------------------------------------------------------------- usuwanie konta */
     group('usuwanie konta: aliasy, historia, licznik, nagrobek');
@@ -516,7 +537,7 @@ try {
     ok(str_starts_with($act[2] ?? '', 'DUNNO'), 'limit 5: 2 odbiorców (razem 5) przechodzi — adres bez względu na wielkość liter');
     ok(str_starts_with($act[3] ?? '', 'REJECT'), 'limit 5: szósty odbiorca odrzucony');
     ok(str_starts_with($act[4] ?? '', 'REJECT') && str_contains($act[4], 'Za wiele'), 'wiadomość z 10 odbiorcami przy limicie 5: odrzucona od razu');
-    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = CURDATE()"), 5, 'licznik w bazie = 5 (odrzucone nie zwiększają)');
+    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = UTC_DATE()"), 5, 'licznik w bazie = 5 (odrzucone nie zwiększają)');   // UTC_DATE: polityka ma w konfiguracji testu timezone = UTC
     [$act, ] = $policy([$rq('free@example.test', 500), $rq('nobody@elsewhere.test', 3), ['request' => 'smtpd_access_policy', 'sasl_username' => ''], $rq('global@example.test', 4), $rq('global@example.test', 1)]);
     ok(str_starts_with($act[0] ?? '', 'DUNNO'), 'limit 0 = bez limitu');
     ok(str_starts_with($act[1] ?? '', 'DUNNO'), 'nieznane konto: DUNNO');
@@ -549,7 +570,7 @@ try {
         $dunno += substr_count($out, 'action=DUNNO');
     }
     eq($dunno, 5, 'cztery równoległe procesy po 5 zapytań: dokładnie 5 przechodzi (limit 5), reszta odrzucona');
-    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = CURDATE()"), 5, 'licznik po wyścigu = limit');
+    eq($count("SELECT cnt FROM send_counters WHERE email = 'sender@example.test' AND day = UTC_DATE()"), 5, 'licznik po wyścigu = limit');
 
     /* -------------------------------------------------------------- migracja: małe litery */
     group('upgrade_1.1.0.sql: adresy małymi literami');
@@ -632,7 +653,7 @@ try {
     eq($count("SELECT COUNT(*) FROM registration_events WHERE email = 'jan@example.test' AND status = 'success'"), 1, 'udana rejestracja istniejącego konta zostaje (mimo wieku)');
     eq($count("SELECT COUNT(*) FROM user_login_events WHERE email = 'jan@example.test'"), 1, 'jan: zostaje tylko ostatnie (świeże) logowanie');
     eq($count("SELECT COUNT(*) FROM user_login_events WHERE email = 'quiet@example.test'"), 1, 'konto logujące się dawno: ostatnie logowanie zostaje (kolumna "ostatnie logowanie")');
-    eq($count("SELECT COUNT(*) FROM send_counters WHERE day = CURDATE()"), 1, 'licznik dzisiejszy zostaje');
+    eq($count('SELECT COUNT(*) FROM send_counters WHERE day = ?', [date('Y-m-d')]), 1, 'licznik dzisiejszy zostaje');   // dzień wstawiony wyżej (strefa testu), nie CURDATE() bazy
     eq($count("SELECT COUNT(*) FROM deleted_accounts WHERE email = 'del2@example.test'"), 1, 'blokada nazwy młodsza niż okno zostaje');
     eq($count("SELECT COUNT(*) FROM admin_audit_logs WHERE action_type = 'LOG_RETENTION' AND admin_email = 'system'"), 1, 'jeden zbiorczy wpis audytu na przebieg (automatyczny: "system")');
     $n = App\Admin\LogRetention::run($pdo, false);

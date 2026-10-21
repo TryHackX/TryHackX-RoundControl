@@ -7,6 +7,7 @@ return [
     'msg.captcha.bad_site_key'        => ':provider: klucz witryny ma niedozwolone znaki — nie zapisano go.',
     'msg.captcha.bad_secret'          => ':provider: sekret ma niedozwolone znaki — nie zapisano go.',
     'msg.captcha.enable_without_keys' => 'CAPTCHA NIE została włączona: :provider nie ma zapisanego klucza witryny i sekretu (bez nich nikt, także Ty, nie przeszedłby logowania). Pozostałe ustawienia zapisano.',
+    'msg.captcha.secret_rejected'     => 'CAPTCHA NIE została włączona: :provider odrzucił zapisany sekret (z nim nikt, także Ty, nie przeszedłby logowania). Skopiuj sekret ponownie z panelu dostawcy. Pozostałe ustawienia zapisano.',
     'audit.captcha_on'                => 'CAPTCHA włączona (dostawca: :provider)',
     'audit.captcha_off'               => 'CAPTCHA wyłączona',
 

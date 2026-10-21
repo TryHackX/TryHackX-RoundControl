@@ -7,6 +7,7 @@ return [
     'msg.captcha.bad_site_key'        => ':provider: the site key contains characters that are not allowed — it was not saved.',
     'msg.captcha.bad_secret'          => ':provider: the secret contains characters that are not allowed — it was not saved.',
     'msg.captcha.enable_without_keys' => 'CAPTCHA was NOT enabled: :provider has no saved site key and secret (without them nobody, including you, could sign in). The other settings were saved.',
+    'msg.captcha.secret_rejected'     => 'CAPTCHA was NOT enabled: :provider rejected the saved secret (with it nobody, including you, could sign in). Copy the secret again from the provider\'s dashboard. The other settings were saved.',
     'audit.captcha_on'                => 'CAPTCHA enabled (provider: :provider)',
     'audit.captcha_off'               => 'CAPTCHA disabled',
 

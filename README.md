@@ -647,16 +647,19 @@ options (send delay, recipient limit, etc.) and enforces
 
 Without it a user cannot change their password in webmail. The `password` plugin ships with
 Roundcube — you only need to configure it (SQL driver → writing a `$6$`
-hash into `virtual_users`, consistent with Dovecot). Install via script:
+hash into `virtual_users`, consistent with Dovecot). `install.sh` does it in section 5 (it asks per
+section, so on an existing installation answer `y` only there):
 
 ```bash
-bash scripts/install-password-plugin.sh    # creates the roundcubepw DB user + config
-# then manually add 'password' to $config['plugins'] (see above)
+sudo bash install.sh    # section 5: the roundcubepw DB user + plugins/password/config.inc.php
+# section 9 adds 'password' to $config['plugins'] (or add it by hand, see above)
 ```
 
-The script creates the `roundcubepw` DB user (only `SELECT, UPDATE ON
+Section 5 creates the `roundcubepw` DB user (only `SELECT, UPDATE ON
 mailserver.virtual_users`) and `plugins/password/config.inc.php` (template:
-`plugins/password/config.inc.php` in the package). Key options: the
+`plugins/password/config.inc.php.example` in the package); on a second run it keeps the existing
+password. (1.3.3: the older standalone `scripts/install-password-plugin.sh` is gone — it set a new
+password on every run.) Key options: the
 `sql` driver, `password_algorithm = sha512-crypt`, an empty prefix (Dovecot stores `$6$`
 without `{SHA512-CRYPT}`), `password_confirm_current = true` (requires the old
 password), min. length 10 + a required non-alphanumeric character. Result: **Settings
@@ -789,15 +792,17 @@ bantime.increment = false
 findtime = 1d
 maxretry = 1000000
 
-# Jail for TIMED blocks from the panel (scanner: 1h..30 days).
-# The panel sets bantime right before banip, so each ban has its own duration.
+# Jail for TIMED blocks from the panel (scanner and "Manage": 1 hour .. 90 days).
+# The panel sets bantime right before banip, so each ban has its own duration. After a Fail2Ban
+# restart, though, the jail restores only bans younger than the bantime written HERE and caps them
+# to it — so this is the longest ban the panel hands out (with 24h, a 30-day ban vanished on restart).
 [panel-tempban]
 enabled = true
 filter = panel-tempban
 backend = polling
 logpath = /var/log/mailpanel-tempban.log
 banaction = nftables-allports
-bantime = 24h
+bantime = 90d
 bantime.increment = false
 findtime = 1d
 maxretry = 1000000
@@ -1004,6 +1009,9 @@ and secret (each provider has its own pair; the provider's console must list you
 The panel refuses to enable a provider without both keys. Secrets are never shown again (an empty field keeps the saved
 one). Verification is **fail-closed** — an error / timeout on the provider's side rejects the attempt instead of letting
 it through — and the portal's CSP allows only the active provider's hosts.
+Wrong keys lock everyone out, you included: a wrong site key shows no widget, a wrong secret fails every check. The panel
+refuses a secret that Cloudflare Turnstile rejects (Google and hCaptcha do not say whether a secret is wrong). Addresses in
+`SCAN_TRUSTED_IPS` skip the CAPTCHA at sign-in — put your own fixed address there before you switch providers.
 Emergency disable from SQL: `UPDATE app_settings SET v='0' WHERE k='recaptcha_enabled';`
 
 ### Languages
@@ -1052,7 +1060,7 @@ Behaviour worth knowing (1.1.0, updated for 1.2.0):
   a whole; **never per account alone**, so strangers cannot lock the administrator out. Failures go to their own table
   (`throttle_events`) — a successful IMAP login (which trims `user_login_events`) cannot reset them — and the admin login
   log (`admin_login_attempts`) is never pruned. A blocked client is refused immediately: nothing sleeps in PHP (one FPM
-  pool serves every site on the server). Addresses in `SCAN_TRUSTED_IPS` (exact or CIDR) are not limited.
+  pool serves every site on the server). Addresses in `SCAN_TRUSTED_IPS` (exact or CIDR) are not limited and skip the CAPTCHA at sign-in.
 - **No enumeration:** the first login step answers the same for any well-formed address, existing or not, administrator
   or not, and so does a wrong password: every password is first checked as the panel password (one Argon2id
   verification, against a dummy hash when the address is no administrator) and then as the mailbox password (IMAP
@@ -1095,8 +1103,12 @@ Your responsibilities:
   `www-data` could use them),
 - add a DNS **CAA** record for your domain (`0 issue "letsencrypt.org"`, or your CA): it limits who may issue
   certificates, which matters most for the role addresses reserved above,
-- keep `ignoreip` in the Fail2Ban tab (it edits `[DEFAULT]`, which `sshd` inherits) set to your own address, and
-  `dbpurgeage` ≥ the longest ban you hand out (temporary bans last up to 90 days),
+- keep `ignoreip` in the Fail2Ban tab (it edits `[DEFAULT]`, which `sshd` inherits) set to your own address (the
+  panel and the root helper refuse networks broader than IPv4 /8 or IPv6 /32 there, and `maxretry` above 100 or times
+  under a minute anywhere: a jail that never bans protects nothing),
+- keep `bantime = 90d` in `[panel-tempban]` (`jail.d/mailpanel.local`): Fail2Ban 1.x keeps active and permanent bans in
+  its database whatever `dbpurgeage` says, but after a restart it restores a jail's bans only up to the bantime written in
+  its configuration,
 - run `scripts/mailpanel-sudoers-cleanup.sh` after any manual sudoers edit: one leftover wildcard rule voids all the exact ones,
 - update Roundcube (`program/`, `vendor/`) independently — the package does not
   modify the core, so RC updates don't overwrite the panel.

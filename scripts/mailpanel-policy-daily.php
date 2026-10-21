@@ -129,6 +129,11 @@ function respond(string $action): void
  */
 function sendLimitNotice(string $user, int $limit, int $sent, string $lang = 'pl'): void
 {
+    // 1.3.3: the address goes into the To: and From: headers — only a plain mailbox name, never a CR/LF or a space
+    // (unreachable today: the caller found it in virtual_users, whose names the panel and the portal validate)
+    if (preg_match('/^[a-z0-9._+-]+@[a-z0-9.-]+$/D', $user) !== 1) {
+        return;
+    }
     $domain  = substr((string) strrchr($user, '@'), 1) ?: 'localhost';
     $tx      = texts($lang);
     $subject = '=?UTF-8?B?' . base64_encode($tx['subject']) . '?=';

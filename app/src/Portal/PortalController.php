@@ -123,7 +123,9 @@ final class PortalController
         if ($blocked !== null) {
             throw new PortalException($blocked);
         }
-        if (!Captcha::check('login')) {
+        // 1.3.3: addresses in SCAN_TRUSTED_IPS skip the CAPTCHA at sign-in, as they skip the limits — the administrator's
+        // way in when the CAPTCHA keys stop working (otherwise only an edit of app_settings helps; README "CAPTCHA").
+        if (!Ip::isTrusted(Ip::raw()) && !Captcha::check('login')) {
             throw new PortalException(t('portal.err.captcha'));
         }
 

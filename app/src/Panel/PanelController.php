@@ -308,6 +308,12 @@ final class PanelController
             $enable   = false;
             $errors[] = t('msg.captcha.enable_without_keys', ['provider' => t(Captcha::PROVIDERS[$provider])]);
         }
+        // 1.3.3: a secret the provider rejects outright is not switched on (only Turnstile says so; see secretRejectedIn).
+        // Not in dev mode: there the panel makes no outbound calls.
+        if ($enable && !Env::isDev() && Captcha::secretRejectedIn($cfg) === true) {
+            $enable   = false;
+            $errors[] = t('msg.captcha.secret_rejected', ['provider' => t(Captcha::PROVIDERS[$provider])]);
+        }
         Settings::set('recaptcha_enabled', $enable ? '1' : '0');
         if ($before['enabled'] !== $enable || ($enable && $before['provider'] !== $provider)) {
             $this->audit->log('CAPTCHA', Lang::site($enable ? 'audit.captcha_on' : 'audit.captcha_off', ['provider' => $provider]));

@@ -56,6 +56,12 @@ $rules = [
     'bantime.increment' => '/^(true|false)$/D', 'enabled' => '/^(true|false)$/D',
     'ignoreip' => 'ip_list',
 ];
+// 1.3.3: well-formed is not enough. A jail with `maxretry = 999999`, `findtime = 1` or `bantime = 1` never bans anyone,
+// and [DEFAULT] is inherited by sshd and recidive. The panel clamps to the same ranges (Commands::sanitize), so a value
+// outside them means the proposal did not come from the panel's form.
+const MIN_SECONDS = 60;
+const MAX_SECONDS = 31536000;      // one year: the panel's own maximum
+const MAX_RETRY = 100;
 
 function say(string $m): void
 {
@@ -76,6 +82,10 @@ function fail(string $m): never
     exit(3);
 }
 
+/**
+ * One ignoreip entry: an address, or a network no broader than IPv4 /8 or IPv6 /32 (1.3.3). `0.0.0.0/0 ::/0` used to
+ * pass and exempted every source from every jail, sshd included.
+ */
 function ipOk(string $t): bool
 {
     $p = explode('/', $t, 2);
@@ -83,12 +93,47 @@ function ipOk(string $t): bool
         return false;
     }
     if (isset($p[1])) {
-        if (!ctype_digit($p[1])) {
+        $v6 = str_contains($p[0], ':');
+        if (!ctype_digit($p[1]) || (int) $p[1] > ($v6 ? 128 : 32) || (int) $p[1] < ($v6 ? 32 : 8)) {
             return false;
         }
-        if ((int) $p[1] > (str_contains($p[0], ':') ? 128 : 32)) {
-            return false;
-        }
+    }
+    return true;
+}
+
+/** Seconds of a Fail2Ban time value ("-1", "600", "10m", "1h30m"); null when it is none of those. */
+function seconds(string $v): ?int
+{
+    if ($v === '-1') {
+        return -1;
+    }
+    if (preg_match('/^\d{1,9}$/D', $v) === 1) {
+        return (int) $v;
+    }
+    if (preg_match('/^(\d{1,6}[smhdw])+$/D', $v) !== 1) {
+        return null;
+    }
+    preg_match_all('/(\d{1,6})([smhdw])/', $v, $m, PREG_SET_ORDER);
+    $unit = ['s' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400, 'w' => 604800];
+    $s = 0;
+    foreach ($m as $part) {
+        $s += (int) $part[1] * $unit[$part[2]];
+    }
+    return $s;
+}
+
+/** The value of an already well-formed option lies in the range the panel itself allows. */
+function inRange(string $k, string $v): bool
+{
+    if ($k === 'maxretry') {
+        return (int) $v >= 1 && (int) $v <= MAX_RETRY;
+    }
+    if ($k === 'bantime.factor') {
+        return (float) $v >= 1.0 && (float) $v <= 10.0;
+    }
+    if (in_array($k, ['findtime', 'bantime', 'bantime.maxtime'], true)) {
+        $s = seconds($v);
+        return $s !== null && (($k === 'bantime' && $s === -1) || ($s >= MIN_SECONDS && $s <= MAX_SECONDS));
     }
     return true;
 }
@@ -327,7 +372,7 @@ foreach ($cur as $i => $c) {
                 refuse("ignoreip: $t");
             }
         }
-    } elseif (preg_match($rules[$k], $v) !== 1) {
+    } elseif (preg_match($rules[$k], $v) !== 1 || !inRange($k, $v)) {
         refuse("$k = $v");
     }
     $changed++;

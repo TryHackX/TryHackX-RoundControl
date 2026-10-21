@@ -5,9 +5,19 @@ namespace App\Support;
 
 final class Ip
 {
+    /**
+     * The client's address. 1.3.3: an IPv4 client that a dual-stack socket reports as ::ffff:a.b.c.d is returned as
+     * a.b.c.d, so one client has one form everywhere — in the stored rows (the registration limit counted 0 of such a
+     * client's own registrations), in the trusted-address list and in the Fail2Ban log line (nftables bans the IPv4).
+     */
     public static function raw(): string
     {
-        return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        $ip  = (string) ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
+        $bin = @inet_pton($ip);
+        if ($bin !== false && strlen($bin) === 16 && substr($bin, 0, 12) === "\0\0\0\0\0\0\0\0\0\0\xff\xff") {
+            return (string) inet_ntop(substr($bin, 12));
+        }
+        return $ip;
     }
 
     /** Adres klienta jako VARBINARY(16) do zapisu w bazie. */

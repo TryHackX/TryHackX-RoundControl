@@ -26,7 +26,8 @@ final class SecurityHeaders
              . "img-src 'self' data:; "
              . "connect-src 'self'" . $list('connect') . '; '
              . "base-uri 'self'; "
-             . "form-action 'self'";
+             . "form-action 'self'; "
+             . "frame-ancestors 'none'";
 
         header("Content-Security-Policy: $csp");
     }
@@ -60,7 +61,8 @@ final class SecurityHeaders
              . "img-src 'self' data:; "
              . "connect-src 'self'; "
              . "base-uri 'self'; "
-             . "form-action 'self'";
+             . "form-action 'self'; "
+             . "frame-ancestors 'none'";
 
         header("Content-Security-Policy: $csp");
     }

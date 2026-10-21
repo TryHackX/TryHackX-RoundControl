@@ -123,6 +123,28 @@ final class Captcha
     }
 
     /**
+     * 1.3.3: does the active provider reject the saved secret? Asked with a token that cannot be valid. Cloudflare
+     * Turnstile answers "invalid-input-secret" for a wrong secret; Google and hCaptcha check the token first and answer
+     * "invalid-input-response" either way (checked 2026-10-21), so for them a wrong secret goes unnoticed here.
+     * true = rejected, false = not rejected, null = no answer (network). Enabling CAPTCHA with a rejected secret locks
+     * everyone out, the administrator included (unless the address is in SCAN_TRUSTED_IPS).
+     */
+    public static function secretRejectedIn(array $cfg): ?bool
+    {
+        $provider = self::providerOf($cfg);
+        $fields   = ['secret' => self::secretOf($cfg), 'response' => 'roundcontrol-secret-check'];
+        if ($provider === 'hcaptcha') {
+            $fields['sitekey'] = self::siteKeyOf($cfg);
+        }
+        $json = self::post(self::VERIFY[$provider], $fields);
+        if ($json === null) {
+            return null;
+        }
+        $codes = is_array($json['error-codes'] ?? null) ? array_map('strval', $json['error-codes']) : [];
+        return array_intersect($codes, ['invalid-input-secret', 'missing-input-secret', 'sitekey-secret-mismatch']) !== [];
+    }
+
+    /**
      * Hosty, które polityka CSP strony z CAPTCHA musi dopuścić — tylko AKTYWNEGO dostawcy (strona z Turnstile nie
      * pozwala skryptom Google'a i odwrotnie). Puste listy, gdy CAPTCHA nie obowiązuje.
      *

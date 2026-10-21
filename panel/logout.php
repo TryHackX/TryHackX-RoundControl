@@ -10,7 +10,10 @@ require __DIR__ . '/../app/web.php';
 
 use App\Security\Csrf;
 use App\Support\Http;
+use App\Support\SecurityHeaders;
 use App\Support\Session;
+
+SecurityHeaders::sendPanel();   // 1.3.3: the same headers as every panel response
 
 if (Http::isPost() && Csrf::check(Http::post('_csrf'))) {
     Session::destroy();

@@ -172,6 +172,18 @@ $refusals = [
     'zmieniony nagłówek sekcji'               => replaceLine($base, '[sshd]', '[dovecot]'),
     'inna liczba linii'                       => $base . "extra = 1\n",
     'inna opcja w tej samej linii'            => replaceLine($base, 'findtime = 10m' . "\n" . 'maxretry = 5' . "\n" . 'ignoreip', 'findtime = 10m' . "\n" . 'bantime = 5' . "\n" . 'ignoreip'),
+    // 1.3.3: poprawny zapis, ale jail, który nigdy nie banuje ([DEFAULT] dziedziczy sshd i recidive)
+    'ignoreip 0.0.0.0/0 (cały internet)'      => replaceLine($base, '203.0.113.9', '0.0.0.0/0'),
+    'ignoreip ::/0'                           => replaceLine($base, '203.0.113.9', '::/0'),
+    'ignoreip 10.0.0.0/4 (szersza niż /8)'    => replaceLine($base, '203.0.113.9', '10.0.0.0/4'),
+    'ignoreip 2001::/16 (szersza niż /32)'    => replaceLine($base, '203.0.113.9', '2001::/16'),
+    'maxretry 0'                              => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 0\nbantime = 1h"),
+    'maxretry 101'                            => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 101\nbantime = 1h"),
+    'maxretry 999999'                         => replaceLine($base, "bantime = 10m\nfindtime = 10m\nmaxretry = 5", "bantime = 10m\nfindtime = 10m\nmaxretry = 999999"),
+    'bantime 1 (sekunda)'                     => replaceLine($base, "maxretry = 5\nbantime = 1h", "maxretry = 5\nbantime = 1"),
+    'findtime 30s w [DEFAULT]'                => replaceLine($base, "bantime = 10m\nfindtime = 10m", "bantime = 10m\nfindtime = 30s"),
+    'findtime -1'                             => replaceLine($base, "bantime = 10m\nfindtime = 10m", "bantime = 10m\nfindtime = -1"),
+    'bantime ponad rok'                       => replaceLine($base, "maxretry = 5\nbantime = 1h", "maxretry = 5\nbantime = 53w"),
 ];
 foreach ($refusals as $label => $prop) {
     reset_state($base);
@@ -179,6 +191,22 @@ foreach ($refusals as $label => $prop) {
     ok($rc === 1 && str_starts_with($out, 'refused:'), "odrzucone ($label): exit 1, komunikat [" . substr($out, 0, 70) . ']');
     eq(file_get_contents($live), $base, "odrzucone ($label): plik nietknięty");
     ok(!is_file($h . '/calls.log'), "odrzucone ($label): fail2ban-client nie wywołany");
+}
+
+// 1.3.3: granice zakresów, które panel sam wpisuje — przyjęte
+$accepted = [
+    'ignoreip 10.0.0.0/8 i 2001:db8::/32'     => replaceLine($base, '203.0.113.9', '10.0.0.0/8 2001:db8::/32'),
+    'maxretry 1'                              => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 1\nbantime = 1h"),
+    'maxretry 100'                            => replaceLine($base, "findtime = 10m\nmaxretry = 5\nbantime = 1h", "findtime = 10m\nmaxretry = 100\nbantime = 1h"),
+    'bantime -1 (na stałe)'                   => replaceLine($base, "maxretry = 5\nbantime = 1h", "maxretry = 5\nbantime = -1"),
+    'bantime 1h30m'                           => replaceLine($base, "maxretry = 5\nbantime = 1h", "maxretry = 5\nbantime = 1h30m"),
+    'findtime 60 i 365d'                      => replaceLine($base, "bantime = 10m\nfindtime = 10m", "bantime = 365d\nfindtime = 60"),
+];
+foreach ($accepted as $label => $prop) {
+    reset_state($base);
+    [$rc, $out] = helper($prop);
+    ok($rc === 0 && str_starts_with($out, 'saved and reloaded'), "przyjęte ($label): exit 0 [" . substr($out, 0, 70) . ']');
+    eq(file_get_contents($live), $prop, "przyjęte ($label): plik == propozycja");
 }
 
 reset_state($base);

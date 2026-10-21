@@ -16,6 +16,14 @@ use function App\I18n\t;
  */
 final class Commands
 {
+    /**
+     * 1.3.3: time limits for the calls that only read or (un)ban. A wedged fail2ban or Dovecot socket used to hold the
+     * PHP-FPM worker for good, and the pool has six. Not for the helpers that change files (the Fail2Ban helper, the
+     * Postfix limits, the mailbox move): stopping those half-way would be worse than waiting.
+     */
+    private const QUICK = 'timeout 20 ';
+    private const SLOW  = 'timeout 120 ';
+
     private static function enabled(): bool
     {
         return !Env::isDev()
@@ -32,7 +40,7 @@ final class Commands
 
     public static function fail2banAvailable(): bool
     {
-        return self::cachedProbe('f2b', 'sudo -n fail2ban-client ping 2>&1', static function (array $out, int $ret): bool {
+        return self::cachedProbe('f2b', self::QUICK . 'sudo -n fail2ban-client ping 2>&1', static function (array $out, int $ret): bool {
             return $ret === 0;
         });
     }
@@ -44,7 +52,7 @@ final class Commands
             return [];
         }
         $out = [];
-        exec('sudo fail2ban-client status | grep "Jail list:" | sed "s/.*Jail list://"', $out);
+        exec(self::QUICK . 'sudo -n fail2ban-client status | grep "Jail list:" | sed "s/.*Jail list://"', $out);
         if (!$out) {
             return [];
         }
@@ -58,7 +66,7 @@ final class Commands
             return [];
         }
         $out = [];
-        exec('sudo fail2ban-client status ' . escapeshellarg($jail), $out);
+        exec(self::QUICK . 'sudo -n fail2ban-client status ' . escapeshellarg($jail), $out);
         foreach ($out as $line) {
             if (preg_match('/Banned IP list:\s*(.*)/', $line, $m)) {
                 $list = trim($m[1]);
@@ -82,7 +90,7 @@ final class Commands
         }
         $out = [];
         $ret = 0;
-        exec('sudo -n fail2ban-client get ' . escapeshellarg($jail) . ' banip --with-time 2>/dev/null', $out, $ret);
+        exec(self::QUICK . 'sudo -n fail2ban-client get ' . escapeshellarg($jail) . ' banip --with-time 2>/dev/null', $out, $ret);
         if ($ret !== 0) {
             return array_map(
                 static fn(string $ip) => ['ip' => $ip, 'end' => null, 'perm' => false],
@@ -122,7 +130,7 @@ final class Commands
         }
         $out = [];
         $ret = 0;
-        exec('sudo fail2ban-client set ' . escapeshellarg($jail) . ' unbanip ' . escapeshellarg($ip), $out, $ret);
+        exec(self::QUICK . 'sudo -n fail2ban-client set ' . escapeshellarg($jail) . ' unbanip ' . escapeshellarg($ip), $out, $ret);
         return $ret === 0;
     }
 
@@ -134,7 +142,7 @@ final class Commands
         }
         $out = [];
         $ret = 0;
-        exec('sudo fail2ban-client set ' . escapeshellarg($jail) . ' banip ' . escapeshellarg($ip), $out, $ret);
+        exec(self::QUICK . 'sudo -n fail2ban-client set ' . escapeshellarg($jail) . ' banip ' . escapeshellarg($ip), $out, $ret);
         return $ret === 0;
     }
 
@@ -150,7 +158,7 @@ final class Commands
         }
         $out = [];
         $ret = 0;
-        exec('sudo -n fail2ban-client set panel-tempban bantime ' . $seconds . ' 2>/dev/null', $out, $ret);
+        exec(self::QUICK . 'sudo -n fail2ban-client set panel-tempban bantime ' . $seconds . ' 2>/dev/null', $out, $ret);
         return $ret === 0;
     }
 
@@ -203,7 +211,7 @@ final class Commands
         $out = [];
         $ret = 0;
         exec(
-            'sudo -n /usr/local/bin/mailpanel-scan.sh ' . escapeshellarg($from) . ' ' . escapeshellarg($to) . $srcArg . ' 2>/dev/null',
+            self::SLOW . 'sudo -n /usr/local/bin/mailpanel-scan.sh ' . escapeshellarg($from) . ' ' . escapeshellarg($to) . $srcArg . ' 2>/dev/null',
             $out,
             $ret
         );
@@ -234,7 +242,7 @@ final class Commands
         }
         $out = [];
         $ret = 0;
-        exec('sudo -n /usr/bin/doveadm -f flow quota get -u ' . escapeshellarg($email) . ' 2>/dev/null', $out, $ret);
+        exec(self::QUICK . 'sudo -n /usr/bin/doveadm -f flow quota get -u ' . escapeshellarg($email) . ' 2>/dev/null', $out, $ret);
         if ($ret !== 0) {
             return null;
         }
@@ -300,8 +308,8 @@ final class Commands
         $map = [
             'DEFAULT' => [
                 'findtime'          => self::sanitize($post['f2b_default_findtime'] ?? '', 'time'),
-                'bantime'           => self::sanitize($post['f2b_default_bantime'] ?? '', 'time'),
-                'maxretry'          => self::sanitize($post['f2b_default_maxretry'] ?? '', 'int'),
+                'bantime'           => self::sanitize($post['f2b_default_bantime'] ?? '', 'bantime'),
+                'maxretry'          => self::sanitize($post['f2b_default_maxretry'] ?? '', 'retry'),
                 'bantime.increment' => !empty($post['f2b_default_bantime_increment']) ? 'true' : 'false',
                 'bantime.factor'    => self::sanitize($post['f2b_default_bantime_factor'] ?? '', 'float'),
                 'bantime.maxtime'   => self::sanitize($post['f2b_default_bantime_maxtime'] ?? '', 'time'),
@@ -358,35 +366,58 @@ final class Commands
         return [
             'enabled'  => !empty($post["f2b_{$prefix}_enabled"]) ? 'true' : 'false',
             'findtime' => self::sanitize($post["f2b_{$prefix}_findtime"] ?? '', 'time'),
-            'maxretry' => self::sanitize($post["f2b_{$prefix}_maxretry"] ?? '', 'int'),
-            'bantime'  => self::sanitize($post["f2b_{$prefix}_bantime"] ?? '', 'time'),
+            'maxretry' => self::sanitize($post["f2b_{$prefix}_maxretry"] ?? '', 'retry'),
+            'bantime'  => self::sanitize($post["f2b_{$prefix}_bantime"] ?? '', 'bantime'),
         ];
     }
 
+    /**
+     * One value of the Fail2Ban form, in the ranges the root helper accepts (scripts/mailpanel-f2b-apply.php).
+     * '' = leave the option as it is (1.3.3: an empty field used to write maxretry 0, findtime/bantime 10m, factor 1).
+     */
     private static function sanitize(string $value, string $type): string
     {
         $value = trim(str_replace(["\r", "\n"], '', $value));
+        if ($value === '') {
+            return '';
+        }
 
         return match ($type) {
-            'int'   => (string) max(0, min(999999, (int) $value)),
+            'retry' => (string) max(1, min(100, (int) $value)),
             'float' => (string) min(10.0, max(1.0, (float) $value)),
             'time'  => self::sanitizeTime($value),
+            'bantime' => $value === '-1' ? '-1' : self::sanitizeTime($value),
             'ip_list' => self::sanitizeIpList($value),
             default => preg_replace('/[^A-Za-z0-9.\- _]/', '', $value) ?? '',
         };
     }
 
+    /**
+     * "600", "10m", "1h30m" -> the same value, within one minute .. one year ('' = not a time: the option stays as it
+     * is — 1.3.3: such values, e.g. "1h30m" read from jail.local, used to become "10m" on the next save).
+     */
     private static function sanitizeTime(string $value): string
     {
-        if (preg_match('/^(\d+)([smhdw]?)$/', $value, $m)) {
-            $num  = (int) $m[1];
-            $unit = $m[2] ?: 's';
-            $max  = ['s' => 31536000, 'm' => 525600, 'h' => 8760, 'd' => 365, 'w' => 52];
-            return min($num, $max[$unit]) . $unit;
+        if (preg_match('/^(\d{1,9}|(\d{1,6}[smhdw])+)$/D', $value) !== 1) {
+            return '';
         }
-        return '10m';
+        $unit = ['s' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400, 'w' => 604800];
+        $secs = 0;
+        if (ctype_digit($value)) {
+            $secs = (int) $value;
+        } else {
+            preg_match_all('/(\d{1,6})([smhdw])/', $value, $m, PREG_SET_ORDER);
+            foreach ($m as $part) {
+                $secs += (int) $part[1] * $unit[$part[2]];
+            }
+        }
+        if ($secs < 60) {
+            return '1m';
+        }
+        return $secs > 31536000 ? '365d' : $value;
     }
 
+    /** ignoreip: addresses and networks no broader than IPv4 /8 or IPv6 /32 (what the helper accepts). */
     private static function sanitizeIpList(string $value): string
     {
         $valid = [];
@@ -396,8 +427,11 @@ final class Commands
                 $valid[] = $ip;
             } elseif (str_contains($ip, '/')) {
                 [$addr, $mask] = explode('/', $ip, 2);
-                $isV4 = filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && (int) $mask <= 32;
-                $isV6 = filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && (int) $mask <= 128;
+                if (!ctype_digit($mask)) {
+                    continue;
+                }
+                $isV4 = filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && (int) $mask >= 8 && (int) $mask <= 32;
+                $isV6 = filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && (int) $mask >= 32 && (int) $mask <= 128;
                 if ($isV4 || $isV6) {
                     $valid[] = $ip;
                 }
