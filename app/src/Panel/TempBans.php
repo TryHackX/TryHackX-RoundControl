@@ -41,9 +41,10 @@ final class TempBans
     }
 
     /**
-     * Ban $ip in panel-tempban for $seconds. The row is written first and held (FOR UPDATE) until the ban is done, so an
-     * expiry run cannot lift the new ban on the strength of an older, due row of the same address; a failed ban rolls
-     * the row back to what it was.
+     * Ban $ip in panel-tempban for $seconds. The row is written first — the write locks it until the ban is done, so an
+     * expiry run cannot lift the new ban on the strength of an older, due row of the same address (it waits, then sees
+     * the new end) — and a failed ban rolls the row back to what it was. No SELECT … FOR UPDATE: on an address without
+     * a row it would take a gap lock, and two bans of different new addresses could deadlock.
      */
     public function ban(string $ip, int $seconds): bool
     {
@@ -55,9 +56,6 @@ final class TempBans
         $banned = false;
         $this->pdo->beginTransaction();
         try {
-            $lock = $this->pdo->prepare('SELECT until_ts FROM f2b_tempbans WHERE ip = ? FOR UPDATE');
-            $lock->execute([$bin]);
-            $lock->closeCursor();
             $this->pdo->prepare(
                 'INSERT INTO f2b_tempbans (ip, until_ts, created_at) VALUES (?, NOW() + INTERVAL ? SECOND, NOW())
                  ON DUPLICATE KEY UPDATE until_ts = VALUES(until_ts), created_at = VALUES(created_at)'

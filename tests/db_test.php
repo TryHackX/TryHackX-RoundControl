@@ -786,6 +786,28 @@ try {
     $f2b['listNull'] = false;
     $f2b['failUnban'] = [];
     eq($tb->expire(), ['203.0.113.7'], 'Fail2Ban znowu działa: zaległy ban zdjęty');
+
+    // współbieżność: nowy ban adresu ze starym, przeterminowanym wierszem — przebieg timera (drugie połączenie) czeka na
+    // zapis bana i nie zdejmuje nowego bana na podstawie starego wiersza
+    $tb->ban('203.0.113.11', 600);
+    $due('203.0.113.11');
+    $pdoB = new PDO("$dsnBase;dbname=$db", $uPanel, $pw, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdoB->exec('SET SESSION innodb_lock_wait_timeout = 1');
+    $tbB = new App\Panel\TempBans($pdoB, static fn() => true, static function (string $j, string $ip) use (&$f2b): bool {
+        $f2b['calls'][] = "B-unban $ip";
+        unset($f2b['banned'][$ip]);
+        return true;
+    }, static fn() => []);
+    $blocked = null;
+    $tbLock = new App\Panel\TempBans(App\Support\Database::pdo(), static function (string $j, string $ip) use (&$f2b, $tbB, &$blocked): bool {
+        try { $tbB->expire(); $blocked = false; } catch (PDOException $e) { $blocked = true; }   // wiersz zablokowany przez ten ban
+        $f2b['banned'][$ip] = true;
+        return true;
+    });
+    ok($tbLock->ban('203.0.113.11', 3600) && $blocked === true, 'przebieg timera czeka, gdy ban właśnie zapisuje wiersz (blokada wiersza)');
+    eq($tbB->expire(), [], '...a po zapisie bana wiersz nie jest już przeterminowany: nic do zdjęcia');
+    ok(isset($f2b['banned']['203.0.113.11']) && abs((int) $left('203.0.113.11') - 3600) <= 5, '...nowy ban trwa, koniec za ~3600 s');
+    $tb->forget('203.0.113.11');
     $tb->forget('2001:DB8::5');
     ok($left('2001:db8::5') === null, 'forget(): ban zdjęty ręcznie albo przeniesiony — koniec zapomniany');
 
