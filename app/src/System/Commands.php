@@ -289,7 +289,7 @@ final class Commands
                 $current = trim($m[1]);
                 continue;
             }
-            if (!isset($sections[$current])) {
+            if ($current === null || !isset($sections[$current])) {     // (PHP 8.5: null as an array offset is deprecated)
                 continue;
             }
             if (preg_match('/^\s*([A-Za-z0-9_.]+)\s*=\s*(.+?)\s*$/', $line, $m)) {
@@ -331,7 +331,7 @@ final class Commands
                 $current = trim($m[1]);
                 continue;
             }
-            if (!isset($map[$current])) {
+            if ($current === null || !isset($map[$current])) {
                 continue;
             }
             if (preg_match('/^\s*([A-Za-z0-9_.]+)\s*=/', $line, $m)) {

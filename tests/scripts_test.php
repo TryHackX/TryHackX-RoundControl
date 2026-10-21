@@ -436,7 +436,8 @@ if ($bash === null) {
     $purge = static fn(): array => runProc([$bash, toPosix($d . '/purge.sh')]);
 
     $justMoved = glob($quar . '/example.org__*') ?: [];
-    ok(count($justMoved) >= 2, 'skrzynki przeniesione przez delete-user są w kwarantannie (' . count($justMoved) . ')');
+    // with symlinks the test above removed the quarantine (and jan.kowalski's entry in it) for the symlink case
+    ok(count($justMoved) >= ($linked ? 1 : 2), 'skrzynki przeniesione przez delete-user są w kwarantannie (' . count($justMoved) . ')');
     // skrzynka nieużywanego od lat konta: stary mtime katalogu, ale usunięta TERAZ (nazwa) -> musi zostać
     foreach ($justMoved as $jm) { @touch($jm, time() - 400 * 86400); }
     mkdir($quar . '/example.org__stary__20000101000000/cur', 0777, true);
