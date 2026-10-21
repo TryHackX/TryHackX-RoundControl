@@ -1063,6 +1063,104 @@ try {
     ok(false, 'EXCEPTION: ' . $e::class . ': ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
 }
 
+/* -------------------------------------------------------------- install.php with the least-privileged account */
+// The installer writes .env next to itself, so it runs from a copy in the scratch directory, never from the repository.
+// It edits /etc/mailpanel/panel.env when that file exists (the panel reads it first): on such a machine it is not run.
+preg_match('/host=([^;]+)/', $dsnBase, $hm);
+preg_match('/port=(\d+)/', $dsnBase, $pm);
+if (is_file('/etc/mailpanel/panel.env') || !isset($hm[1])) {
+    echo "\n  SKIP (install.php groups, none of their 24 checks ran): " . (isset($hm[1]) ? '/etc/mailpanel/panel.env exists — the installer would edit it' : 'MP_TEST_DB_DSN names no host=') . "\n";
+} else try {
+    group('install.php: the README order (install.sh section 0 first), the panel account with exactly sql/panel_grants.sql');
+    $copyInstaller = static function (string $dir) use ($root): void {
+        foreach (['sql', 'app/src/Support'] as $sub) { @mkdir($dir . '/' . $sub, 0700, true); }
+        copy($root . '/install.php', $dir . '/install.php');
+        foreach (glob($root . '/sql/*.sql') ?: [] as $f) { copy($f, $dir . '/sql/' . basename($f)); }
+        copy($root . '/app/src/Support/Env.php', $dir . '/app/src/Support/Env.php');
+    };
+    // A run that keeps asking (the old installer looped on an invalid answer once its input had ended) is stopped
+    // after 60 s or 200 KB of output and reported as exit -1, instead of exhausting this process's memory.
+    $installer = static function (string $dir, array $answers): array {
+        $p = proc_open([PHP_BINARY, $dir . '/install.php'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, $dir);
+        fwrite($pipes[0], implode("\n", $answers) . "\n");
+        fclose($pipes[0]);
+        $out = '';
+        $t0 = microtime(true);
+        while (!feof($pipes[1]) && strlen($out) < 200000 && microtime(true) - $t0 < 60) {
+            $out .= (string) fread($pipes[1], 8192);
+        }
+        $runaway = !feof($pipes[1]);
+        if ($runaway) { proc_terminate($p); }
+        fclose($pipes[1]);
+        $rc = proc_close($p);
+        return [$runaway ? -1 : $rc, (string) preg_replace('/\033\[[0-9;]*m/', '', $out)];
+    };
+    $dbHost = $hm[1] . (isset($pm[1]) ? ':' . $pm[1] : '');
+    $admin->exec('DELETE FROM virtual_domains');            // a fresh server: no domain yet (users and aliases go with it)
+    $i1 = $tmp . DIRECTORY_SEPARATOR . 'inst1';
+    $copyInstaller($i1);
+
+    [$rc, $out] = $installer($i1, [$dbHost, $db, $uPanel, $pw, '', '', '', 'pl', 'y', 'Inst.Admin@Example.TEST', 'Install-Pass-123!', 'Install-Pass-123!',
+                                   'y', 'Not A Domain', str_repeat('a', 47) . '.org', 'First.Example.TEST']);
+    eq($rc, 0, 'grants-only account: exit 0 (the run reaches its summary)');
+    ok(str_contains($out, 'Application layer ready.') && !preg_match('/Fatal|Uncaught|statements failed/i', $out), 'no fatal error, no failed schema statements');
+    ok(str_contains($out, 'Schema present.') && !str_contains($out, 'Import the database schema') && str_contains($out, "mysql $db < "), 'no CREATE privilege: the import is not attempted, the command for the administrator is printed');
+    $env1 = (string) @file_get_contents($i1 . '/.env');
+    ok(str_contains($out, '.env written') && str_contains($env1, "PANEL_DB_USER=$uPanel\n") && str_contains($env1, "PANEL_DB_PASS=$pw\n")
+        && str_contains($env1, 'PANEL_DB_DSN="mysql:host=' . $hm[1] . (isset($pm[1]) ? ';port=' . $pm[1] : '') . ";dbname=$db;charset=utf8mb4\""), '.env written with the tested values ("host:port" -> host=…;port=…)');
+    preg_match('/^Time zone \[([^\]]+)\]/m', $out, $tzm);
+    ok(isset($tzm[1]) && in_array($tzm[1], DateTimeZone::listIdentifiers(), true) && str_contains($env1, 'APP_TIMEZONE=' . $tzm[1] . "\n"), 'APP_TIMEZONE: the offered default (the server zone: ' . ($tzm[1] ?? '?') . ') is a known zone and is what Enter stores');
+    if (PHP_OS_FAMILY !== 'Windows') {
+        eq(fileperms($i1 . '/.env') & 0777, 0640, '.env mode 0640');
+    } else {
+        ok(true, '.env mode: not meaningful on Windows (Linux CI checks 0640)');
+    }
+    eq($count("SELECT COUNT(*) FROM app_settings WHERE k = 'default_language' AND v = 'pl'"), 1, 'default interface language stored');
+    $instHash = (string) $admin->query("SELECT pwd_hash FROM panel_admins WHERE email = 'inst.admin@example.test'")->fetchColumn();
+    ok(password_verify('Install-Pass-123!', $instHash) && str_starts_with($instHash, '$argon2id$'), 'first administrator stored (lower case, Argon2id)');
+    eq(substr_count($out, 'Not a mail domain name'), 2, 'domain: a name with spaces and one of 51 characters are asked again');
+    ok(str_contains($out, "$uPanel may not add domains") && str_contains($out, "INSERT INTO virtual_domains (name) VALUES ('first.example.test');"), 'domain: INSERT denied -> the statement for the administrator (lower case), no fatal error');
+    eq($count('SELECT COUNT(*) FROM virtual_domains'), 0, 'domain: nothing inserted through the panel account');
+
+    [$rc, $out] = $installer($i1, ['n', '', 'n', 'n']);
+    ok($rc === 0 && str_contains($out, 'Keeping the existing .env.') && str_contains($out, 'Connection OK') && str_contains($out, '(en/pl) [pl]'),
+        're-run keeping .env: the panel parser reads it, the connection works, the stored language is offered');
+    ok(str_contains($out, 'No domains yet') && !str_contains($out, 'Domains in the database'), 're-run: still no domain');
+
+    group('install.php: an account that may create tables, a wrong password, an unwritable .env, input that ends early');
+    $i2 = $tmp . DIRECTORY_SEPARATOR . 'inst2';
+    $copyInstaller($i2);
+    [$rc, $out] = $installer($i2, [$dbHost, $db, $dbUser, $dbPass, '', '', '', 'y', '', 'n', 'y', 'first.example.test']);
+    ok($rc === 0 && str_contains($out, 'Schema imported (') && !str_contains($out, 'statements failed'), 'privileged account: the schema import runs (idempotent) and succeeds');
+    ok(str_contains($out, 'Domain first.example.test added.') && $count("SELECT COUNT(*) FROM virtual_domains WHERE name = 'first.example.test'") === 1, 'privileged account: the domain is inserted');
+    [$rc, $out] = $installer($i2, ['n', 'n', '', 'n']);
+    ok($rc === 0 && str_contains($out, 'Domains in the database: first.example.test') && !str_contains($out, 'add the first one'), 're-run: existing domains are listed, nothing asked');
+
+    $i3 = $tmp . DIRECTORY_SEPARATOR . 'inst3';
+    $copyInstaller($i3);
+    [$rc, $out] = $installer($i3, [$dbHost, $db, $uPanel, 'wrong-password', '', '', '']);
+    ok($rc === 1 && str_contains($out, 'Cannot connect to the database') && str_contains($out, 'Nothing was written'), 'wrong password: exit 1 with the reason');
+    ok(str_contains($out, 'sudo bash install.sh') && str_contains($out, 'section 0'), 'wrong password: the hint (install.sh section 0 first) is on the failure path');
+    ok(!file_exists($i3 . '/.env') && !str_contains($out, '.env written'), 'wrong password: no .env with a guessed password');
+
+    mkdir($i3 . '/.env', 0700);                             // .env cannot be written: a directory of that name
+    [$rc, $out] = $installer($i3, ['y', $dbHost, $db, $uPanel, $pw, '', '', '']);
+    ok($rc === 1 && str_contains($out, 'Could not write') && !str_contains($out, '.env written'), 'unwritable .env: exit 1, no ".env written"');
+    ok(!str_contains($out, 'Default interface language'), 'unwritable .env: nothing else is done');
+    @rmdir($i3 . '/.env');
+
+    [$rc, $out] = $installer($i3, [$dbHost]);
+    ok($rc === 1 && str_contains($out, 'Standard input ended'), 'input ends after the first answer: exit 1, no endless question loop');
+    [$rc, $out] = $installer($i3, [$dbHost, $db, $uPanel, $pw, '', '', '', 'en', 'y', 'x@example.test', 'short']);
+    ok($rc === 1 && str_contains($out, 'Password too weak') && str_contains($out, 'Standard input ended'), '... also inside the administrator password loop');
+
+    [$rc, $out] = $installer($i3, ['y', 'db.example.org:99999', 'bad host!', $dbHost, 'bad-name', $db, 'bad user', $uPanel, $pw, '', 'Mars/Olympus', '', '']);
+    ok(substr_count($out, 'Expected a host name') === 2 && substr_count($out, 'Letters, digits and _ only.') === 1 && substr_count($out, 'Letters, digits, dots') === 1
+        && str_contains($out, 'Unknown time zone: Mars/Olympus'), 'invalid host, port, database name, user name and time zone are asked again');
+} catch (Throwable $e) {
+    ok(false, 'EXCEPTION: ' . $e::class . ': ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
+}
+
 echo "\n";
 echo ($T['fail'] === 0 ? 'OK' : 'BŁĘDY') . ": {$T['pass']} przeszło, {$T['fail']} nie\n";
 foreach ($T['fails'] as $f) { echo "  FAIL: $f\n"; }
